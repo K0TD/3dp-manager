@@ -590,15 +590,16 @@
 
 ### POST `/api/rotation/rotate-all`
 
-Выполнить ротацию всех подписок.
+Поставить ротацию всех подписок в фоновую очередь. Возвращает HTTP `202`.
 
 **Headers:** `Authorization: Bearer <token>`
 
 **Response:**
 ```json
 {
-  "success": true,
-  "rotatedCount": 5
+  "id": "b93b98f6-7d55-4d32-b0dd-497680715a31",
+  "status": "queued",
+  "results": []
 }
 ```
 
@@ -606,17 +607,40 @@
 
 ### POST `/api/rotation/rotate-one/:id`
 
-Выполнить ротацию одной подписки.
+Поставить ротацию одной подписки в фоновую очередь. Возвращает HTTP `202`.
 
 **Headers:** `Authorization: Bearer <token>`
 
 **Response:**
 ```json
 {
-  "success": true,
-  "subscriptionId": "1"
+  "id": "b93b98f6-7d55-4d32-b0dd-497680715a31",
+  "status": "queued",
+  "subscriptionIds": ["subscription-uuid"]
 }
 ```
+
+---
+
+### GET `/api/rotation/operations`
+
+Последние фоновые операции и результат по каждой ноде.
+
+### GET `/api/rotation/operations/:id`
+
+Состояние отдельной операции: `queued`, `running`, `succeeded`, `partial` или `failed`.
+
+### GET `/api/rotation/cleanup`
+
+Inbounds старых поколений, ожидающие удаления с нод.
+
+### POST `/api/rotation/cleanup/:id/retry`
+
+Поставить задачу очистки на ближайшую попытку.
+
+### DELETE `/api/nodes/:id?mode=deferred`
+
+Принудительно скрыть недоступную ноду. Её реквизиты сохраняются до завершения фоновой очистки.
 
 ---
 
@@ -875,4 +899,5 @@ http://<host>:<port>/bus/<uuid>
 
 - Telegram: [@denpiligrim_web](https://t.me/denpiligrim_web)
 - YouTube: [DenPiligrim](https://www.youtube.com/@denpiligrim)
-- GitHub: [denpiligrim/3dp-manager](https://github.com/denpiligrim/3dp-manager)
+- GitHub: [k0td/3dp-manager](https://github.com/k0td/3dp-manager)
+- Исходный проект: [denpiligrim/3dp-manager](https://github.com/denpiligrim/3dp-manager)

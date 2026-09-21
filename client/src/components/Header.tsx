@@ -70,9 +70,12 @@ export default function Header({ onMenuClick, isMobile }: HeaderProps) {
             </IconButton>
           )}
           <img src="/img/logo.png" alt="Logo" width={32} height={32} style={{ marginRight: 14 }} />
-          <Typography variant={isMobile ? 'body1' : 'h6'} noWrap component="div" sx={{ flexGrow: 1, fontWeight: 'bold', color: '#1395de' }}>
-            3DP-MANAGER
-          </Typography>
+          <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+            <Typography variant={isMobile ? 'body2' : 'h6'} noWrap component="div" color="primary">
+              3DP / CONTROL
+            </Typography>
+            {!isMobile && <Typography variant="caption" color="text.secondary">multi-node manager</Typography>}
+          </Box>
 
           <Box sx={{ display: 'flex', gap: isMobile ? 0.25 : 1 }}>
 
@@ -143,7 +146,7 @@ export default function Header({ onMenuClick, isMobile }: HeaderProps) {
 
           <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
             Версия: {APP_VERSION}<br />
-            Разработчик: DenPiligrim
+            Форк: K0TD · исходный проект: DenPiligrim · лицензия GPL-3.0
           </Typography>
         </DialogContent>
         <DialogActions>

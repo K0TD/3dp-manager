@@ -2,7 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { AuthService } from './auth/auth.service';
-import { RequestMethod, Logger, LogLevel } from '@nestjs/common';
+import { RequestMethod, Logger, LogLevel, ValidationPipe } from '@nestjs/common';
 import { Request, Response, NextFunction, RequestHandler } from 'express';
 import cookieParser from 'cookie-parser';
 import { HttpExceptionFilter } from './client/client.exception-filter';
@@ -39,6 +39,13 @@ async function bootstrap() {
   // Cookie parser для работы с httpOnly cookies
   const cookieParserFactory = cookieParser as unknown as () => RequestHandler;
   app.use(cookieParserFactory());
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true,
+      transformOptions: { enableImplicitConversion: true },
+    }),
+  );
 
   const authService = app.get(AuthService);
   await authService.seedAdmin();

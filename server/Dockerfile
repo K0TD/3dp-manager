@@ -43,6 +43,7 @@ RUN apk add --no-cache \
     gawk \
     coreutils \
     procps \
+    postgresql-client \
     ca-certificates
 
 COPY --from=builder /app/dist ./dist

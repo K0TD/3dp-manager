@@ -77,7 +77,7 @@ Maslahatlar:
 Taslamany serwere gurnaň:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/install.sh)
 ```
 
 Gurnama wagtynda skript:
@@ -102,7 +102,7 @@ Gurnama tamamlanandan soň terminalda URL, login we password görkeziler. Passwo
 Soňky wersiýa çenli täzelemek:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/update.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/install.sh)
 ```
 
 <sup>Gysgaça: soňky üýtgeşmeleri alýar, laýyk konfigurasiýa düzedişlerini ulanýar, konteýnerleri täzeleýär we hyzmaty gaýtadan işledýär.</sup>
@@ -112,7 +112,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main
 Hyzmaty doly pozmak:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/delete.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/delete.sh)
 ```
 
 <sup>Gysgaça: konteýnerleri we konfigurasiýa faýllaryny pozýar, ulgamy gurnamadan öňki ýagdaýa getirýär.</sup>
@@ -191,7 +191,7 @@ Relay serwer IP ýa-da domen boýunça goşulyp bilner. Domen görkezilse, backe
 Aralyk serwerde forwarding-i el bilen gurnamak üçin `IP_ADDRESS` ýerine esasy node IP-sini goýuň:
 
 ```bash
-sudo ORIGIN_IP="IP_ADDRESS" bash -c "$(curl -sSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/forwarding_install.sh)"
+sudo ORIGIN_IP="IP_ADDRESS" bash -c "$(curl -sSL https://raw.githubusercontent.com/k0td/3dp-manager/main/forwarding_install.sh)"
 ```
 
 <sup>Gysgaça: forwarding düzgünlerini goşýar.</sup>
@@ -199,7 +199,7 @@ sudo ORIGIN_IP="IP_ADDRESS" bash -c "$(curl -sSL https://raw.githubusercontent.c
 ## Forwarding-i Pozmak
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/forwarding_delete.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/forwarding_delete.sh)
 ```
 
 <sup>Gysgaça: forwarding düzgünlerini pozýar. Pozlandan soň üýtgeşmeler güýje girmegi üçin firewall-y `ufw reload` bilen täzeden ýükläň we ulgamy `reboot` bilen täzeden işlediň.</sup>

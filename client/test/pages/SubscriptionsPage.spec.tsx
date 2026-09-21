@@ -38,11 +38,13 @@ const setupMockGet = (overrides?: {
   subscriptions?: unknown[]
   tunnels?: unknown[]
   domains?: unknown[]
+  nodes?: unknown[]
 }) => {
   mockGet.mockImplementation((url: string) => {
     if (url === '/subscriptions') return Promise.resolve({ data: overrides?.subscriptions || [] })
     if (url === '/tunnels') return Promise.resolve({ data: overrides?.tunnels || [] })
-    if (url === '/domains/all') return Promise.resolve({ data: overrides?.domains || [] })
+    if (url === '/domains/all') return Promise.resolve({ data: overrides?.domains || [{ id: 1, name: 'example.com', isEnabled: true }] })
+    if (url === '/nodes') return Promise.resolve({ data: overrides?.nodes || [{ id: 'node-1', name: 'Main', url: 'https://node.test', isMain: true }] })
     return Promise.resolve({ data: {} })
   })
 }
@@ -242,7 +244,7 @@ describe('SubscriptionsPage', () => {
       fireEvent.click(createButton)
 
       await waitFor(() => {
-        expect(screen.getByText('Инбаунды (9/20)')).toBeInTheDocument()
+        expect(screen.getByText('Инбаунды (10/20)')).toBeInTheDocument()
       })
     })
 
@@ -286,7 +288,7 @@ describe('SubscriptionsPage', () => {
       fireEvent.click(createButton)
 
       await waitFor(() => {
-        expect(screen.getByText('Инбаунды (9/20)')).toBeInTheDocument()
+        expect(screen.getByText('Инбаунды (10/20)')).toBeInTheDocument()
       })
     })
 
@@ -314,7 +316,7 @@ describe('SubscriptionsPage', () => {
       fireEvent.click(addButton)
 
       await waitFor(() => {
-        expect(screen.getByText('Инбаунды (10/20)')).toBeInTheDocument()
+        expect(screen.getByText('Инбаунды (11/20)')).toBeInTheDocument()
       })
     })
 

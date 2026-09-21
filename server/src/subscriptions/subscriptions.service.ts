@@ -8,7 +8,7 @@ import { UpdateSubscriptionDto } from './dto/update-subscription.dto';
 import { v4 as uuidv4 } from 'uuid';
 import { Node } from '../nodes/entities/node.entity';
 import { Tunnel } from '../tunnels/entities/tunnel.entity';
-import { Inbound } from '../inbounds/entities/inbound.entity';
+import { Inbound, InboundStatus } from '../inbounds/entities/inbound.entity';
 
 @Injectable()
 export class SubscriptionsService {
@@ -22,11 +22,17 @@ export class SubscriptionsService {
     private xuiService: XuiService,
   ) {}
 
-  findAll() {
-    return this.subRepo.find({
+  async findAll() {
+    const subscriptions = await this.subRepo.find({
       relations: ['inbounds', 'node', 'relayServer'],
       order: { createdAt: 'DESC' },
     });
+    for (const subscription of subscriptions) {
+      subscription.inbounds = (subscription.inbounds || []).filter(
+        (inbound) => inbound.status === InboundStatus.Active,
+      );
+    }
+    return subscriptions;
   }
 
   async create(dto: CreateSubscriptionDto) {

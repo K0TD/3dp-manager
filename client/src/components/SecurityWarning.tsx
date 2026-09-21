@@ -2,7 +2,7 @@ import { Alert, AlertTitle, Box, Button, Collapse, IconButton, Snackbar, useMedi
 import { Close, ContentCopy } from '@mui/icons-material';
 import { useState } from 'react';
 
-const INSTALL_COMMAND = 'bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/install.sh)';
+const INSTALL_COMMAND = 'bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/install.sh)';
 
 export default function SecurityWarning() {
   const [copied, setCopied] = useState(false);

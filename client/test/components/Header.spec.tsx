@@ -40,7 +40,7 @@ describe('Header', () => {
 
   it('должен рендериться с логотипом и названием', () => {
     renderHeader()
-    expect(screen.getByText('3DP-MANAGER')).toBeInTheDocument()
+    expect(screen.getByText('3DP / CONTROL')).toBeInTheDocument()
     const logo = screen.getByAltText('Logo')
     expect(logo).toBeInTheDocument()
     expect(logo).toHaveAttribute('src', '/img/logo.png')
@@ -170,7 +170,7 @@ describe('Header', () => {
 
   it('должен принимать prop isMobile', () => {
     renderHeader({ isMobile: true })
-    expect(screen.getByText('3DP-MANAGER')).toBeInTheDocument()
+    expect(screen.getByText('3DP / CONTROL')).toBeInTheDocument()
   })
 
   it('должен отображать кнопку меню в мобильном режиме', () => {
@@ -192,7 +192,7 @@ describe('Header', () => {
     fireEvent.click(helpButton)
     
     await waitFor(() => {
-      expect(screen.getByText(/Разработчик:/)).toBeInTheDocument()
+      expect(screen.getByText(/Форк: K0TD/)).toBeInTheDocument()
     })
     // Версия отображается отдельным текстом с br переносом
     expect(screen.getByText(/\d+\.\d+\.\d+/)).toBeInTheDocument()

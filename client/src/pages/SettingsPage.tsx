@@ -4,9 +4,11 @@ import {
   Box,
   Button,
   Divider,
+  FormControlLabel,
   Paper,
   Snackbar,
   Stack,
+  Switch,
   TextField,
   Typography,
 } from '@mui/material';
@@ -23,6 +25,10 @@ export default function SettingsPage() {
     type: 'success' as 'success' | 'error',
     text: '',
   });
+  const [backupPassword, setBackupPassword] = useState('');
+  const [backupPassphrase, setBackupPassphrase] = useState('');
+  const [encryptBackup, setEncryptBackup] = useState(true);
+  const [backupLoading, setBackupLoading] = useState(false);
 
   const loadProfile = useCallback(async () => {
     try {
@@ -61,13 +67,52 @@ export default function SettingsPage() {
     }
   };
 
-  return (
-    <Box>
-      <Typography variant="h4" gutterBottom>
-        Настройки
-      </Typography>
+  const exportBackup = async () => {
+    if (!backupPassword) {
+      setMessage({ open: true, type: 'error', text: 'Введите текущий пароль администратора' });
+      return;
+    }
+    if (encryptBackup && !backupPassphrase.trim()) {
+      setMessage({ open: true, type: 'error', text: 'Введите парольную фразу архива' });
+      return;
+    }
+    setBackupLoading(true);
+    try {
+      const response = await api.post(
+        '/backups/export',
+        {
+          currentPassword: backupPassword,
+          passphrase: encryptBackup ? backupPassphrase : undefined,
+        },
+        { responseType: 'blob' },
+      );
+      const url = URL.createObjectURL(response.data);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `3dp-manager-${new Date().toISOString().slice(0, 10)}.3dp-backup`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setBackupPassword('');
+      setBackupPassphrase('');
+      setMessage({ open: true, type: 'success', text: 'Архив создан и скачан' });
+    } catch (error) {
+      Logger.error('Backup export failed', 'Settings', error);
+      setMessage({ open: true, type: 'error', text: 'Не удалось создать архив' });
+    } finally {
+      setBackupLoading(false);
+    }
+  };
 
-      <Paper sx={{ p: 3, maxWidth: 680 }}>
+  return (
+    <Stack spacing={3}>
+      <Box className="page-heading">
+        <Box>
+          <Typography variant="overline" color="primary">SYSTEM SETTINGS</Typography>
+          <Typography variant="h3">Настройки</Typography>
+        </Box>
+      </Box>
+
+      <Paper className="console-panel" sx={{ maxWidth: 760 }}>
         <Typography variant="h6">Профиль панели 3dp-manager</Typography>
         <Divider sx={{ my: 2 }} />
         <Stack spacing={2}>
@@ -93,6 +138,38 @@ export default function SettingsPage() {
         </Stack>
       </Paper>
 
+      <Paper className="console-panel" sx={{ maxWidth: 760 }}>
+        <Typography variant="overline" color="primary">PORTABLE BACKUP</Typography>
+        <Typography variant="h5" sx={{ mt: 0.5 }}>Перенос панели</Typography>
+        <Typography color="text.secondary" sx={{ mt: 1, mb: 2 }}>
+          Архив содержит подписки, UUID, настройки, ноды и реквизиты relay. Домен и TLS на новом сервере настраиваются заново.
+        </Typography>
+        <Stack spacing={2}>
+          <TextField
+            label="Текущий пароль администратора"
+            type="password"
+            value={backupPassword}
+            onChange={(event) => setBackupPassword(event.target.value)}
+          />
+          <FormControlLabel
+            control={<Switch checked={encryptBackup} onChange={(event) => setEncryptBackup(event.target.checked)} />}
+            label="Зашифровать архив"
+          />
+          {encryptBackup ? (
+            <TextField
+              label="Парольная фраза архива"
+              type="password"
+              value={backupPassphrase}
+              onChange={(event) => setBackupPassphrase(event.target.value)}
+              helperText="Она потребуется при восстановлении и нигде не сохраняется"
+            />
+          ) : (
+            <Alert severity="warning">Открытый архив содержит пароли нод и SSH-ключи.</Alert>
+          )}
+          <Box><Button variant="contained" disabled={backupLoading} onClick={exportBackup}>{backupLoading ? 'Создание…' : 'Скачать полный архив'}</Button></Box>
+        </Stack>
+      </Paper>
+
       <Snackbar
         open={message.open}
         autoHideDuration={5000}
@@ -100,6 +177,6 @@ export default function SettingsPage() {
       >
         <Alert severity={message.type}>{message.text}</Alert>
       </Snackbar>
-    </Box>
+    </Stack>
   );
 }

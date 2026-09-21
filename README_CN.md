@@ -77,7 +77,7 @@
 在服务器上安装项目：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/install.sh)
 ```
 
 安装过程中，脚本会：
@@ -102,7 +102,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main
 更新到最新版本：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/update.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/install.sh)
 ```
 
 <sup>简要说明：拉取最新更改，应用兼容的配置修复，更新容器并重启服务。</sup>
@@ -112,7 +112,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main
 彻底删除服务：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/delete.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/delete.sh)
 ```
 
 <sup>简要说明：删除容器和配置文件，将系统恢复到安装前状态。</sup>
@@ -191,7 +191,7 @@ Relay 服务器可以通过 IP 或域名添加。如果提供域名，backend �
 如需在中间服务器上手动安装 forwarding，请将 `IP_ADDRESS` 替换为源节点 IP：
 
 ```bash
-sudo ORIGIN_IP="IP_ADDRESS" bash -c "$(curl -sSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/forwarding_install.sh)"
+sudo ORIGIN_IP="IP_ADDRESS" bash -c "$(curl -sSL https://raw.githubusercontent.com/k0td/3dp-manager/main/forwarding_install.sh)"
 ```
 
 <sup>简要说明：添加转发规则。</sup>
@@ -199,7 +199,7 @@ sudo ORIGIN_IP="IP_ADDRESS" bash -c "$(curl -sSL https://raw.githubusercontent.c
 ## 删除转发
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/forwarding_delete.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/forwarding_delete.sh)
 ```
 
 <sup>简要说明：删除转发规则。删除后，请执行 `ufw reload` 重新加载防火墙，并执行 `reboot` 重启系统以使更改生效。</sup>

@@ -18,7 +18,7 @@ jobs:
 
     environment:
       name: production
-      url: https://github.com/denpiligrim/3dp-manager/pkgs/container/3dp-manager-server
+      url: https://github.com/k0td/3dp-manager/pkgs/container/3dp-manager-server
       
     permissions:
       contents: read
@@ -40,11 +40,15 @@ jobs:
         with:
           context: ./server
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-server:${{ github.ref_name }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-server:${{ github.ref_name }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-server:stable
 
       - name: Build and push Client image
         uses: docker/build-push-action@v5
         with:
           context: ./client
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-client:${{ github.ref_name }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-client:${{ github.ref_name }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-client:stable

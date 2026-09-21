@@ -49,6 +49,13 @@ export class AuthService {
     }
   }
 
+  async getAdminLogin() {
+    const setting = await this.settingsRepo.findOne({
+      where: { key: 'admin_login' },
+    });
+    return setting?.value;
+  }
+
   login(user: { login: string }) {
     const payload = { username: user.login };
     this.logger.debug(`Генерация access token для пользователя: ${user.login}`);

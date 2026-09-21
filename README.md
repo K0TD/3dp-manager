@@ -4,9 +4,9 @@
 
 ![Version](https://img.shields.io/badge/version-2.2.0-blue.svg) ![Downloads](https://img.shields.io/badge/downloads-5.6k-blue) [![License](https://img.shields.io/badge/license-GPL%20V3-blue.svg?longCache=true)](https://www.gnu.org/licenses/gpl-3.0) [![Telegram](https://img.shields.io/badge/Telegram-26A5E4?style=flat&logo=telegram&logoColor=white)](https://t.me/denpiligrim_web) [![YouTube Channel Subscribers](https://img.shields.io/youtube/channel/subscribers/UCOv2tFFYDY4mXOM60PVz8zw)](https://www.youtube.com/@denpiligrim)
 
-# 3DP-MANAGER
+# 3DP-MANAGER · K0TD fork
 
-Утилита для автогенерации инбаундов к панели [3x-ui](https://github.com/MHSanaei/3x-ui), формирования единых подписок, управления несколькими 3x-ui нодами и настройки relay-перенаправления трафика с промежуточных серверов на основные. Начиная с версии 2.0.0 проект имеет графический интерфейс и простые пользовательские настройки.
+Утилита для автогенерации инбаундов к панели [3x-ui](https://github.com/MHSanaei/3x-ui), формирования единых подписок, управления несколькими 3x-ui нодами и настройки relay-перенаправления трафика. Этот форк развивает исходный проект [DenPiligrim/3dp-manager](https://github.com/denpiligrim/3dp-manager) и распространяется на тех же условиях GPL-3.0.
 
 **Поддержать проект**
 
@@ -59,6 +59,12 @@
 - Поддержка кастомного `whitelist` доменов
 - Автоматическая настройка relay-перенаправления трафика (опционально)
 - Установка Web UI через HTTP или HTTPS: Let's Encrypt, self-signed или свои сертификаты
+- Совместимость с cookie/CSRF и token API `3x-ui` 2.9.4–3.x
+- Независимая ротация по нодам: сбой одной ноды не блокирует остальные
+- Сохранение последнего рабочего поколения до успешной замены
+- Фоновая очистка старых поколений после восстановления недоступной ноды
+- Принудительное удаление ноды с отложенной очисткой
+- Полный переносимый архив подписок, UUID, настроек, нод и relay-реквизитов
 
 ## Требования
 
@@ -77,7 +83,7 @@
 Установите проект на сервер командой:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/install.sh)
 ```
 
 Во время установки скрипт:
@@ -102,17 +108,29 @@ bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main
 Обновление до последней версии:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/update.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/install.sh)
 ```
 
-<sup>Краткое описание: подтягивает последние изменения, применяет совместимые исправления конфигурации, обновляет контейнеры и перезапускает сервис.</sup>
+Та же команда обнаруживает существующую установку, включая установку из репозитория `denpiligrim`, создаёт резервную копию PostgreSQL, переключает образы на K0TD и применяет миграции без удаления Docker volume.
+
+## Перенос панели
+
+1. На старом сервере откройте **Настройки → Перенос панели**, введите текущий пароль администратора и скачайте `.3dp-backup`. Архив можно защитить отдельной парольной фразой.
+2. Скопируйте архив на новый сервер.
+3. Запустите установку с восстановлением:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/install.sh) --restore /root/panel.3dp-backup
+```
+
+Установщик заново спросит режим HTTP/HTTPS и адрес Web UI. UUID подписок, настройки, ноды и relay-реквизиты сохраняются. Для зашифрованного архива установщик запросит парольную фразу.
 
 ## Удаление
 
 Полное удаление сервиса:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/delete.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/delete.sh)
 ```
 
 <sup>Краткое описание: удаляет контейнеры и файлы конфигурации, возвращая систему к состоянию до установки.</sup>
@@ -121,11 +139,13 @@ bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main
 
 ## Первый вход и доступы
 
-Логин и пароль администратора выводятся в конце установки. Если нужно посмотреть их повторно:
+При новой установке логин и пароль администратора выводятся в конце установки. Если нужно посмотреть их повторно:
 
 ```bash
 grep -E "ADMIN_LOGIN|ADMIN_PASSWORD" /opt/3dp-manager/docker-compose.yml | sed 's/^[ \t]*//; s/^- //'
 ```
+
+После восстановления архива действуют логин и пароль из перенесённой панели.
 
 Web UI доступен по адресу, который показал установщик, например:
 
@@ -147,12 +167,15 @@ Web UI доступен по адресу, который показал уст�
 - IP ноды;
 - флаг/страна;
 - тип авторизации: `password` или `token`;
-- признак основной ноды.
+- признак основной ноды;
+- разрешение self-signed TLS, по умолчанию выключенное.
 
 После ввода URL приложение пытается определить IP и страну ноды автоматически. Флаг используется в названиях подключений внутри подписки, чтобы в клиенте было проще отличать серверы.
 
 > [!NOTE]
 > Основная нода используется как значение по умолчанию для подписок, инбаундов и relay-серверов.
+
+Статус и время ответа каждой ноды обновляются в фоне. Принудительное удаление сразу скрывает зависшую ноду, а её старые inbound остаются в очереди очистки до следующей доступности 3x-ui.
 
 ---
 
@@ -191,7 +214,7 @@ Relay-сервер можно добавить по IP или домену. Ес
 Для ручной установки forwarding на промежуточном сервере замените `IP_ADDRESS` на IP основной ноды:
 
 ```bash
-sudo ORIGIN_IP="IP_ADDRESS" bash -c "$(curl -sSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/forwarding_install.sh)"
+sudo ORIGIN_IP="IP_ADDRESS" bash -c "$(curl -sSL https://raw.githubusercontent.com/k0td/3dp-manager/main/forwarding_install.sh)"
 ```
 
 <sup>Краткое описание: добавляет правила перенаправления.</sup>
@@ -199,7 +222,7 @@ sudo ORIGIN_IP="IP_ADDRESS" bash -c "$(curl -sSL https://raw.githubusercontent.c
 ## Удаление перенаправления
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/forwarding_delete.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/forwarding_delete.sh)
 ```
 
 <sup>Краткое описание: удаляет правила перенаправления. После удаления, чтобы изменения вступили в силу, перезапустите фаервол `ufw reload` и перезапустите систему `reboot`</sup>
@@ -242,3 +265,7 @@ node get_domains.js
 
 - Телеграм: [@denpiligrim_web](https://t.me/denpiligrim_web)
 - Раздел Issues в данном репозитории
+
+## Лицензия и авторство
+
+Проект распространяется по [GNU GPL v3](LICENSE). Форк K0TD сохраняет историю, уведомления об авторстве и ссылку на исходный проект DenPiligrim. При распространении изменённых версий необходимо предоставить соответствующий исходный код и сохранить условия GPL-3.0.

@@ -4,9 +4,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { CreateNodeDto, UpdateNodeDto } from './dto/node.dto';
-import { Node, NodeAuthType, NodeProtocol } from './entities/node.entity';
+import {
+  Node,
+  NodeAuthType,
+  NodeHealthStatus,
+  NodeProtocol,
+} from './entities/node.entity';
 import { XuiService } from '../xui/xui.service';
 import { Subscription } from '../subscriptions/entities/subscription.entity';
 import { Tunnel } from '../tunnels/entities/tunnel.entity';
@@ -14,6 +19,8 @@ import { Inbound } from '../inbounds/entities/inbound.entity';
 import * as dns from 'dns/promises';
 import * as net from 'net';
 import { COUNTRIES } from '../settings/countries';
+import { Cron, CronExpression } from '@nestjs/schedule';
+import { InboundStatus } from '../inbounds/entities/inbound.entity';
 
 type GeoResult = {
   ip: string;
@@ -40,7 +47,10 @@ export class NodesService {
   ) {}
 
   findAll() {
-    return this.nodesRepo.find({ order: { isMain: 'DESC', createdAt: 'DESC' } });
+    return this.nodesRepo.find({
+      where: { deletedAt: IsNull() },
+      order: { isMain: 'DESC', createdAt: 'DESC' },
+    });
   }
 
   async findOneWithSecrets(id: string) {
@@ -49,6 +59,7 @@ export class NodesService {
       .addSelect('node.password')
       .addSelect('node.token')
       .where('node.id = :id', { id })
+      .andWhere('node.deletedAt IS NULL')
       .getOne();
 
     if (!node) {
@@ -64,6 +75,7 @@ export class NodesService {
       .addSelect('node.password')
       .addSelect('node.token')
       .where('node.isMain = :isMain', { isMain: true })
+      .andWhere('node.deletedAt IS NULL')
       .getOne();
   }
 
@@ -83,7 +95,7 @@ export class NodesService {
       isMain: dto.isMain ?? false,
     });
 
-    if ((await this.nodesRepo.count()) === 0) {
+    if ((await this.nodesRepo.count({ where: { deletedAt: IsNull() } })) === 0) {
       node.isMain = true;
     }
 
@@ -141,17 +153,16 @@ export class NodesService {
     return this.nodesRepo.save(node);
   }
 
-  async remove(id: string) {
+  async remove(id: string, mode: 'safe' | 'deferred' = 'safe') {
     const node = await this.findOneWithSecrets(id);
-    const nodeCount = await this.nodesRepo.count();
-
-    await this.cleanupNodeDependencies(node, nodeCount === 1);
+    if (mode === 'deferred') return this.deferRemoval(node);
+    await this.cleanupNodeDependencies(node);
     await this.nodesRepo.remove(node);
 
     const main = await this.getDefaultNode();
     if (!main) {
       const fallback = await this.nodesRepo.findOne({
-        where: {},
+        where: { deletedAt: IsNull() },
         order: { createdAt: 'DESC' },
       });
       if (fallback) {
@@ -163,15 +174,71 @@ export class NodesService {
     return { success: true };
   }
 
-  private async cleanupNodeDependencies(node: Node, isLastNode: boolean) {
+  private async deferRemoval(node: Node) {
+    const now = new Date();
+    node.deletedAt = now;
+    node.healthStatus = NodeHealthStatus.Deleting;
+    node.isMain = false;
+
+    const inbounds = await this.inboundsRepo.find({ where: { nodeId: node.id } });
+    for (const inbound of inbounds) {
+      inbound.status = InboundStatus.PendingCleanup;
+      inbound.nextCleanupAt = now;
+    }
+    if (inbounds.length) await this.inboundsRepo.save(inbounds);
+
+    const subscriptions = await this.subscriptionsRepo.find();
+    for (const subscription of subscriptions) {
+      const inheritedDeletedNode = subscription.nodeId === node.id;
+      let changed = inheritedDeletedNode;
+      subscription.inboundsConfig = (subscription.inboundsConfig || []).map((item) => {
+        if (item.nodeId !== node.id && !(inheritedDeletedNode && !item.nodeId)) {
+          return item;
+        }
+        changed = true;
+        const { nodeId: _nodeId, relayServerId: _relayId, ...rest } = item;
+        return {
+          ...rest,
+          enabled: false,
+          disabledReason: `Нода «${node.name}» удалена`,
+        };
+      });
+      if (inheritedDeletedNode) {
+        subscription.nodeId = undefined;
+        subscription.node = undefined;
+      }
+      if (changed) await this.subscriptionsRepo.save(subscription);
+    }
+
+    const tunnels = await this.tunnelsRepo.find({ where: { nodeId: node.id } });
+    for (const tunnel of tunnels) {
+      tunnel.nodeId = undefined;
+      tunnel.node = undefined;
+      tunnel.isInstalled = false;
+    }
+    if (tunnels.length) await this.tunnelsRepo.save(tunnels);
+
+    await this.nodesRepo.save(node);
+    await this.ensureMainNode();
+    return { success: true, deferred: true, pendingCleanup: inbounds.length };
+  }
+
+  private async ensureMainNode() {
+    const main = await this.getDefaultNode();
+    if (main) return;
+    const fallback = await this.nodesRepo.findOne({
+      where: { deletedAt: IsNull() },
+      order: { createdAt: 'DESC' },
+    });
+    if (fallback) {
+      fallback.isMain = true;
+      await this.nodesRepo.save(fallback);
+    }
+  }
+
+  private async cleanupNodeDependencies(node: Node) {
     await this.deleteNodeInbounds(node);
     const id = node.id;
-
-    if (isLastNode) {
-      await this.subscriptionsRepo.createQueryBuilder().delete().execute();
-      await this.tunnelsRepo.createQueryBuilder().delete().execute();
-      return;
-    }
 
     await this.tunnelsRepo.delete({ nodeId: id });
     await this.inboundsRepo.delete({ nodeId: id });
@@ -232,7 +299,51 @@ export class NodesService {
   async checkConnection(id: string) {
     const node = await this.findOneWithSecrets(id);
     const status = await this.xuiService.checkNodeConnection(node);
+    await this.applyHealthResult(node, status);
     return { success: status.success, version: status.version };
+  }
+
+  @Cron(CronExpression.EVERY_MINUTE)
+  async refreshHealth() {
+    const nodes = await this.nodesRepo
+      .createQueryBuilder('node')
+      .addSelect('node.password')
+      .addSelect('node.token')
+      .where('node.deletedAt IS NULL')
+      .getMany();
+
+    for (let offset = 0; offset < nodes.length; offset += 4) {
+      await Promise.allSettled(
+        nodes.slice(offset, offset + 4).map(async (node) => {
+          const status = await this.xuiService.checkNodeConnection(node);
+          await this.applyHealthResult(node, status);
+        }),
+      );
+    }
+  }
+
+  private async applyHealthResult(
+    node: Node,
+    status: Awaited<ReturnType<XuiService['checkNodeConnection']>>,
+  ) {
+    node.lastCheckedAt = new Date();
+    node.responseTimeMs = status.responseTimeMs;
+    if (status.success) {
+      node.healthStatus = NodeHealthStatus.Online;
+      node.consecutiveFailures = 0;
+      node.lastError = undefined;
+      if (status.version) node.version = status.version;
+    } else {
+      node.consecutiveFailures = (node.consecutiveFailures || 0) + 1;
+      node.healthStatus =
+        status.errorType === 'auth'
+          ? NodeHealthStatus.AuthError
+          : node.consecutiveFailures >= 3
+            ? NodeHealthStatus.Offline
+            : NodeHealthStatus.Degraded;
+      node.lastError = status.message;
+    }
+    await this.nodesRepo.save(node);
   }
 
   async syncFromMain() {
@@ -277,9 +388,7 @@ export class NodesService {
               await this.lookupGeo(await this.resolveIp(item.host))
             )?.flag,
             protocol:
-              item.protocol === NodeProtocol.Http
-                ? NodeProtocol.Http
-                : NodeProtocol.Https,
+              item.protocol === 'http' ? NodeProtocol.Http : NodeProtocol.Https,
             authType: main.authType,
             login: main.login,
             password: main.password,
@@ -369,7 +478,7 @@ export class NodesService {
         host: parsed.hostname,
         port: parsed.port ? Number(parsed.port) : undefined,
         protocol:
-          parsed.protocol.replace(':', '') === NodeProtocol.Http
+          parsed.protocol.replace(':', '') === 'http'
             ? NodeProtocol.Http
             : NodeProtocol.Https,
       };

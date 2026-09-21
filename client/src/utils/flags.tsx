@@ -6,7 +6,7 @@ const SPECIAL_CODES: Record<string, string> = {
   WALES: 'gb-wls',
 };
 
-export const decodeFlag = (flag?: string) => {
+const decodeFlag = (flag?: string) => {
   if (!flag) return '';
   try {
     return decodeURIComponent(flag);
@@ -15,7 +15,7 @@ export const decodeFlag = (flag?: string) => {
   }
 };
 
-export const countryCodeFromFlag = (flag?: string) => {
+const countryCodeFromFlag = (flag?: string) => {
   const decoded = decodeFlag(flag);
   const points = Array.from(decoded).map((char) => char.codePointAt(0) || 0);
 

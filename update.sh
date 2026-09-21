@@ -307,6 +307,17 @@ ensure_safe_database_mode() {
   mv "$tmp_file" "$compose_file"
 }
 
+switch_to_k0td_images() {
+  local compose_file="$1"
+  [[ -f "$compose_file" ]] || return 0
+  sed -i \
+    -e 's#ghcr.io/denpiligrim/3dp-manager-server:[^[:space:]]*#ghcr.io/k0td/3dp-manager-server:stable#g' \
+    -e 's#ghcr.io/denpiligrim/3dp-manager-client:[^[:space:]]*#ghcr.io/k0td/3dp-manager-client:stable#g' \
+    -e 's#ghcr.io/k0td/3dp-manager-server:[^[:space:]]*#ghcr.io/k0td/3dp-manager-server:stable#g' \
+    -e 's#ghcr.io/k0td/3dp-manager-client:[^[:space:]]*#ghcr.io/k0td/3dp-manager-client:stable#g' \
+    "$compose_file"
+}
+
 get_node_count() {
   docker exec 3dp-postgres sh -c '
     psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "
@@ -362,7 +373,7 @@ log "Compose команда: ${COMPOSE_CMD[*]}"
 # Обновление не должно менять пароль уже инициализированной PostgreSQL:
 # изменение только .env делает существующую базу недоступной.
 if [[ ! -f ".env" ]]; then
-  die "Файл .env не найден. Обновление остановлено, чтобы не потерять доступ к существующей базе данных"
+  warn "Корневой .env отсутствует: сохраняю учётные данные из существующего compose без их изменения"
 fi
 
 #################################
@@ -372,6 +383,7 @@ ensure_nginx_api_timeouts "$PROJECT_DIR/client/nginx-client.conf"
 ensure_bus_location "$PROJECT_DIR/client/nginx-client.conf"
 remove_hysteria_mount "$PROJECT_DIR/docker-compose.yml"
 ensure_safe_database_mode "$PROJECT_DIR/docker-compose.yml"
+switch_to_k0td_images "$PROJECT_DIR/docker-compose.yml"
 
 #################################
 # BACKUP DATABASE

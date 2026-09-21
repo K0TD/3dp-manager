@@ -99,7 +99,8 @@ vi.mock('@mui/icons-material', async () => {
   const mock: Record<string, unknown> = {}
   const icons = [
     'GitHub', 'YouTube', 'Telegram', 'Brightness7', 'Brightness4', 'BrightnessAuto',
-    'Logout', 'HelpOutline', 'Menu', 'People', 'Settings', 'Dns', 'SwapHoriz',
+    'Autorenew', 'CloudOff', 'DeleteSweep',
+    'Logout', 'HelpOutline', 'Menu', 'People', 'Settings', 'Dns', 'SwapHoriz', 'Dashboard', 'Hub',
     'Delete', 'Add', 'Terminal', 'CheckCircle', 'Error', 'LinkIcon', 'OpenInNew',
     'ContentCopy', 'Router', 'Edit', 'MoreVert', 'Remove', 'Refresh', 'Search',
     'FilterList', 'Warning', 'Info', 'Close', 'Check', 'ArrowDownward', 'ArrowUpward',

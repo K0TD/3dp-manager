@@ -77,7 +77,7 @@ The `3x-ui` control panel must already be installed. You can install it with: `b
 Install the project on the server:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/install.sh)
 ```
 
 During installation, the script will:
@@ -102,7 +102,7 @@ After installation, the terminal will show the URL, login, and password. Change 
 Update to the latest version:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/update.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/install.sh)
 ```
 
 <sup>Short description: pulls the latest changes, applies compatible configuration fixes, updates containers, and restarts the service.</sup>
@@ -112,7 +112,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main
 Remove the service completely:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/delete.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/delete.sh)
 ```
 
 <sup>Short description: removes containers and configuration files, restoring the system to the pre-install state.</sup>
@@ -191,7 +191,7 @@ A relay server can be added by IP or domain. If a domain is provided, the backen
 For manual forwarding installation on the intermediate server, replace `IP_ADDRESS` with the origin node IP:
 
 ```bash
-sudo ORIGIN_IP="IP_ADDRESS" bash -c "$(curl -sSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/forwarding_install.sh)"
+sudo ORIGIN_IP="IP_ADDRESS" bash -c "$(curl -sSL https://raw.githubusercontent.com/k0td/3dp-manager/main/forwarding_install.sh)"
 ```
 
 <sup>Short description: adds forwarding rules.</sup>
@@ -199,7 +199,7 @@ sudo ORIGIN_IP="IP_ADDRESS" bash -c "$(curl -sSL https://raw.githubusercontent.c
 ## Remove Forwarding
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/forwarding_delete.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/forwarding_delete.sh)
 ```
 
 <sup>Short description: removes forwarding rules. After removal, reload the firewall with `ufw reload` and reboot the system with `reboot` for changes to take effect.</sup>

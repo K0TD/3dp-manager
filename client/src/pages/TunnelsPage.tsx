@@ -63,6 +63,7 @@ export default function TunnelsPage() {
   const [nodes, setNodes] = useState<NodeRecord[]>([]);
   const [open, setOpen] = useState(false);
   const [loadingId, setLoadingId] = useState<number | null>(null);
+  const [dataLoading, setDataLoading] = useState(true);
   const [authMethod, setAuthMethod] = useState<'password' | 'key'>('password');
   const [form, setForm] = useState(emptyForm);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
@@ -93,6 +94,8 @@ export default function TunnelsPage() {
       setNodes(Array.isArray(nodesRes.data) ? nodesRes.data : []);
     } catch (error) {
       Logger.error('Failed to load forwarding data', 'Tunnels', error);
+    } finally {
+      setDataLoading(false);
     }
   }, []);
 
@@ -222,7 +225,7 @@ export default function TunnelsPage() {
     <Box>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 3 }}>
         <Typography variant={isMobile ? 'h5' : 'h4'}>Relay серверы</Typography>
-        <Box><Button variant="contained" startIcon={<Add />} onClick={openCreate}>Добавить</Button></Box>
+        <Box><Button variant="contained" startIcon={<Add />} disabled={dataLoading} onClick={openCreate}>{dataLoading ? 'Загрузка…' : 'Добавить'}</Button></Box>
         
       </Box>
 

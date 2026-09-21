@@ -437,8 +437,10 @@ export class InboundBuilderService {
     const obfsPassword = crypto.randomBytes(8).toString('hex');
     return {
       enable: true,
+      listen: '0.0.0.0',
       port,
       protocol: 'hysteria',
+      tag: `inbound-${port}`,
       remark: 'hysteria2-udp',
       settings: JSON.stringify({
         clients: [

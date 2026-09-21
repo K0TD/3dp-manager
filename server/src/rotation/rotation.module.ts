@@ -13,10 +13,19 @@ import { Setting } from '../settings/entities/setting.entity';
 import { RotationController } from './rotation.controller';
 import { Node } from '../nodes/entities/node.entity';
 import { Tunnel } from '../tunnels/entities/tunnel.entity';
+import { RotationOperation } from './entities/rotation-operation.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Subscription, Inbound, Domain, Setting, Node, Tunnel]),
+    TypeOrmModule.forFeature([
+      Subscription,
+      Inbound,
+      Domain,
+      Setting,
+      Node,
+      Tunnel,
+      RotationOperation,
+    ]),
     ScheduleModule.forRoot(),
     XuiModule,
     InboundsModule,

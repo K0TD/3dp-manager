@@ -295,10 +295,10 @@ describe('InboundBuilderService', () => {
       expect(streamSettings.hysteriaSettings.version).toBe(2);
       expect(streamSettings.finalmask.udp[0].type).toBe('salamander');
       expect(streamSettings.tlsSettings.certificates[0].certificateFile).toBe(
-        '/etc/letsencrypt/live/oil.3dp-manager.com/fullchain.pem',
+        '/root/cert/oil.3dp-manager.com/fullchain.pem',
       );
       expect(streamSettings.tlsSettings.certificates[0].keyFile).toBe(
-        '/etc/letsencrypt/live/oil.3dp-manager.com/privkey.pem',
+        '/root/cert/oil.3dp-manager.com/privkey.pem',
       );
 
       const link = service.buildInboundLink(

@@ -1,5 +1,6 @@
 export type NodeAuthType = 'password' | 'token';
 export type NodeProtocol = 'http' | 'https';
+export type NodeHealthStatus = 'unknown' | 'online' | 'degraded' | 'offline' | 'auth_error' | 'deleting';
 
 export interface NodeRecord {
   id: string;
@@ -15,6 +16,12 @@ export interface NodeRecord {
   login?: string;
   isMain: boolean;
   version?: string;
+  healthStatus?: NodeHealthStatus;
+  lastCheckedAt?: string;
+  responseTimeMs?: number;
+  consecutiveFailures?: number;
+  lastError?: string;
+  allowInvalidTls?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -31,4 +38,5 @@ export interface NodePayload {
   token?: string;
   isMain?: boolean;
   version?: string;
+  allowInvalidTls?: boolean;
 }

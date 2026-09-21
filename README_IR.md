@@ -77,7 +77,7 @@
 پروژه را روی سرور نصب کنید:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/install.sh)
 ```
 
 در زمان نصب، اسکریپت:
@@ -102,7 +102,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main
 به‌روزرسانی به آخرین نسخه:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/update.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/install.sh)
 ```
 
 <sup>توضیح کوتاه: آخرین تغییرات را دریافت می‌کند، اصلاحات سازگار پیکربندی را اعمال می‌کند، کانتینرها را به‌روزرسانی کرده و سرویس را راه‌اندازی مجدد می‌کند.</sup>
@@ -112,7 +112,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main
 حذف کامل سرویس:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/delete.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/delete.sh)
 ```
 
 <sup>توضیح کوتاه: کانتینرها و فایل‌های پیکربندی را حذف می‌کند و سیستم را به وضعیت پیش از نصب بازمی‌گرداند.</sup>
@@ -191,7 +191,7 @@ Relay server را می‌توان با IP یا دامنه اضافه کرد. ا�
 برای نصب دستی forwarding روی سرور واسط، `IP_ADDRESS` را با IP نود اصلی جایگزین کنید:
 
 ```bash
-sudo ORIGIN_IP="IP_ADDRESS" bash -c "$(curl -sSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/forwarding_install.sh)"
+sudo ORIGIN_IP="IP_ADDRESS" bash -c "$(curl -sSL https://raw.githubusercontent.com/k0td/3dp-manager/main/forwarding_install.sh)"
 ```
 
 <sup>توضیح کوتاه: قوانین forwarding را اضافه می‌کند.</sup>
@@ -199,7 +199,7 @@ sudo ORIGIN_IP="IP_ADDRESS" bash -c "$(curl -sSL https://raw.githubusercontent.c
 ## حذف forwarding
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/forwarding_delete.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/forwarding_delete.sh)
 ```
 
 <sup>توضیح کوتاه: قوانین forwarding را حذف می‌کند. پس از حذف، برای اعمال تغییرات firewall را با `ufw reload` بارگذاری مجدد کنید و سیستم را با `reboot` ری‌استارت کنید.</sup>

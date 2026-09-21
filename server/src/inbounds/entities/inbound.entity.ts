@@ -1,7 +1,19 @@
-import { Entity, Column, PrimaryGeneratedColumn, ManyToOne } from 'typeorm';
+import {
+  Entity,
+  Column,
+  PrimaryGeneratedColumn,
+  ManyToOne,
+  CreateDateColumn,
+} from 'typeorm';
 import { Subscription } from '../../subscriptions/entities/subscription.entity';
 import { Node } from '../../nodes/entities/node.entity';
 import { Tunnel } from '../../tunnels/entities/tunnel.entity';
+
+export enum InboundStatus {
+  Staged = 'staged',
+  Active = 'active',
+  PendingCleanup = 'pending_cleanup',
+}
 
 @Entity()
 export class Inbound {
@@ -23,6 +35,21 @@ export class Inbound {
   @Column({ type: 'text', nullable: true })
   link: string;
 
+  @Column({ type: 'varchar', default: InboundStatus.Active })
+  status: InboundStatus;
+
+  @Column({ type: 'uuid', nullable: true })
+  generationId?: string;
+
+  @Column({ type: 'int', default: 0 })
+  cleanupAttempts: number;
+
+  @Column({ type: 'timestamp', nullable: true })
+  nextCleanupAt?: Date;
+
+  @Column({ type: 'text', nullable: true })
+  lastCleanupError?: string;
+
   @ManyToOne(() => Subscription, (sub) => sub.inbounds, { onDelete: 'CASCADE' })
   subscription: Subscription;
 
@@ -40,4 +67,7 @@ export class Inbound {
 
   @ManyToOne(() => Tunnel, { nullable: true, onDelete: 'SET NULL' })
   relayServer?: Tunnel;
+
+  @CreateDateColumn()
+  createdAt: Date;
 }

@@ -1,132 +1,27 @@
-import { describe, it, expect } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { getDesignTokens } from '@/theme'
 
-describe('theme', () => {
-  describe('getDesignTokens', () => {
-    it('должен возвращать объект с palette, typography, shape и components для light mode', () => {
-      const tokens = getDesignTokens('light')
-      
-      expect(tokens).toHaveProperty('palette')
-      expect(tokens).toHaveProperty('typography')
-      expect(tokens).toHaveProperty('shape')
-      expect(tokens).toHaveProperty('components')
-    })
+describe('network console theme', () => {
+  it('defines light and dark palettes', () => {
+    const light = getDesignTokens('light')
+    const dark = getDesignTokens('dark')
 
-    it('должен возвращать объект с palette, typography, shape и components для dark mode', () => {
-      const tokens = getDesignTokens('dark')
-      
-      expect(tokens).toHaveProperty('palette')
-      expect(tokens).toHaveProperty('typography')
-      expect(tokens).toHaveProperty('shape')
-      expect(tokens).toHaveProperty('components')
-    })
+    expect(light.palette.mode).toBe('light')
+    expect(light.palette.primary.main).toBe('#006f91')
+    expect(light.palette.background.default).toBe('#edf3f5')
+    expect(dark.palette.mode).toBe('dark')
+    expect(dark.palette.primary.main).toBe('#53d8ff')
+    expect(dark.palette.background.default).toBe('#081014')
+  })
 
-    it('должен устанавливать правильный mode в palette', () => {
-      const lightTokens = getDesignTokens('light')
-      const darkTokens = getDesignTokens('dark')
-      
-      expect(lightTokens.palette.mode).toBe('light')
-      expect(darkTokens.palette.mode).toBe('dark')
-    })
+  it('uses console typography and consistent components', () => {
+    const tokens = getDesignTokens('dark')
 
-    it('должен использовать lightPalette для light mode', () => {
-      const tokens = getDesignTokens('light')
-      
-      expect(tokens.palette.primary.main).toBe('#1395de')
-      expect(tokens.palette.background.default).toBe('#f3f4f6')
-      expect(tokens.palette.background.paper).toBe('#ffffff')
-    })
-
-    it('должен использовать darkPalette для dark mode', () => {
-      const tokens = getDesignTokens('dark')
-      
-      expect(tokens.palette.primary.main).toBe('#1395de')
-      expect(tokens.palette.background.default).toBe('#0B0F19')
-      expect(tokens.palette.background.paper).toBe('#111827')
-    })
-
-    it('должен устанавливать fontFamily', () => {
-      const tokens = getDesignTokens('light')
-      
-      expect(tokens.typography.fontFamily).toBe('"Inter", "Roboto", "Helvetica", "Arial", sans-serif')
-    })
-
-    it('должен устанавливать fontWeight для заголовков', () => {
-      const tokens = getDesignTokens('light')
-      
-      expect(tokens.typography.h1.fontWeight).toBe(700)
-      expect(tokens.typography.h2.fontWeight).toBe(700)
-      expect(tokens.typography.h3.fontWeight).toBe(600)
-      expect(tokens.typography.h4.fontWeight).toBe(600)
-      expect(tokens.typography.h5.fontWeight).toBe(600)
-      expect(tokens.typography.h6.fontWeight).toBe(600)
-    })
-
-    it('должен устанавливать textTransform none для кнопок', () => {
-      const tokens = getDesignTokens('light')
-      
-      expect(tokens.typography.button.textTransform).toBe('none')
-      expect(tokens.typography.button.fontWeight).toBe(600)
-    })
-
-    it('должен устанавливать borderRadius 12', () => {
-      const tokens = getDesignTokens('light')
-      
-      expect(tokens.shape.borderRadius).toBe(12)
-    })
-
-    it('должен настраивать MuiCssBaseline для кастомных скроллбаров', () => {
-      const lightTokens = getDesignTokens('light')
-      const darkTokens = getDesignTokens('dark')
-      
-      expect(lightTokens.components.MuiCssBaseline).toBeDefined()
-      expect(darkTokens.components.MuiCssBaseline).toBeDefined()
-      
-      // Проверяем что styleOverrides существуют
-      expect(lightTokens.components.MuiCssBaseline.styleOverrides).toBeDefined()
-      expect(darkTokens.components.MuiCssBaseline.styleOverrides).toBeDefined()
-    })
-
-    it('должен настраивать MuiButton с borderRadius 8', () => {
-      const tokens = getDesignTokens('light')
-      
-      expect(tokens.components.MuiButton.styleOverrides.root.borderRadius).toBe(8)
-      expect(tokens.components.MuiButton.styleOverrides.root.boxShadow).toBe('none')
-    })
-
-    it('должен настраивать MuiPaper без backgroundImage', () => {
-      const tokens = getDesignTokens('light')
-      
-      expect(tokens.components.MuiPaper.styleOverrides.root.backgroundImage).toBe('none')
-    })
-
-    it('должен настраивать MuiPaper с border в зависимости от mode', () => {
-      const lightTokens = getDesignTokens('light')
-      const darkTokens = getDesignTokens('dark')
-      
-      expect(lightTokens.components.MuiPaper.styleOverrides.elevation1.border).toBe('1px solid #e5e7eb')
-      expect(darkTokens.components.MuiPaper.styleOverrides.elevation1.border).toBe('1px solid #374151')
-    })
-
-    it('должен настраивать MuiOutlinedInput с правильными borderColor', () => {
-      const lightTokens = getDesignTokens('light')
-      const darkTokens = getDesignTokens('dark')
-      
-      expect(lightTokens.components.MuiOutlinedInput.styleOverrides.root['& .MuiOutlinedInput-notchedOutline'].borderColor).toBe('#e5e7eb')
-      expect(darkTokens.components.MuiOutlinedInput.styleOverrides.root['& .MuiOutlinedInput-notchedOutline'].borderColor).toBe('#374151')
-    })
-
-    it('должен настраивать MuiAppBar с backdropFilter', () => {
-      const tokens = getDesignTokens('light')
-      
-      expect(tokens.components.MuiAppBar.styleOverrides.root.backdropFilter).toBe('blur(8px)')
-      expect(tokens.components.MuiAppBar.styleOverrides.root.boxShadow).toBe('none')
-    })
-
-    it('должен настраивать MuiTableRow без border у последнего элемента', () => {
-      const tokens = getDesignTokens('light')
-      
-      expect(tokens.components.MuiTableRow.styleOverrides.root['&:last-child td'].borderBottom).toBe(0)
-    })
+    expect(tokens.typography.fontFamily).toBe('"IBM Plex Sans", sans-serif')
+    expect(tokens.typography.h3.fontFamily).toContain('Unbounded')
+    expect(tokens.typography.button.textTransform).toBe('none')
+    expect(tokens.shape.borderRadius).toBe(10)
+    expect(tokens.components.MuiPaper.styleOverrides.root.backgroundImage).toBe('none')
+    expect(tokens.components.MuiCssBaseline.styleOverrides.body.backgroundImage).toContain('radial-gradient')
   })
 })

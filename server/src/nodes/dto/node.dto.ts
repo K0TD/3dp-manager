@@ -52,6 +52,10 @@ export class CreateNodeDto {
   @IsString()
   @IsOptional()
   version?: string;
+
+  @IsBoolean()
+  @IsOptional()
+  allowInvalidTls?: boolean;
 }
 
 export class UpdateNodeDto extends PartialType(CreateNodeDto) {}

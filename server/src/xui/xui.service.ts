@@ -16,6 +16,18 @@ import { Node, NodeAuthType } from '../nodes/entities/node.entity';
 
 interface LoginResponse {
   success: boolean;
+  msg?: string;
+  obj?: unknown;
+}
+
+export type XuiConnectionError = 'auth' | 'network' | 'api';
+
+export interface XuiConnectionStatus {
+  success: boolean;
+  version?: string;
+  responseTimeMs?: number;
+  errorType?: XuiConnectionError;
+  message?: string;
 }
 
 @Injectable()
@@ -29,7 +41,7 @@ export class XuiService {
     private sessionService: SessionService,
   ) {
     this.api = axios.create({
-      timeout: 15000,
+      timeout: 8000,
       proxy: false,
       withCredentials: true,
     });
@@ -58,19 +70,22 @@ export class XuiService {
     return config;
   }
 
-  private createApi(baseURL?: string): AxiosInstance {
+  private createApi(baseURL?: string, allowInvalidTls = false): AxiosInstance {
     return axios.create({
       baseURL,
-      timeout: 15000,
+      timeout: 8000,
       proxy: false,
-      ...this.getAgentConfig(baseURL),
+      ...this.getAgentConfig(baseURL, allowInvalidTls),
       withCredentials: true,
+      maxRedirects: 0,
     });
   }
 
-  private getAgentConfig(baseURL?: string) {
+  private getAgentConfig(baseURL?: string, allowInvalidTls = false) {
     if (!baseURL || baseURL.startsWith('https://')) {
-      return { httpsAgent: new https.Agent({ rejectUnauthorized: false }) };
+      return {
+        httpsAgent: new https.Agent({ rejectUnauthorized: !allowInvalidTls }),
+      };
     }
 
     return { httpAgent: new http.Agent() };
@@ -82,7 +97,10 @@ export class XuiService {
       return success ? this.api : null;
     }
 
-    const api = this.createApi(this.getNodeBaseUrl(node));
+    const api = this.createApi(
+      this.getNodeBaseUrl(node),
+      node.allowInvalidTls === true,
+    );
 
     if (node.authType === NodeAuthType.Token) {
       if (!node.token) return null;
@@ -102,7 +120,31 @@ export class XuiService {
     }
 
     api.defaults.headers.common.Cookie = res.headers['set-cookie'].join('; ');
+    await this.attachCsrfToken(api);
     return api;
+  }
+
+  private async attachCsrfToken(api: AxiosInstance) {
+    try {
+      const response = await api.get('/csrf-token');
+      const data = response.data as {
+        csrfToken?: string;
+        token?: string;
+        obj?: string | { token?: string; csrfToken?: string };
+      };
+      const token =
+        data.csrfToken ||
+        data.token ||
+        (typeof data.obj === 'string'
+          ? data.obj
+          : data.obj?.csrfToken || data.obj?.token);
+      if (token) api.defaults.headers.common['X-CSRF-Token'] = token;
+    } catch (error) {
+      const status = (error as AxiosError).response?.status;
+      if (status !== 404) {
+        this.logger.debug(`CSRF token is unavailable: ${(error as Error).message}`);
+      }
+    }
   }
 
   private parseVersion(headers: Record<string, unknown>, data: unknown): string | undefined {
@@ -131,7 +173,7 @@ export class XuiService {
 
       this.logger.log(`Attempting login to 3x-ui: ${config['xui_url']}`);
       this.api.defaults.baseURL = config['xui_url'];
-      const agentConfig = this.getAgentConfig(config['xui_url']);
+      const agentConfig = this.getAgentConfig(config['xui_url'], true);
       this.api.defaults.httpAgent = agentConfig.httpAgent;
       this.api.defaults.httpsAgent = agentConfig.httpsAgent;
 
@@ -142,6 +184,7 @@ export class XuiService {
 
       if (res.headers['set-cookie']) {
         this.sessionService.setFromHeaders(res.headers['set-cookie']);
+        await this.attachCsrfToken(this.api);
         this.logger.log('3x-ui login successful');
         return true;
       } else {
@@ -182,7 +225,16 @@ export class XuiService {
           this.logger.log(
             `Inbound created successfully with ID: ${res.data.obj.id}`,
           );
-          return res.data.obj.id;
+          const obj = res.data.obj;
+          const id =
+            typeof obj === 'number'
+              ? obj
+              : obj && typeof obj === 'object' && 'id' in obj
+                ? Number(obj.id)
+                : NaN;
+          if (Number.isInteger(id) && id > 0) return id;
+          this.logger.error('3x-ui created an inbound but did not return its id');
+          return null;
         } else {
           const msg = res.data?.msg || '';
 
@@ -240,6 +292,10 @@ export class XuiService {
         `/panel/api/inbounds/del/${id}`,
       );
       if (!res.data?.success) {
+        const message = (res.data?.msg || '').toLowerCase();
+        if (message.includes('not found') || message.includes('does not exist')) {
+          return true;
+        }
         this.logger.error(
           `3x-ui rejected inbound deletion ${id}: ${res.data?.msg || 'unknown error'}`,
         );
@@ -249,6 +305,7 @@ export class XuiService {
       return true;
     } catch (e) {
       const error = e as AxiosError;
+      if (error.response?.status === 404) return true;
       this.logger.error(`Ошибка удаления инбаунда ${id}: ${error.message}`);
     }
 
@@ -263,13 +320,7 @@ export class XuiService {
     try {
       this.logger.log(`Checking connection to 3x-ui: ${url}`);
 
-      const tempApi = axios.create({
-        baseURL: url,
-        timeout: 5000,
-        proxy: false,
-        ...this.getAgentConfig(url),
-        withCredentials: true,
-      });
+      const tempApi = this.createApi(url, true);
 
       const res = await tempApi.post<LoginResponse>('/login', {
         username: username,
@@ -295,23 +346,47 @@ export class XuiService {
 
   async checkNodeConnection(
     node: Node,
-  ): Promise<{ success: boolean; version?: string }> {
+  ): Promise<XuiConnectionStatus> {
+    const startedAt = Date.now();
     try {
       const api = await this.createAuthenticatedApi(node);
-      if (!api) return { success: false };
+      if (!api) {
+        return {
+          success: false,
+          responseTimeMs: Date.now() - startedAt,
+          errorType: 'auth',
+          message: 'Authentication failed',
+        };
+      }
 
       const res = await api.get('/panel/api/inbounds/list');
       return {
         success: true,
         version: this.parseVersion(res.headers as Record<string, unknown>, res.data),
+        responseTimeMs: Date.now() - startedAt,
       };
     } catch (error) {
       const axiosError = error as AxiosError;
       this.logger.error(
         `Node connection error: ${axiosError.message} (${node.name})`,
       );
-      return { success: false };
+      const status = axiosError.response?.status;
+      return {
+        success: false,
+        responseTimeMs: Date.now() - startedAt,
+        errorType: status === 401 || status === 403 ? 'auth' : status ? 'api' : 'network',
+        message: this.safeErrorMessage(axiosError),
+      };
     }
+  }
+
+  private safeErrorMessage(error: AxiosError) {
+    if (error.code === 'ECONNABORTED') return 'Connection timed out';
+    if (!error.response) return 'Node is unreachable';
+    if (error.response.status === 401 || error.response.status === 403) {
+      return 'Authentication was rejected';
+    }
+    return `3x-ui returned HTTP ${error.response.status}`;
   }
 
   async getNewX25519Cert(node?: Node): Promise<XuiCertResult | null> {

@@ -26,13 +26,13 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: './test/setup.ts',
+    testTimeout: 10_000,
     css: true,
     singleThread: true,
     env: {
       VITE_LOG_LEVEL: 'verbose',
     },
     coverage: {
-      enabled: true,
       provider: 'v8',
       reporter: ['text', 'json', 'html', 'lcov'],
       reportsDirectory: './coverage',

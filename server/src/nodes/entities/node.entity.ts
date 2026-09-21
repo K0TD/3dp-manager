@@ -20,6 +20,15 @@ export enum NodeProtocol {
   Https = 'https',
 }
 
+export enum NodeHealthStatus {
+  Unknown = 'unknown',
+  Online = 'online',
+  Degraded = 'degraded',
+  Offline = 'offline',
+  AuthError = 'auth_error',
+  Deleting = 'deleting',
+}
+
 @Entity()
 export class Node {
   @PrimaryGeneratedColumn('uuid')
@@ -71,6 +80,27 @@ export class Node {
 
   @Column({ nullable: true })
   version?: string;
+
+  @Column({ type: 'varchar', default: NodeHealthStatus.Unknown })
+  healthStatus: NodeHealthStatus;
+
+  @Column({ type: 'timestamp', nullable: true })
+  lastCheckedAt?: Date;
+
+  @Column({ type: 'int', nullable: true })
+  responseTimeMs?: number;
+
+  @Column({ type: 'int', default: 0 })
+  consecutiveFailures: number;
+
+  @Column({ type: 'text', nullable: true })
+  lastError?: string;
+
+  @Column({ default: false })
+  allowInvalidTls: boolean;
+
+  @Column({ type: 'timestamp', nullable: true })
+  deletedAt?: Date;
 
   @OneToMany(() => Subscription, (subscription) => subscription.node)
   subscriptions: Subscription[];

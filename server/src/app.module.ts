@@ -27,6 +27,10 @@ import { NodesModule } from './nodes/nodes.module';
 import { AddNodesAndNodeRelations1765960000000 } from './migrations/1765960000000-add-nodes-and-node-relations';
 import { AddNodeIpFlagAndInboundLabels1770000000000 } from './migrations/1770000000000-add-node-ip-flag-and-inbound-labels';
 import { AddNodeDomain1770000000001 } from './migrations/1770000000001-add-node-domain';
+import { AddResilientRotation1780000000000 } from './migrations/1780000000000-add-resilient-rotation';
+import { RotationOperation } from './rotation/entities/rotation-operation.entity';
+import { BackupModule } from './backup/backup.module';
+import { InitialSchema1700000000000 } from './migrations/1700000000000-initial-schema';
 
 @Module({
   imports: [
@@ -46,14 +50,24 @@ import { AddNodeDomain1770000000001 } from './migrations/1770000000001-add-node-
       username: process.env.DB_USERNAME,
       password: process.env.DB_PASSWORD,
       database: process.env.DB_NAME,
-      entities: [Setting, Domain, Subscription, Inbound, Tunnel, Node],
+      entities: [
+        Setting,
+        Domain,
+        Subscription,
+        Inbound,
+        Tunnel,
+        Node,
+        RotationOperation,
+      ],
       migrations: [
+        InitialSchema1700000000000,
         AddNodesAndNodeRelations1765960000000,
         AddNodeIpFlagAndInboundLabels1770000000000,
         AddNodeDomain1770000000001,
+        AddResilientRotation1780000000000,
       ],
-      synchronize: process.env.DB_SYNCHRONIZE !== 'false',
-      migrationsRun: process.env.DB_MIGRATIONS_RUN === 'true',
+      synchronize: process.env.DB_SYNCHRONIZE === 'true',
+      migrationsRun: process.env.DB_MIGRATIONS_RUN !== 'false',
     }),
     SessionModule,
     XuiModule,
@@ -66,6 +80,7 @@ import { AddNodeDomain1770000000001 } from './migrations/1770000000001-add-node-
     ClientModule,
     TunnelsModule,
     NodesModule,
+    BackupModule,
   ],
   controllers: [AppController],
   providers: [

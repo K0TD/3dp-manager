@@ -21,6 +21,7 @@ import { Subscription } from '../subscriptions/entities/subscription.entity';
 import { Public } from '../auth/public.decorator';
 import { Tunnel } from 'src/tunnels/entities/tunnel.entity';
 import { generateSubscriptionHtmlWithQr } from './templates/subscription.template';
+import { InboundStatus } from '../inbounds/entities/inbound.entity';
 
 @Controller()
 export class ClientController {
@@ -52,7 +53,10 @@ export class ClientController {
     }
 
     const links =
-      sub.inbounds?.map((i) => i.link).filter((l) => l && l.length > 0) || [];
+      sub.inbounds
+        ?.filter((inbound) => inbound.status === InboundStatus.Active)
+        .map((i) => i.link)
+        .filter((l) => l && l.length > 0) || [];
 
     const plainTextList = links.join('\n');
     const base64Config = Buffer.from(plainTextList).toString('base64');
@@ -121,7 +125,10 @@ export class ClientController {
 
     const links =
       sub.inbounds
-        ?.filter((i) => i.link && i.link.length > 0)
+        ?.filter(
+          (i) =>
+            i.status === InboundStatus.Active && i.link && i.link.length > 0,
+        )
         .map((i) => {
           if (i.protocol === 'custom') {
             return i.link;

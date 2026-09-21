@@ -1,4 +1,4 @@
-import { Box, Container, Grid, IconButton, Link, Stack } from '@mui/material';
+import { Box, Container, Grid, IconButton, Link, Stack, Typography } from '@mui/material';
 import { GitHub, YouTube, Telegram } from '@mui/icons-material';
 
 interface FooterProps {
@@ -13,10 +13,8 @@ export default function Footer({ isMobile }: FooterProps) {
         py: 3,
         px: 2,
         mt: 'auto',
-        backgroundColor: (theme) =>
-          theme.palette.mode === 'light'
-            ? theme.palette.grey[200]
-            : theme.palette.grey[900],
+        borderTop: '1px solid',
+        borderColor: 'divider',
       }}
     >
       <Container maxWidth={false}>
@@ -25,6 +23,7 @@ export default function Footer({ isMobile }: FooterProps) {
           <Grid size={{ xs: 12, sm: 4 }}>
             <Stack direction="row" alignItems="center" spacing={1} justifyContent={isMobile ? 'center' : 'start'}>
               <img src="/img/logo.png" alt="Logo" width={32} height={32} style={{ marginRight: isMobile ? 0 : 14 }} />
+              <Typography variant="caption" color="text.secondary">K0TD fork · GPL-3.0</Typography>
             </Stack>
           </Grid>
 
@@ -46,7 +45,7 @@ export default function Footer({ isMobile }: FooterProps) {
 
               <IconButton
                 component="a"
-                href="https://github.com/denpiligrim/3dp-manager"
+                href="https://github.com/K0TD/3dp-manager"
                 target="_blank"
                 aria-label="GitHub"
                 color="inherit"

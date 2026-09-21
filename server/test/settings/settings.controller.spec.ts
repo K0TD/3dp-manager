@@ -62,7 +62,6 @@ describe('SettingsController', () => {
       expect(result).toEqual({
         xui_url: 'http://localhost:3100',
         xui_login: 'admin',
-        xui_password: 'password',
       });
       expect(settingsRepo.find).toHaveBeenCalledTimes(1);
     });

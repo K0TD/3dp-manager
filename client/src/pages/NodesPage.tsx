@@ -34,7 +34,6 @@ import {
   Edit,
   Star,
   StarBorder,
-  Sync,
 } from '@mui/icons-material';
 import api from '../api';
 import { nodesApi } from '../features/nodes/api';
@@ -52,6 +51,7 @@ const emptyForm: NodePayload = {
   password: '',
   token: '',
   isMain: false,
+  allowInvalidTls: false,
 };
 
 interface CountryOption {
@@ -70,7 +70,6 @@ export default function NodesPage() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<NodeRecord | null>(null);
   const [form, setForm] = useState<NodePayload>(emptyForm);
-  const [checkingId, setCheckingId] = useState<string | null>(null);
   const [countries, setCountries] = useState<CountryOption[]>([]);
   const [detectingLocation, setDetectingLocation] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<NodeRecord | null>(null);
@@ -111,6 +110,7 @@ export default function NodesPage() {
       token: '',
       isMain: node.isMain,
       version: node.version || '',
+      allowInvalidTls: node.allowInvalidTls || false,
     });
     setFormErrors({});
     setOpen(true);
@@ -227,37 +227,18 @@ export default function NodesPage() {
     });
   };
 
-  const checkNode = async (node: NodeRecord) => {
-    setCheckingId(node.id);
-    try {
-      const result = await nodesApi.check(node.id);
-      setMessage({
-        open: true,
-        type: result.success ? 'success' : 'error',
-        text: result.success ? 'Подключение успешно' : 'Не удалось подключиться',
-      });
-      loadNodes();
-    } finally {
-      setCheckingId(null);
-    }
-  };
-
-  const syncNodes = async () => {
-    const result = await nodesApi.syncFromMain();
-    setMessage({
-      open: true,
-      type: 'success',
-      text: `Синхронизировано нод: ${result.count}`,
-    });
-    loadNodes();
-  };
-
-  const removeNode = async () => {
+  const removeNode = async (deferred = false) => {
     if (!deleteTarget) return;
     try {
-      await nodesApi.remove(deleteTarget.id);
+      const result = await nodesApi.remove(deleteTarget.id, deferred ? 'deferred' : 'safe');
       setDeleteTarget(null);
-      setMessage({ open: true, type: 'success', text: 'Нода удалена' });
+      setMessage({
+        open: true,
+        type: 'success',
+        text: result.deferred
+          ? 'Нода скрыта, удаление inbound продолжится в фоне'
+          : 'Нода удалена',
+      });
       loadNodes();
     } catch (error) {
       setMessage({
@@ -276,9 +257,6 @@ export default function NodesPage() {
         </Box>
         <Box>
           <Stack direction="row" spacing={1}>
-            {/* <Button startIcon={<Sync />} variant="outlined" onClick={syncNodes}>
-              Синхронизировать
-            </Button> */}
             <Button startIcon={<Add />} variant="contained" onClick={openCreate}>
               Добавить
             </Button>
@@ -317,12 +295,26 @@ export default function NodesPage() {
                 <TableCell>{node.url}</TableCell>
                 <TableCell>{node.authType}</TableCell>
                 <TableCell>
-                  {node.isMain && <Chip icon={<CheckCircle />} label="Основная" color="success" size="small" />}
+                  <Stack direction="row" spacing={0.75} flexWrap="wrap">
+                    {node.isMain && <Chip icon={<CheckCircle />} label="Основная" color="success" size="small" />}
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      label={node.healthStatus || 'unknown'}
+                      color={
+                        node.healthStatus === 'online'
+                          ? 'success'
+                          : node.healthStatus === 'offline' || node.healthStatus === 'auth_error'
+                            ? 'error'
+                            : node.healthStatus === 'degraded'
+                              ? 'warning'
+                              : 'default'
+                      }
+                    />
+                    {node.responseTimeMs !== undefined && <Chip size="small" label={`${node.responseTimeMs} ms`} />}
+                  </Stack>
                 </TableCell>
                 <TableCell align="right">
-                  {/* <IconButton disabled={checkingId === node.id} onClick={() => checkNode(node)}>
-                    {checkingId === node.id ? <CircularProgress size={20} /> : <CheckCircle />}
-                  </IconButton> */}
                   <IconButton onClick={() => openEdit(node)}>
                     <Edit />
                   </IconButton>
@@ -443,6 +435,16 @@ export default function NodesPage() {
               <Switch checked={!!form.isMain} onChange={(e) => updateField('isMain', e.target.checked)} />
               <Typography>Сделать основной нодой</Typography>
             </Stack>
+            <Stack direction="row" alignItems="center" spacing={1}>
+              <Switch
+                checked={!!form.allowInvalidTls}
+                onChange={(e) => updateField('allowInvalidTls', e.target.checked)}
+              />
+              <Box>
+                <Typography>Разрешить недоверенный TLS-сертификат</Typography>
+                <Typography variant="caption" color="warning.main">Используйте только для self-signed нод</Typography>
+              </Box>
+            </Stack>
           </Stack>
         </DialogContent>
         <DialogActions>
@@ -455,11 +457,15 @@ export default function NodesPage() {
       <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
         <DialogTitle>Удалить ноду?</DialogTitle>
         <DialogContent>
-          <Typography>Вы уверены, что хотите удалить ноду {deleteTarget?.name}?</Typography>
+          <Typography>Сначала панель попробует удалить все связанные inbound с ноды {deleteTarget?.name}.</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+            Если нода недоступна, принудительное удаление скроет её сразу и продолжит очистку после восстановления.
+          </Typography>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setDeleteTarget(null)}>Отмена</Button>
-          <Button color="error" variant="contained" onClick={removeNode}>Удалить</Button>
+          <Button color="warning" onClick={() => removeNode(true)}>Удалить принудительно</Button>
+          <Button color="error" variant="contained" onClick={() => removeNode(false)}>Удалить безопасно</Button>
         </DialogActions>
       </Dialog>
 

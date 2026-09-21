@@ -1,23 +1,29 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnModuleInit, NotFoundException } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
+import { v4 as uuidv4 } from 'uuid';
 
 import { Subscription } from '../subscriptions/entities/subscription.entity';
-import { Inbound } from '../inbounds/entities/inbound.entity';
+import { Inbound, InboundStatus } from '../inbounds/entities/inbound.entity';
 import { Domain } from '../domains/entities/domain.entity';
 import { Setting } from '../settings/entities/setting.entity';
-import { Node } from '../nodes/entities/node.entity';
+import { Node, NodeHealthStatus } from '../nodes/entities/node.entity';
 import { Tunnel } from '../tunnels/entities/tunnel.entity';
-
 import { XuiService } from '../xui/xui.service';
 import { InboundBuilderService } from '../inbounds/inbound-builder.service';
 import { XuiInboundRaw } from '../inbounds/xui-inbound.types';
-import { v4 as uuidv4 } from 'uuid';
+import {
+  RotationNodeResult,
+  RotationOperation,
+  RotationOperationStatus,
+} from './entities/rotation-operation.entity';
+
+type InboundConfig = NonNullable<Subscription['inboundsConfig']>[number];
 
 @Injectable()
 export class RotationService implements OnModuleInit {
-  private readonly logger = new Logger(RotationService.name);
+  private processingOperation = false;
 
   constructor(
     @InjectRepository(Subscription) private subRepo: Repository<Subscription>,
@@ -26,459 +32,542 @@ export class RotationService implements OnModuleInit {
     @InjectRepository(Setting) private settingRepo: Repository<Setting>,
     @InjectRepository(Node) private nodeRepo: Repository<Node>,
     @InjectRepository(Tunnel) private tunnelRepo: Repository<Tunnel>,
+    @InjectRepository(RotationOperation)
+    private operationRepo: Repository<RotationOperation>,
     private xuiService: XuiService,
     private inboundBuilder: InboundBuilderService,
   ) {}
 
   async onModuleInit() {
     await this.initDefaultSettings();
+    await this.inboundRepo.update(
+      { status: InboundStatus.Staged },
+      {
+        status: InboundStatus.PendingCleanup,
+        nextCleanupAt: new Date(),
+        lastCleanupError: 'Незавершённое поколение после перезапуска backend',
+      },
+    );
+    await this.operationRepo.update(
+      { status: RotationOperationStatus.Running },
+      {
+        status: RotationOperationStatus.Queued,
+        error: 'Backend restarted; operation was queued again',
+      },
+    );
   }
 
   private async initDefaultSettings() {
-    const statusKey = 'rotation_status';
-    const intervalKey = 'rotation_interval';
-    const lastRunKey = 'last_rotation_timestamp';
-
-    // Инициализация статуса ротации
-    const existingStatus = await this.settingRepo.findOne({
-      where: { key: statusKey },
-    });
-    if (!existingStatus) {
-      this.logger.debug(`Инициализация настройки: ${statusKey} = active`);
-      const newSetting = this.settingRepo.create({
-        key: statusKey,
-        value: 'active',
-      });
-      await this.settingRepo.save(newSetting);
-    } else {
-      this.logger.debug(`Текущий статус ротации: ${existingStatus.value}`);
+    const defaults: Record<string, string> = {
+      rotation_status: 'active',
+      rotation_interval: '30',
+      last_rotation_timestamp: Date.now().toString(),
+    };
+    for (const [key, value] of Object.entries(defaults)) {
+      const existing = await this.settingRepo.findOne({ where: { key } });
+      if (!existing) await this.settingRepo.save(this.settingRepo.create({ key, value }));
     }
+  }
 
-    // Инициализация интервала ротации (по умолчанию 30 минут)
-    const existingInterval = await this.settingRepo.findOne({
-      where: { key: intervalKey },
-    });
-    if (!existingInterval) {
-      this.logger.debug(`Инициализация настройки: ${intervalKey} = 30`);
-      const newSetting = this.settingRepo.create({
-        key: intervalKey,
-        value: '30',
-      });
-      await this.settingRepo.save(newSetting);
-    }
+  async enqueueRotation(subscriptionIds?: string[]) {
+    return this.operationRepo.save(
+      this.operationRepo.create({
+        status: RotationOperationStatus.Queued,
+        subscriptionIds: subscriptionIds?.length
+          ? [...new Set(subscriptionIds)]
+          : undefined,
+        results: [],
+      }),
+    );
+  }
 
-    // Инициализация last_rotation_timestamp (текущее время, чтобы не было ложной ротации при старте)
-    const existingLastRun = await this.settingRepo.findOne({
-      where: { key: lastRunKey },
+  async getOperation(id: string) {
+    const operation = await this.operationRepo.findOne({ where: { id } });
+    if (!operation) throw new NotFoundException('Operation not found');
+    return operation;
+  }
+
+  listOperations() {
+    return this.operationRepo.find({ order: { createdAt: 'DESC' }, take: 50 });
+  }
+
+  @Cron('*/5 * * * * *')
+  async processQueuedOperation() {
+    if (this.processingOperation) return;
+    const operation = await this.operationRepo.findOne({
+      where: { status: RotationOperationStatus.Queued },
+      order: { createdAt: 'ASC' },
     });
-    if (!existingLastRun) {
-      const now = Date.now();
-      this.logger.debug(`Инициализация настройки: ${lastRunKey} = ${now}`);
-      const newSetting = this.settingRepo.create({
-        key: lastRunKey,
-        value: now.toString(),
-      });
-      await this.settingRepo.save(newSetting);
-    } else {
-      this.logger.debug(`Последняя ротация: ${existingLastRun.value}`);
+    if (!operation) return;
+
+    this.processingOperation = true;
+    operation.status = RotationOperationStatus.Running;
+    operation.startedAt = new Date();
+    operation.error = undefined;
+    await this.operationRepo.save(operation);
+
+    try {
+      const result = await this.performRotation(operation.subscriptionIds);
+      operation.results = result.results;
+      operation.status = result.success
+        ? RotationOperationStatus.Succeeded
+        : result.results.some((item) => item.status === 'succeeded')
+          ? RotationOperationStatus.Partial
+          : RotationOperationStatus.Failed;
+      operation.error = result.success ? undefined : result.message;
+    } catch (error) {
+      operation.status = RotationOperationStatus.Failed;
+      operation.error = this.safeMessage(error);
+    } finally {
+      operation.finishedAt = new Date();
+      await this.operationRepo.save(operation);
+      this.processingOperation = false;
     }
   }
 
   @Cron(CronExpression.EVERY_MINUTE)
   async handleTicker() {
-    const intervalSetting = await this.settingRepo.findOne({
-      where: { key: 'rotation_interval' },
-    });
-    const intervalMinutes = intervalSetting
-      ? parseInt(intervalSetting.value, 10)
-      : 30;
+    const [intervalSetting, lastRunSetting, statusSetting] = await Promise.all([
+      this.settingRepo.findOne({ where: { key: 'rotation_interval' } }),
+      this.settingRepo.findOne({ where: { key: 'last_rotation_timestamp' } }),
+      this.settingRepo.findOne({ where: { key: 'rotation_status' } }),
+    ]);
+    const intervalMinutes = Number.parseInt(intervalSetting?.value || '30', 10);
+    const lastRun = Number.parseInt(lastRunSetting?.value || '0', 10);
+    if (statusSetting?.value === 'stopped') return;
+    if ((Date.now() - lastRun) / 60000 < intervalMinutes) return;
 
-    const lastRunSetting = await this.settingRepo.findOne({
-      where: { key: 'last_rotation_timestamp' },
-    });
-    const lastRun = lastRunSetting ? parseInt(lastRunSetting.value, 10) : 0;
-
-    const now = Date.now();
-    const diffMinutes = (now - lastRun) / 1000 / 60;
-    const statusSetting = await this.settingRepo.findOne({
-      where: { key: 'rotation_status' },
-    });
-    const isStopped = statusSetting?.value === 'stopped';
-
-    this.logger.debug(
-      `Планировщик: интервал=${intervalMinutes}мин, прошло=${diffMinutes.toFixed(1)}мин, статус=${isStopped ? 'stopped' : 'active'}`,
-    );
-
-    if (diffMinutes < intervalMinutes || isStopped) {
-      return;
-    }
-
-    this.logger.debug(
-      `Запуск ротации (прошло ${diffMinutes.toFixed(1)}мин при интервале ${intervalMinutes}мин)`,
-    );
-    await this.performRotation();
-
-    await this.saveSetting('last_rotation_timestamp', now.toString());
-  }
-
-  private async saveSetting(key: string, value: string) {
-    let s = await this.settingRepo.findOne({ where: { key } });
-    if (!s) s = this.settingRepo.create({ key });
-    s.value = value;
-    await this.settingRepo.save(s);
-  }
-
-  async performRotation() {
-    this.logger.debug('Запуск плановой ротации...');
-
-    const defaultNode = await this.getDefaultNode();
-    const isLoginSuccess = defaultNode ? true : await this.xuiService.login();
-    if (!isLoginSuccess) {
-      this.logger.error('Отмена ротации: Не удалось войти в панель 3x-ui');
-      return { success: false, message: 'Не удалось войти в панель 3x-ui' };
-    }
-
-    const subscriptions = await this.subRepo.find({
+    const activeOperation = await this.operationRepo.findOne({
       where: {
-        isEnabled: true,
-        isAutoRotationEnabled: true,
+        status: In([
+          RotationOperationStatus.Queued,
+          RotationOperationStatus.Running,
+        ]),
       },
+    });
+    if (!activeOperation) await this.enqueueRotation();
+    await this.saveSetting('last_rotation_timestamp', Date.now().toString());
+  }
+
+  async performRotation(subscriptionIds?: string[]) {
+    const where = subscriptionIds?.length
+      ? { id: In(subscriptionIds), isEnabled: true }
+      : { isEnabled: true, isAutoRotationEnabled: true };
+    const subscriptions = await this.subRepo.find({
+      where,
       relations: ['inbounds', 'inbounds.node', 'node', 'relayServer'],
     });
-    if (subscriptions.length === 0) {
-      return { success: false, message: 'Нет активных подписок для ротации' };
+    if (!subscriptions.length) {
+      return {
+        success: false,
+        message: 'Нет активных подписок для ротации',
+        results: [] as RotationNodeResult[],
+      };
     }
 
     const domains = await this.domainRepo.find({ where: { isEnabled: true } });
-    if (domains.length === 0) {
-      this.logger.warn('Список доменов пуст! Ротация невозможна.');
-      return { success: false, message: 'Список доменов пуст!' };
+    const defaultNode = await this.getDefaultNode();
+    const results: RotationNodeResult[] = [];
+    for (const subscription of subscriptions) {
+      results.push(...(await this.rotateSubscription(subscription, domains, defaultNode)));
     }
+    const success =
+      results.length > 0 && results.every((item) => item.status === 'succeeded');
+    return {
+      success,
+      message: success ? 'Ротация успешно выполнена' : 'Ротация завершена частично',
+      results,
+    };
+  }
 
-    for (const sub of subscriptions) {
-      const rotated = await this.rotateSubscription(sub, domains, defaultNode);
-      if (!rotated) {
-        return {
-          success: false,
-          message: 'Failed to delete old inbounds',
-        };
-      }
-    }
-
-    this.logger.debug('Ротация завершена.');
-    return { success: true, message: 'Ротация успешно выполнена' };
+  async rotateSingleSubscription(subscriptionId: string) {
+    return this.performRotation([subscriptionId]);
   }
 
   private async rotateSubscription(
-    sub: Subscription,
+    subscription: Subscription,
     domains: Domain[],
     defaultNode: Node | null,
   ) {
-    this.logger.debug(`Ротация для подписки: ${sub.name} (${sub.uuid})`);
-
-    // Удаляем старые инбаунды
-    if (sub.inbounds && sub.inbounds.length > 0) {
-      for (const inbound of sub.inbounds) {
-        if (inbound.xuiId && inbound.xuiId > 0) {
-          const isDeleted = await this.xuiService.deleteInbound(
-            inbound.xuiId,
-            await this.resolveInboundNode(inbound),
-          );
-          if (!isDeleted) {
-            this.logger.error(
-              `Failed to delete old inbound ${inbound.xuiId}; rotation for subscription ${sub.id} is aborted`,
-            );
-            return false;
-          }
-        }
-        await this.inboundRepo.delete(inbound.id);
-      }
+    const groups = new Map<string, { node?: Node; configs: InboundConfig[] }>();
+    for (const config of (subscription.inboundsConfig || []).filter(
+      (item) => item.enabled !== false,
+    )) {
+      const node =
+        config.type === 'custom'
+          ? undefined
+          : await this.resolveNode(config.nodeId, subscription.node, defaultNode);
+      const key = config.type === 'custom' ? '__custom' : node?.id || '__missing';
+      const group = groups.get(key) || { node, configs: [] };
+      group.configs.push(config);
+      groups.set(key, group);
     }
 
-    const baseNode = sub.node ?? defaultNode ?? undefined;
-    const keys = await this.xuiService.getNewX25519Cert(baseNode);
-    if (!keys) {
-      this.logger.error(
-        'Не удалось получить Reality ключи, пропускаем подписку',
-      );
-      return false;
+    const results: RotationNodeResult[] = [];
+    const desiredKeys = new Set(groups.keys());
+    for (const [key, group] of groups) {
+      results.push(await this.rotateNodeGroup(subscription, key, group, domains));
     }
 
-    const usedPorts = new Set<number>();
-    const host = await this.settingRepo.findOne({ where: { key: 'xui_host' } });
-    const serverAddress =
-      this.getNodeAddress(baseNode) || host?.value || 'localhost';
-    const flag = await this.settingRepo.findOne({
-      where: { key: 'xui_geo_flag' },
+    const obsolete = (subscription.inbounds || []).filter((inbound) => {
+      if (inbound.status !== InboundStatus.Active) return false;
+      const key = inbound.protocol === 'custom' ? '__custom' : inbound.nodeId || '__missing';
+      return !desiredKeys.has(key);
     });
-    const defaultFlagEmoji = flag?.value ?? '%F0%9F%92%AF';
+    await this.queueCleanup(obsolete);
+    return results;
+  }
 
-    // Получаем конфиг или пустой массив
-    const inboundsConfig = sub.inboundsConfig || [];
+  private async rotateNodeGroup(
+    subscription: Subscription,
+    key: string,
+    group: { node?: Node; configs: InboundConfig[] },
+    domains: Domain[],
+  ): Promise<RotationNodeResult> {
+    const generationId = uuidv4();
+    const created: Inbound[] = [];
+    const usedPorts = new Set<number>();
+    let realityKeys: Awaited<ReturnType<XuiService['getNewX25519Cert']>> | undefined;
 
-    for (const config of inboundsConfig) {
-      const type = config.type;
-      const uuid = uuidv4();
-      const targetNode = await this.resolveNode(
-        config.nodeId,
-        sub.node,
-        defaultNode,
-      );
-      const resolvedRelay = await this.resolveRelay(
-        config.relayServerId,
-        sub.relayServer,
-      );
-      const relayServer =
-        resolvedRelay && this.isRelayAvailableForNode(resolvedRelay, targetNode)
-          ? resolvedRelay
-          : undefined;
-      const targetAddress =
-        relayServer?.domain ||
-        relayServer?.ip ||
-        this.getNodeAddress(targetNode) ||
-        serverAddress;
-      const flagEmoji = config.flag || targetNode?.flag || defaultFlagEmoji;
+    try {
+      if (key === '__missing') throw new Error('Для конфигурации не назначена нода');
+      if (
+        group.node &&
+        group.node.consecutiveFailures >= 3 &&
+        [NodeHealthStatus.Offline, NodeHealthStatus.AuthError].includes(
+          group.node.healthStatus,
+        ) &&
+        group.node.lastCheckedAt &&
+        Date.now() - new Date(group.node.lastCheckedAt).getTime() < 120_000
+      ) {
+        throw new Error(`Нода ${group.node.name} временно недоступна`);
+      }
+      for (const config of group.configs) {
+        if (config.type?.includes('reality') && !realityKeys) {
+          realityKeys = await this.xuiService.getNewX25519Cert(group.node);
+          if (!realityKeys) throw new Error('Нода не выдала Reality-ключи');
+        }
+        const inbound = await this.createInbound(
+          subscription,
+          config,
+          group.node,
+          domains,
+          usedPorts,
+          generationId,
+          realityKeys,
+        );
+        if (!inbound) {
+          throw new Error(`3x-ui отклонил inbound «${config.name || config.type}»`);
+        }
+        created.push(inbound);
+      }
 
-      let sni = '';
+      const old = (subscription.inbounds || []).filter((inbound) => {
+        if (inbound.status !== InboundStatus.Active) return false;
+        return key === '__custom'
+          ? inbound.protocol === 'custom'
+          : inbound.nodeId === group.node?.id;
+      });
+      await this.inboundRepo.manager.transaction(async (manager) => {
+        if (old.length) {
+          await manager.update(
+            Inbound,
+            { id: In(old.map((item) => item.id)) },
+            { status: InboundStatus.PendingCleanup, nextCleanupAt: new Date() },
+          );
+        }
+        if (created.length) {
+          await manager.update(
+            Inbound,
+            { id: In(created.map((item) => item.id)) },
+            { status: InboundStatus.Active },
+          );
+        }
+      });
+      return {
+        subscriptionId: subscription.id,
+        subscriptionName: subscription.name,
+        nodeId: group.node?.id,
+        nodeName: group.node?.name || 'Локальные ссылки',
+        status: 'succeeded',
+        created: created.length,
+        pendingCleanup: old.length,
+      };
+    } catch (error) {
+      await this.queueCleanup(created);
+      return {
+        subscriptionId: subscription.id,
+        subscriptionName: subscription.name,
+        nodeId: group.node?.id,
+        nodeName:
+          group.node?.name || (key === '__custom' ? 'Локальные ссылки' : 'Без ноды'),
+        status: 'preserved',
+        created: 0,
+        pendingCleanup: created.length,
+        message: this.safeMessage(error),
+      };
+    }
+  }
 
-      // === 1. Обработка Custom ===
-      if (type === 'custom') {
-        const newInbound = this.inboundRepo.create({
-          xuiId: 0, // Не привязано к 3x-ui
+  private async createInbound(
+    subscription: Subscription,
+    config: InboundConfig,
+    node: Node | undefined,
+    domains: Domain[],
+    usedPorts: Set<number>,
+    generationId: string,
+    realityKeys?: { privateKey: string; publicKey: string } | null,
+  ) {
+    if (config.type === 'custom') {
+      return this.inboundRepo.save(
+        this.inboundRepo.create({
+          xuiId: 0,
           port: 0,
           protocol: 'custom',
-          remark: 'custom-link',
+          remark: config.name?.trim() || 'custom-link',
           link: config.link || '',
-          subscription: sub,
-        });
-        await this.inboundRepo.save(newInbound);
-        continue;
-      } else {
-        sni = config.sni === 'random' ? this.pickDomain(domains) : config.sni;
-      }
-
-      // === 2. Обработка Hysteria2 ===
-      if (type === 'hysteria2-udp') {
-        let port = 0;
-        if (config.port === 'random' || !config.port) {
-          port = await this.getFreePort(0, usedPorts);
-        } else {
-          port =
-            typeof config.port === 'string'
-              ? parseInt(config.port, 10)
-              : config.port;
-        }
-        usedPorts.add(port);
-
-        const hysteriaSni = this.getNodeAddress(targetNode) || serverAddress;
-        const hysteriaConfig = this.inboundBuilder.buildHysteria2Inbound({
-          port,
-          uuid,
-          sni: hysteriaSni,
-          certificateFile: config.certificateFile,
-          keyFile: config.keyFile,
-        });
-        if (config.name?.trim()) {
-          hysteriaConfig.remark = config.name.trim();
-        }
-        const xuiId = await this.xuiService.addInbound(
-          hysteriaConfig,
-          targetNode,
-        );
-        if (!xuiId) {
-          this.logger.warn(
-            'Hysteria2 inbound was not created by 3x-ui; skipping subscription link for this inbound',
-          );
-          continue;
-        }
-
-        const link = this.inboundBuilder.buildInboundLink(
-          hysteriaConfig,
-          targetAddress,
-          uuid,
-          flagEmoji,
-        );
-        const newInbound = this.inboundRepo.create({
-          xuiId,
-          port,
-          protocol: 'hysteria2',
-          remark: hysteriaConfig.remark,
-          link: link,
-          subscription: sub,
-          node: targetNode,
-          relayServer,
-        });
-        await this.inboundRepo.save(newInbound);
-        continue;
-      }
-
-      // === 3. Обработка стандартных инбаундов Xray (3x-ui) ===
-
-      // Определяем порт
-      let port = 0;
-      if (config.port === 'random' || !config.port) {
-        port = await this.getFreePort(0, usedPorts);
-      } else {
-        // Если передан конкретный порт строкой или числом
-        port =
-          typeof config.port === 'string'
-            ? parseInt(config.port, 10)
-            : config.port;
-      }
-      usedPorts.add(port);
-
-      let xuiConfig: XuiInboundRaw | null = null;
-
-      switch (type) {
-        case 'vless-tcp-reality':
-          xuiConfig = this.inboundBuilder.buildVlessRealityTcp({
-            port,
-            uuid,
-            sni,
-            ...keys,
-          });
-          break;
-        case 'vless-xhttp-reality':
-          xuiConfig = this.inboundBuilder.buildVlessRealityXhttp({
-            port,
-            uuid,
-            sni,
-            ...keys,
-          });
-          break;
-        case 'vless-grpc-reality':
-          xuiConfig = this.inboundBuilder.buildVlessRealityGrpc({
-            port,
-            uuid,
-            sni,
-            ...keys,
-          });
-          break;
-        case 'vless-ws':
-          xuiConfig = this.inboundBuilder.buildVlessWs({ port, uuid, sni });
-          break;
-        case 'vmess-tcp':
-          xuiConfig = this.inboundBuilder.buildVmessTcp({ port, uuid });
-          break;
-        case 'shadowsocks-tcp':
-          xuiConfig = this.inboundBuilder.buildShadowsocksTcp({ port, uuid });
-          break;
-        case 'trojan-tcp-reality':
-          xuiConfig = this.inboundBuilder.buildTrojanRealityTcp({
-            port,
-            uuid,
-            sni,
-            ...keys,
-          });
-          break;
-        default:
-          this.logger.warn(`Неизвестный тип инбаунда: ${type}`);
-          continue;
-      }
-
-      if (config.name?.trim()) {
-        xuiConfig.remark = config.name.trim();
-      }
-
-      const xuiId = await this.xuiService.addInbound(xuiConfig, targetNode);
-
-      if (xuiId && xuiConfig) {
-        const settings = JSON.parse(xuiConfig.settings) as {
-          clients?: Array<{ id?: string; password?: string }>;
-        };
-        const idOrPass =
-          settings.clients?.[0]?.id || settings.clients?.[0]?.password || '';
-
-        const fullLink = this.inboundBuilder.buildInboundLink(
-          xuiConfig,
-          targetAddress,
-          idOrPass,
-          flagEmoji,
-        );
-
-        const newInbound = this.inboundRepo.create({
-          xuiId: xuiId,
-          port: port,
-          protocol: xuiConfig.protocol,
-          remark: xuiConfig.remark,
-          link: fullLink,
-          subscription: sub,
-          node: targetNode,
-          relayServer,
-        });
-        await this.inboundRepo.save(newInbound);
-      }
+          subscription,
+          status: InboundStatus.Staged,
+          generationId,
+        }),
+      );
     }
-
-    return true;
-  }
-
-  private pickDomain(list: Domain[]): string {
-    return list[Math.floor(Math.random() * list.length)].name;
-  }
-
-  private async getFreePort(
-    preferred: number,
-    currentBatch: Set<number>,
-  ): Promise<number> {
-    if (preferred > 0 && !currentBatch.has(preferred)) {
-      const exists = await this.inboundRepo.findOne({
-        where: { port: preferred },
-      });
-      if (!exists) return preferred;
-    }
-
-    while (true) {
-      const p = Math.floor(Math.random() * (60000 - 10000)) + 10000;
-      if (currentBatch.has(p)) continue;
-
-      const exists = await this.inboundRepo.findOne({ where: { port: p } });
-      if (!exists) return p;
-    }
-  }
-
-  /**
-   * Ручная ротация одной подписки (независимо от флага isAutoRotationEnabled)
-   */
-  async rotateSingleSubscription(subscriptionId: string) {
-    this.logger.debug(`Запуск ручной ротации подписки: ${subscriptionId}`);
-
-    const sub = await this.subRepo.findOne({
-      where: { id: subscriptionId },
-      relations: ['inbounds', 'inbounds.node', 'node', 'relayServer'],
+    if (!node) return null;
+    const relay = await this.resolveRelay(
+      config.relayServerId,
+      subscription.relayServer,
+    );
+    const relayServer =
+      relay && this.isRelayAvailableForNode(relay, node) ? relay : undefined;
+    const hostSetting = await this.settingRepo.findOne({ where: { key: 'xui_host' } });
+    const targetAddress =
+      relayServer?.domain ||
+      relayServer?.ip ||
+      this.getNodeAddress(node) ||
+      hostSetting?.value ||
+      'localhost';
+    const flagSetting = await this.settingRepo.findOne({
+      where: { key: 'xui_geo_flag' },
     });
+    const flag = config.flag || node.flag || flagSetting?.value || '%F0%9F%92%AF';
+    const port =
+      config.port === 'random' || !config.port
+        ? await this.getFreePort(usedPorts)
+        : Number(config.port);
+    usedPorts.add(port);
+    const uuid = uuidv4();
+    const sni = config.sni === 'random' ? this.pickDomain(domains) : config.sni || '';
 
-    if (!sub) {
-      this.logger.warn(`Подписка не найдена: ${subscriptionId}`);
-      return {
-        success: false,
-        message: 'Подписка не найдена',
-      };
+    if (config.type === 'hysteria2-udp') {
+      const built = this.inboundBuilder.buildHysteria2Inbound({
+        port,
+        uuid,
+        sni: this.getNodeAddress(node) || targetAddress,
+        certificateFile: config.certificateFile,
+        keyFile: config.keyFile,
+      });
+      if (config.name?.trim()) built.remark = config.name.trim();
+      const xuiId = await this.xuiService.addInbound(built, node);
+      if (!xuiId) return null;
+      return this.saveStagedInbound(
+        subscription,
+        node,
+        relayServer,
+        generationId,
+        xuiId,
+        port,
+        'hysteria2',
+        built.remark,
+        this.inboundBuilder.buildInboundLink(built, targetAddress, uuid, flag),
+      );
     }
 
-    const defaultNode = await this.getDefaultNode();
-    const isLoginSuccess = defaultNode ? true : await this.xuiService.login();
-    if (!isLoginSuccess) {
-      this.logger.error('Отмена ротации: Не удалось войти в панель 3x-ui');
-      return { success: false, message: 'Не удалось войти в панель 3x-ui' };
+    let built: XuiInboundRaw | null = null;
+    switch (config.type) {
+      case 'vless-tcp-reality':
+        built = realityKeys
+          ? this.inboundBuilder.buildVlessRealityTcp({ port, uuid, sni, ...realityKeys })
+          : null;
+        break;
+      case 'vless-xhttp-reality':
+        built = realityKeys
+          ? this.inboundBuilder.buildVlessRealityXhttp({ port, uuid, sni, ...realityKeys })
+          : null;
+        break;
+      case 'vless-grpc-reality':
+        built = realityKeys
+          ? this.inboundBuilder.buildVlessRealityGrpc({ port, uuid, sni, ...realityKeys })
+          : null;
+        break;
+      case 'vless-ws':
+        built = this.inboundBuilder.buildVlessWs({ port, uuid, sni });
+        break;
+      case 'vmess-tcp':
+        built = this.inboundBuilder.buildVmessTcp({ port, uuid });
+        break;
+      case 'shadowsocks-tcp':
+        built = this.inboundBuilder.buildShadowsocksTcp({ port, uuid });
+        break;
+      case 'trojan-tcp-reality':
+        built = realityKeys
+          ? this.inboundBuilder.buildTrojanRealityTcp({ port, uuid, sni, ...realityKeys })
+          : null;
+        break;
     }
+    if (!built) throw new Error(`Неизвестный тип inbound: ${config.type}`);
+    if (config.name?.trim()) built.remark = config.name.trim();
+    const xuiId = await this.xuiService.addInbound(built, node);
+    if (!xuiId) return null;
+    const settings = JSON.parse(built.settings) as {
+      clients?: Array<{ id?: string; password?: string }>;
+    };
+    const credential =
+      settings.clients?.[0]?.id || settings.clients?.[0]?.password || '';
+    return this.saveStagedInbound(
+      subscription,
+      node,
+      relayServer,
+      generationId,
+      xuiId,
+      port,
+      built.protocol,
+      built.remark,
+      this.inboundBuilder.buildInboundLink(
+        built,
+        targetAddress,
+        credential,
+        flag,
+      ),
+    );
+  }
 
-    const domains = await this.domainRepo.find({ where: { isEnabled: true } });
-    if (domains.length === 0) {
-      this.logger.warn('Список доменов пуст! Ротация невозможна.');
-      return { success: false, message: 'Список доменов пуст!' };
+  private saveStagedInbound(
+    subscription: Subscription,
+    node: Node,
+    relayServer: Tunnel | undefined,
+    generationId: string,
+    xuiId: number,
+    port: number,
+    protocol: string,
+    remark: string | undefined,
+    link: string,
+  ) {
+    return this.inboundRepo.save(
+      this.inboundRepo.create({
+        xuiId,
+        port,
+        protocol,
+        remark,
+        link,
+        subscription,
+        node,
+        relayServer,
+        status: InboundStatus.Staged,
+        generationId,
+      }),
+    );
+  }
+
+  @Cron(CronExpression.EVERY_MINUTE)
+  async processCleanupQueue() {
+    const items = await this.inboundRepo
+      .createQueryBuilder('inbound')
+      .leftJoinAndSelect('inbound.node', 'node')
+      .where('inbound.status = :status', { status: InboundStatus.PendingCleanup })
+      .andWhere('(inbound.nextCleanupAt IS NULL OR inbound.nextCleanupAt <= :now)', {
+        now: new Date(),
+      })
+      .orderBy('inbound.createdAt', 'ASC')
+      .take(50)
+      .getMany();
+    for (const inbound of items) {
+      const node = await this.resolveInboundNode(inbound);
+      const deleted =
+        !inbound.xuiId || inbound.xuiId <= 0
+          ? true
+          : await this.xuiService.deleteInbound(inbound.xuiId, node);
+      if (deleted) {
+        await this.inboundRepo.delete(inbound.id);
+        continue;
+      }
+      inbound.cleanupAttempts = (inbound.cleanupAttempts || 0) + 1;
+      inbound.lastCleanupError = 'Нода недоступна или отклонила удаление';
+      inbound.nextCleanupAt = new Date(
+        Date.now() + this.cleanupDelay(inbound.cleanupAttempts),
+      );
+      await this.inboundRepo.save(inbound);
     }
+    await this.finalizeDeletedNodes();
+  }
 
-    const rotated = await this.rotateSubscription(sub, domains, defaultNode);
-    if (!rotated) {
-      return {
-        success: false,
-        message: 'Failed to delete old inbounds',
-      };
+  async retryCleanup(id: number) {
+    const inbound = await this.inboundRepo.findOne({ where: { id } });
+    if (!inbound || inbound.status !== InboundStatus.PendingCleanup) {
+      throw new NotFoundException('Cleanup task not found');
     }
+    inbound.nextCleanupAt = new Date();
+    await this.inboundRepo.save(inbound);
+    return { success: true };
+  }
 
-    this.logger.debug(`Ручная ротация подписки ${subscriptionId} завершена.`);
-    return { success: true, message: 'Ротация успешно выполнена' };
+  listCleanup() {
+    return this.inboundRepo.find({
+      where: { status: InboundStatus.PendingCleanup },
+      relations: ['node', 'subscription'],
+      order: { nextCleanupAt: 'ASC' },
+      take: 200,
+    });
+  }
+
+  private cleanupDelay(attempt: number) {
+    const minutes = [1, 5, 15, 60, 360];
+    return minutes[Math.min(attempt - 1, minutes.length - 1)] * 60000;
+  }
+
+  private async finalizeDeletedNodes() {
+    const nodes = await this.nodeRepo
+      .createQueryBuilder('node')
+      .addSelect('node.password')
+      .addSelect('node.token')
+      .where('node.deletedAt IS NOT NULL')
+      .getMany();
+    for (const node of nodes) {
+      const remaining = await this.inboundRepo.count({ where: { nodeId: node.id } });
+      if (remaining === 0) await this.nodeRepo.remove(node);
+    }
+  }
+
+  private async queueCleanup(inbounds: Inbound[]) {
+    if (!inbounds.length) return;
+    const now = new Date();
+    for (const inbound of inbounds) {
+      inbound.status = InboundStatus.PendingCleanup;
+      inbound.nextCleanupAt = now;
+    }
+    await this.inboundRepo.save(inbounds);
+  }
+
+  private pickDomain(domains: Domain[]) {
+    if (!domains.length) throw new Error('Список доменов пуст');
+    return domains[Math.floor(Math.random() * domains.length)].name;
+  }
+
+  private async getFreePort(currentBatch: Set<number>) {
+    for (let attempt = 0; attempt < 1000; attempt += 1) {
+      const port = Math.floor(Math.random() * 50001) + 10000;
+      if (currentBatch.has(port)) continue;
+      const exists = await this.inboundRepo.findOne({ where: { port } });
+      if (!exists) return port;
+    }
+    throw new Error('Не удалось подобрать свободный порт');
+  }
+
+  private async saveSetting(key: string, value: string) {
+    const setting =
+      (await this.settingRepo.findOne({ where: { key } })) ||
+      this.settingRepo.create({ key });
+    setting.value = value;
+    await this.settingRepo.save(setting);
   }
 
   private async getDefaultNode() {
@@ -486,7 +575,8 @@ export class RotationService implements OnModuleInit {
       .createQueryBuilder('node')
       .addSelect('node.password')
       .addSelect('node.token')
-      .where('node.isMain = :isMain', { isMain: true })
+      .where('node.isMain = true')
+      .andWhere('node.deletedAt IS NULL')
       .getOne();
   }
 
@@ -496,41 +586,38 @@ export class RotationService implements OnModuleInit {
     defaultNode?: Node | null,
   ) {
     if (!nodeId) return subscriptionNode ?? defaultNode ?? undefined;
-
     return (
       (await this.nodeRepo
         .createQueryBuilder('node')
         .addSelect('node.password')
         .addSelect('node.token')
         .where('node.id = :nodeId', { nodeId })
-        .getOne()) ??
-      subscriptionNode ??
-      defaultNode ??
-      undefined
+        .andWhere('node.deletedAt IS NULL')
+        .getOne()) || undefined
     );
   }
 
   private async resolveInboundNode(inbound: Inbound) {
     if (!inbound.nodeId) return inbound.node;
-
     return (
       (await this.nodeRepo
         .createQueryBuilder('node')
         .addSelect('node.password')
         .addSelect('node.token')
         .where('node.id = :nodeId', { nodeId: inbound.nodeId })
-        .getOne()) ?? inbound.node
+        .getOne()) || inbound.node
     );
   }
 
   private async resolveRelay(relayServerId?: number, subscriptionRelay?: Tunnel) {
     if (!relayServerId) return subscriptionRelay ?? undefined;
-    return (await this.tunnelRepo.findOne({ where: { id: relayServerId } })) ?? undefined;
+    return (
+      (await this.tunnelRepo.findOne({ where: { id: relayServerId } })) || undefined
+    );
   }
 
   private isRelayAvailableForNode(relay: Tunnel, node?: Node) {
-    if (!relay.nodeId) return true;
-    return Boolean(node?.id && relay.nodeId === node.id);
+    return !relay.nodeId || Boolean(node?.id && relay.nodeId === node.id);
   }
 
   private getNodeAddress(node?: Node) {
@@ -538,11 +625,15 @@ export class RotationService implements OnModuleInit {
     if (node.domain) return node.domain;
     if (node.ip) return node.ip;
     if (node.host) return node.host;
-
     try {
       return node.url ? new URL(node.url).hostname : undefined;
     } catch {
       return node.url;
     }
+  }
+
+  private safeMessage(error: unknown) {
+    const message = error instanceof Error ? error.message : 'Неизвестная ошибка';
+    return message.replace(/https?:\/\/[^\s]+/g, '[node]').slice(0, 300);
   }
 }

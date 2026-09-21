@@ -132,6 +132,7 @@ export default function SubscriptionsPage() {
   const [currentLinks, setCurrentLinks] = useState<string[]>([]);
   const [createdSubscriptionId, setCreatedSubscriptionId] = useState<string | null>(null);
   const [rotationLoading, setRotationLoading] = useState(false);
+  const [dataLoading, setDataLoading] = useState(true);
   const [rotationSettings, setRotationSettings] = useState({
     rotation_interval: '30',
     rotation_status: 'active',
@@ -179,6 +180,8 @@ export default function SubscriptionsPage() {
     } catch (error) {
       Logger.error('Failed to load subscriptions data', 'Subs', error);
       throw error;
+    } finally {
+      setDataLoading(false);
     }
   }, []);
 
@@ -481,8 +484,8 @@ export default function SubscriptionsPage() {
         const res = await api.post(`/rotation/rotate-one/${sub.id}`);
         setSnackbar({
           open: true,
-          type: res.data?.success ? 'success' : 'error',
-          message: res.data?.message || 'Ротация выполнена',
+          type: 'success',
+          message: `Обновление поставлено в очередь · ${String(res.data?.id || '').slice(0, 8)}`,
         });
         loadSubs();
       },
@@ -531,8 +534,8 @@ export default function SubscriptionsPage() {
           const { data } = await api.post('/rotation/rotate-all');
           setSnackbar({
             open: true,
-            type: data?.success ? 'success' : 'error',
-            message: data?.message || 'Ротация завершена',
+            type: 'success',
+            message: `Обновление всех подписок поставлено в очередь · ${String(data?.id || '').slice(0, 8)}`,
           });
           loadSubs();
         } finally {
@@ -579,8 +582,8 @@ export default function SubscriptionsPage() {
     const res = await api.post(`/rotation/rotate-one/${createdSubscriptionId}`);
     setSnackbar({
       open: true,
-      type: res.data?.success ? 'success' : 'error',
-      message: res.data?.message || 'Ротация выполнена',
+      type: 'success',
+      message: `Первая генерация поставлена в очередь · ${String(res.data?.id || '').slice(0, 8)}`,
     });
     setCreatedSubscriptionId(null);
     loadSubs();
@@ -601,7 +604,7 @@ export default function SubscriptionsPage() {
       <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 3 }}>
         <Typography variant={isMobile ? 'h5' : 'h4'}>Подписки</Typography>
         <Button variant="contained" startIcon={<Add />} onClick={handleOpenCreate}>
-          Создать
+          {dataLoading ? 'Загрузка…' : 'Создать'}
         </Button>
       </Box>
 

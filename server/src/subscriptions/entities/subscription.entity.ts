@@ -40,6 +40,8 @@ export class Subscription {
     name?: string;
     certificateFile?: string;
     keyFile?: string;
+    enabled?: boolean;
+    disabledReason?: string;
   }>;
 
   @Column({ nullable: true })

@@ -5,10 +5,20 @@ set -euo pipefail
 # КОНФИГУРАЦИЯ И ПЕРЕМЕННЫЕ
 #################################
 PROJECT_DIR="/opt/3dp-manager"
-DOCKER_USER="denpiligrim"
-DOCKER_TAG="main"
+DOCKER_USER="k0td"
+DOCKER_TAG="stable"
 IMAGE_SERVER="ghcr.io/${DOCKER_USER}/3dp-manager-server:${DOCKER_TAG}"
 IMAGE_CLIENT="ghcr.io/${DOCKER_USER}/3dp-manager-client:${DOCKER_TAG}"
+RESTORE_FILE=""
+
+if [[ "${1:-}" == "--restore" ]]; then
+  RESTORE_FILE="${2:-}"
+  [[ -n "$RESTORE_FILE" && -f "$RESTORE_FILE" ]] || {
+    echo "[ERROR] Укажите существующий архив после --restore" >&2
+    exit 1
+  }
+  RESTORE_FILE="$(readlink -f "$RESTORE_FILE")"
+fi
 
 # Цвета для вывода
 RED='\033[0;31m'
@@ -200,6 +210,16 @@ fi
 resolve_compose_cmd
 log "Compose команда: ${COMPOSE_CMD[*]}"
 
+if [[ -f "$PROJECT_DIR/docker-compose.yml" ]]; then
+  log "Обнаружена существующая установка. Запускаю безопасное обновление из K0TD."
+  UPDATE_SCRIPT="$(mktemp)"
+  curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/update.sh -o "$UPDATE_SCRIPT"
+  chmod 700 "$UPDATE_SCRIPT"
+  bash "$UPDATE_SCRIPT"
+  rm -f "$UPDATE_SCRIPT"
+  exit 0
+fi
+
 #################################
 # ЗАГРУЗКА ПРОЕКТА
 #################################
@@ -209,7 +229,8 @@ mkdir -p "$PROJECT_DIR/server"
 mkdir -p "$PROJECT_DIR/client"
 
 cd "$PROJECT_DIR"
-cleanup_previous_install_data
+  # В эту ветку попадает только новая установка. Обновления обрабатываются выше.
+  cleanup_previous_install_data
 
 #################################
 # СБОР ДАННЫХ: SSL / HTTPS
@@ -469,12 +490,13 @@ services:
       DB_USERNAME: admin
       DB_PASSWORD: ${DB_PASS}
       DB_NAME: 3dp_manager
-      DB_SYNCHRONIZE: "true"
-      DB_MIGRATIONS_RUN: "false"
+      DB_SYNCHRONIZE: "false"
+      DB_MIGRATIONS_RUN: "true"
       JWT_SECRET: ${JWT_SECRET}
       ADMIN_LOGIN: ${ADMIN_USER}
       ADMIN_PASSWORD: ${ADMIN_PASS}
       PORT: 3100
+      APP_VERSION: stable
     networks:
       - app-network
 
@@ -582,12 +604,13 @@ services:
       DB_USERNAME: admin
       DB_PASSWORD: ${DB_PASS}
       DB_NAME: 3dp_manager
-      DB_SYNCHRONIZE: "true"
-      DB_MIGRATIONS_RUN: "false"
+      DB_SYNCHRONIZE: "false"
+      DB_MIGRATIONS_RUN: "true"
       JWT_SECRET: ${JWT_SECRET}
       ADMIN_LOGIN: ${ADMIN_USER}
       ADMIN_PASSWORD: ${ADMIN_PASS}
       PORT: 3100
+      APP_VERSION: stable
     networks:
       - app-network
 
@@ -623,6 +646,22 @@ log "Сборка и запуск контейнеров..."
 # Подтягиваем свежие образы, потому что тег релиза переиспользуется.
 "${COMPOSE_CMD[@]}" pull || warn "Не удалось обновить образы перед запуском. Будет использован локальный кэш, если он есть."
 
+if [[ -n "$RESTORE_FILE" ]]; then
+    log "Запуск PostgreSQL для восстановления архива..."
+    "${COMPOSE_CMD[@]}" up -d postgres
+    for _ in $(seq 1 30); do
+      if docker exec 3dp-postgres pg_isready -U admin -d 3dp_manager >/dev/null 2>&1; then break; fi
+      sleep 2
+    done
+    read -rsp "Парольная фраза архива (Enter, если архив не зашифрован): " BACKUP_PASSPHRASE
+    echo
+    "${COMPOSE_CMD[@]}" run --rm \
+      -e BACKUP_PASSPHRASE="$BACKUP_PASSPHRASE" \
+      -v "$RESTORE_FILE:/restore.3dp-backup:ro" \
+      backend node dist/src/backup/restore-cli.js /restore.3dp-backup
+    log "Архив восстановлен."
+fi
+
 # Запускаем сборку и старт
 "${COMPOSE_CMD[@]}" up --build -d --remove-orphans
 
@@ -654,8 +693,12 @@ if [[ "$USE_SSL" == "true" ]]; then
 else
     echo -e "${GREEN}✔ Установка завершена! Доступно по адресу: http://${UI_HOST}:${FINAL_PORT}${NC}"
 fi
-echo -e "${GREEN}Логин: ${ADMIN_USER}${NC}"
-echo -e "${GREEN}Пароль: ${ADMIN_PASS}${NC}"
-echo ""
-echo "Немедленно измените пароль в Настройках утилиты!"
+if [[ -n "$RESTORE_FILE" ]]; then
+    echo -e "${GREEN}Используйте логин и пароль из перенесённой панели.${NC}"
+else
+    echo -e "${GREEN}Логин: ${ADMIN_USER}${NC}"
+    echo -e "${GREEN}Пароль: ${ADMIN_PASS}${NC}"
+    echo ""
+    echo "Немедленно измените пароль в Настройках утилиты!"
+fi
 echo "==================================================="

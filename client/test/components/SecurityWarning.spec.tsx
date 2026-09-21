@@ -18,7 +18,7 @@ beforeEach(() => {
 })
 
 describe('SecurityWarning', () => {
-  const INSTALL_COMMAND = 'bash <(curl -fsSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/install.sh)'
+  const INSTALL_COMMAND = 'bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/install.sh)'
 
   const renderWarning = () => {
     return render(<SecurityWarning />)

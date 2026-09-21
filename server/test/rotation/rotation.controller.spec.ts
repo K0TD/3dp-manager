@@ -9,8 +9,11 @@ describe('RotationController', () => {
   let rotationService: RotationService;
 
   const mockRotationService = {
-    performRotation: jest.fn(),
-    rotateSingleSubscription: jest.fn(),
+    enqueueRotation: jest.fn(),
+    listOperations: jest.fn(),
+    getOperation: jest.fn(),
+    listCleanup: jest.fn(),
+    retryCleanup: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -36,18 +39,18 @@ describe('RotationController', () => {
     it('должен запустить плановую ротацию', async () => {
       const mockResult = { success: true, message: 'Ротация выполнена' };
 
-      mockRotationService.performRotation.mockResolvedValue(mockResult);
+      mockRotationService.enqueueRotation.mockResolvedValue(mockResult);
 
       const result = await controller.rotateAll();
 
       expect(result).toEqual(mockResult);
-      expect(rotationService.performRotation).toHaveBeenCalledTimes(1);
+      expect(rotationService.enqueueRotation).toHaveBeenCalledTimes(1);
     });
 
     it('должен вернуть ошибку ротации', async () => {
       const mockError = { success: false, message: 'Нет подписок' };
 
-      mockRotationService.performRotation.mockResolvedValue(mockError);
+      mockRotationService.enqueueRotation.mockResolvedValue(mockError);
 
       const result = await controller.rotateAll();
 
@@ -62,22 +65,18 @@ describe('RotationController', () => {
         message: 'Ротация подписки выполнена',
       };
 
-      mockRotationService.rotateSingleSubscription.mockResolvedValue(
-        mockResult,
-      );
+      mockRotationService.enqueueRotation.mockResolvedValue(mockResult);
 
       const result = await controller.rotateSingle('sub-123');
 
       expect(result).toEqual(mockResult);
-      expect(rotationService.rotateSingleSubscription).toHaveBeenCalledWith(
-        'sub-123',
-      );
+      expect(rotationService.enqueueRotation).toHaveBeenCalledWith(['sub-123']);
     });
 
     it('должен вернуть ошибку ротации одной подписки', async () => {
       const mockError = { success: false, message: 'Подписка не найдена' };
 
-      mockRotationService.rotateSingleSubscription.mockResolvedValue(mockError);
+      mockRotationService.enqueueRotation.mockResolvedValue(mockError);
 
       const result = await controller.rotateSingle('non-existent');
 

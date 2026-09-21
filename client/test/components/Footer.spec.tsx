@@ -34,7 +34,7 @@ describe('Footer', () => {
     expect(githubButton).toBeInTheDocument()
     expect(githubButton.closest('a')).toHaveAttribute(
       'href',
-      'https://github.com/denpiligrim/3dp-manager'
+      'https://github.com/K0TD/3dp-manager'
     )
   })
 

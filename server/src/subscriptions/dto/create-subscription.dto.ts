@@ -82,6 +82,14 @@ export class InboundConfigDto {
   @IsString()
   @IsOptional()
   keyFile?: string;
+
+  @IsBoolean()
+  @IsOptional()
+  enabled?: boolean;
+
+  @IsString()
+  @IsOptional()
+  disabledReason?: string;
 }
 
 export class CreateSubscriptionDto {

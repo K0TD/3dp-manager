@@ -1,48 +1,69 @@
-html {
-  font-family: "Inter", "Roboto", "Helvetica", "Arial", sans-serif;
+:root {
+  font-family: "IBM Plex Sans", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  --console-cyan: #53d8ff;
+  --console-green: #56d69a;
+  --console-amber: #ffc45e;
+  --console-red: #ff7b7b;
 }
 
-body {
-  margin: 0;
-  font-family: inherit;
+* { box-sizing: border-box; }
+html, body, #root { margin: 0; min-height: 100%; }
+body { min-width: 320px; }
+
+.page-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
 }
 
-.animated-container {
-  background: linear-gradient(-45deg, #111827, #15122c, #24243e, #0B0F19);
-  background-size: 400% 400%;
-  animation: gradientBG 15s ease infinite;
+.metric-card { padding: 20px; min-height: 150px; position: relative; overflow: hidden; }
+.metric-card::after {
+  content: "";
+  position: absolute;
+  width: 84px;
+  height: 84px;
+  border: 1px solid currentColor;
+  opacity: .06;
+  border-radius: 50%;
+  right: -24px;
+  top: -24px;
+}
+.metric-icon {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+  margin-bottom: 20px;
+}
+.metric-primary, .metric-info { color: var(--console-cyan); }
+.metric-success { color: var(--console-green); }
+.metric-warning { color: var(--console-amber); }
+
+.console-panel { padding: clamp(18px, 3vw, 28px); min-height: 100%; }
+.node-rail {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  border-radius: 8px;
+}
+.health-dot { width: 9px; height: 9px; border-radius: 50%; background: #819096; flex: 0 0 auto; }
+.health-online { background: var(--console-green); box-shadow: 0 0 0 4px color-mix(in srgb, var(--console-green) 16%, transparent); }
+.health-degraded { background: var(--console-amber); }
+.health-offline, .health-auth_error { background: var(--console-red); }
+.operation-row { border-left: 2px solid var(--console-cyan); padding-left: 14px; }
+
+@media (max-width: 700px) {
+  .page-heading { align-items: stretch; flex-direction: column; }
+  .node-rail { flex-wrap: wrap; }
 }
 
-@keyframes gradientBG {
-  0% {
-    background-position: 0% 50%;
-  }
-
-  50% {
-    background-position: 100% 50%;
-  }
-
-  100% {
-    background-position: 0% 50%;
-  }
-}
-
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(20px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-input:autofill {
-  background: transparent;
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; }
 }

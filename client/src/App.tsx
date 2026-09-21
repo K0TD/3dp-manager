@@ -12,6 +12,7 @@ import { AxiosInterceptor } from './auth/AxiosInterceptor';
 import PublicRoute from './auth/PublicRoute';
 import TunnelsPage from './pages/TunnelsPage';
 import NodesPage from './pages/NodesPage';
+import DashboardPage from './pages/DashboardPage';
 
 function App() {
   return (
@@ -29,7 +30,8 @@ function App() {
                 <Layout />
               </RequireAuth>
             }>
-              <Route index element={<SubscriptionsPage />} />
+              <Route index element={<DashboardPage />} />
+              <Route path="subscriptions" element={<SubscriptionsPage />} />
               <Route path="settings" element={<SettingsPage />} />
               <Route path="domains" element={<DomainsPage />} />
               <Route path="nodes" element={<NodesPage />} />

@@ -35,7 +35,9 @@ describe('Layout', () => {
       <MemoryRouter initialEntries={[initialPath]}>
         <Routes>
           <Route path="/" element={<Layout />}>
-            <Route index element={<div data-testid="outlet">SubscriptionsPage</div>} />
+            <Route index element={<div data-testid="outlet">DashboardPage</div>} />
+            <Route path="subscriptions" element={<div data-testid="outlet">SubscriptionsPage</div>} />
+            <Route path="nodes" element={<div data-testid="outlet">NodesPage</div>} />
             <Route path="domains" element={<div data-testid="outlet">DomainsPage</div>} />
             <Route path="tunnels" element={<div data-testid="outlet">TunnelsPage</div>} />
             <Route path="settings" element={<div data-testid="outlet">SettingsPage</div>} />
@@ -52,21 +54,23 @@ describe('Layout', () => {
 
   it('должен отображать Header', () => {
     renderLayout()
-    expect(screen.getByText('3DP-MANAGER')).toBeInTheDocument()
+    expect(screen.getByText('3DP / CONTROL')).toBeInTheDocument()
   })
 
   it('должен отображать навигационное меню', () => {
     renderLayout()
+    expect(screen.getByText('Обзор')).toBeInTheDocument()
     expect(screen.getByText('Подписки')).toBeInTheDocument()
+    expect(screen.getByText('Ноды')).toBeInTheDocument()
     expect(screen.getByText('Домены')).toBeInTheDocument()
-    expect(screen.getByText('Перенаправление')).toBeInTheDocument()
+    expect(screen.getByText('Relay серверы')).toBeInTheDocument()
     expect(screen.getByText('Настройки')).toBeInTheDocument()
   })
 
   it('должен выделять активный пункт меню для главной страницы', () => {
     renderLayout('/')
-    const subscriptionsItem = screen.getByText('Подписки').closest('.Mui-selected')
-    expect(subscriptionsItem).toBeInTheDocument()
+    const dashboardItem = screen.getByText('Обзор').closest('.Mui-selected')
+    expect(dashboardItem).toBeInTheDocument()
   })
 
   it('должен выделять активный пункт меню для страницы доменов', () => {
@@ -77,7 +81,7 @@ describe('Layout', () => {
 
   it('должен выделять активный пункт меню для страницы туннелей', () => {
     renderLayout('/tunnels')
-    const tunnelsItem = screen.getByText('Перенаправление').closest('.Mui-selected')
+    const tunnelsItem = screen.getByText('Relay серверы').closest('.Mui-selected')
     expect(tunnelsItem).toBeInTheDocument()
   })
 
@@ -103,7 +107,7 @@ describe('Layout', () => {
 
   it('должен переходить на страницу туннелей при клике на "Перенаправление"', () => {
     renderLayout('/')
-    const tunnelsLink = screen.getByText('Перенаправление')
+    const tunnelsLink = screen.getByText('Relay серверы')
     fireEvent.click(tunnelsLink)
     expect(screen.getByText('TunnelsPage')).toBeInTheDocument()
   })
@@ -128,7 +132,9 @@ describe('Layout', () => {
 
   it('должен иметь правильные иконки для пунктов меню', () => {
     renderLayout()
+    expect(screen.getByTestId('icon-Dashboard')).toBeInTheDocument()
     expect(screen.getByTestId('icon-People')).toBeInTheDocument()
+    expect(screen.getByTestId('icon-Hub')).toBeInTheDocument()
     expect(screen.getByTestId('icon-Dns')).toBeInTheDocument()
     expect(screen.getByTestId('icon-SwapHoriz')).toBeInTheDocument()
     expect(screen.getByTestId('icon-Settings')).toBeInTheDocument()

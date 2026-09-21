@@ -5,6 +5,7 @@ import { XuiService } from 'src/xui/xui.service';
 import { Setting } from 'src/settings/entities/setting.entity';
 import { SessionService } from 'src/session/session.service';
 import axios from 'axios';
+import { NodeAuthType, NodeProtocol } from 'src/nodes/entities/node.entity';
 
 jest.mock('axios');
 
@@ -26,7 +27,7 @@ describe('XuiService', () => {
   const mockAxiosInstance = {
     get: jest.fn(),
     post: jest.fn(),
-    defaults: { baseURL: '' },
+    defaults: { baseURL: '', headers: { common: {} as Record<string, string> } },
     interceptors: {
       request: { use: jest.fn() },
       response: { use: jest.fn() },
@@ -145,6 +146,30 @@ describe('XuiService', () => {
 
       expect(result).toBeNull();
     });
+
+    it('добавляет CSRF заголовок для cookie-auth в 3x-ui 3.x', async () => {
+      const node = {
+        id: 'node-1',
+        name: 'modern-node',
+        url: 'https://node.example.com:2053',
+        protocol: NodeProtocol.Https,
+        authType: NodeAuthType.Password,
+        login: 'admin',
+        password: 'password',
+        allowInvalidTls: false,
+      } as never;
+      mockAxiosInstance.post
+        .mockResolvedValueOnce({ data: { success: true }, headers: { 'set-cookie': ['session=abc'] } })
+        .mockResolvedValueOnce({ data: { success: true, obj: { id: 42 } } });
+      mockAxiosInstance.get.mockResolvedValueOnce({ data: { success: true, obj: 'csrf-value' } });
+
+      const result = await service.addInbound({ port: 443 }, node);
+
+      expect(result).toBe(42);
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/csrf-token');
+      expect(mockAxiosInstance.defaults.headers.common.Cookie).toBe('session=abc');
+      expect(mockAxiosInstance.defaults.headers.common['X-CSRF-Token']).toBe('csrf-value');
+    });
   });
 
   describe('deleteInbound', () => {
@@ -184,6 +209,19 @@ describe('XuiService', () => {
       expect(mockAxiosInstance.post).toHaveBeenCalledWith(
         '/panel/api/inbounds/del/999',
       );
+    });
+
+    it('считает отсутствующий inbound успешно очищенным', async () => {
+      mockSettingsRepo.find.mockResolvedValue([
+        { key: 'xui_url', value: 'http://localhost:3100' },
+        { key: 'xui_login', value: 'admin' },
+        { key: 'xui_password', value: 'password' },
+      ]);
+      mockAxiosInstance.post
+        .mockResolvedValueOnce({ headers: { 'set-cookie': ['session=abc123'] } })
+        .mockRejectedValueOnce({ response: { status: 404 }, message: 'Not found' });
+
+      await expect(service.deleteInbound(999)).resolves.toBe(true);
     });
   });
 

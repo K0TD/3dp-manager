@@ -122,7 +122,7 @@ export class TunnelsService {
       `Начинаем установку редиректа на ${tunnel.ip} -> ${mainServerIp}`,
     );
 
-    const command = `sudo ORIGIN_IP="${mainServerIp}" bash -c "$(curl -sSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/forwarding_install.sh)"`;
+    const command = `sudo ORIGIN_IP="${mainServerIp}" bash -c "$(curl -sSL https://raw.githubusercontent.com/k0td/3dp-manager/main/forwarding_install.sh)"`;
 
     try {
       const output = await this.sshService.executeCommand(
@@ -166,7 +166,7 @@ export class TunnelsService {
     }
 
     const command =
-      'sudo bash -c "$(curl -sSL https://raw.githubusercontent.com/denpiligrim/3dp-manager/main/forwarding_delete.sh)"';
+      'sudo bash -c "$(curl -sSL https://raw.githubusercontent.com/k0td/3dp-manager/main/forwarding_delete.sh)"';
 
     try {
       const output = await this.sshService.executeCommand(
