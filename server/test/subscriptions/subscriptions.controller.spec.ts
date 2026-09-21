@@ -14,6 +14,7 @@ describe('SubscriptionsController', () => {
 
   const mockSubscriptionsService = {
     findAll: jest.fn(),
+    count: jest.fn(),
     create: jest.fn(),
     update: jest.fn(),
     remove: jest.fn(),
@@ -50,6 +51,17 @@ describe('SubscriptionsController', () => {
 
       expect(result).toEqual(mockSubs);
       expect(service.findAll).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('count', () => {
+    it('должен вернуть количество подписок', async () => {
+      mockSubscriptionsService.count.mockResolvedValue({ count: 5 });
+
+      const result = await controller.count();
+
+      expect(result).toEqual({ count: 5 });
+      expect(service.count).toHaveBeenCalledTimes(1);
     });
   });
 

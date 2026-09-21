@@ -23,6 +23,16 @@ import { useNavigate } from 'react-router-dom';
 import api from '../api';
 import type { NodeRecord } from '../types/node';
 
+interface CleanupItem {
+  id: number;
+  port: number;
+  protocol: string;
+  remark?: string;
+  cleanupAttempts: number;
+  lastCleanupError?: string;
+  node?: { name?: string; host?: string; healthStatus?: string };
+}
+
 interface OperationResult {
   nodeName: string;
   status: 'succeeded' | 'preserved' | 'failed';
@@ -47,9 +57,9 @@ const statusLabel: Record<Operation['status'], string> = {
 export default function DashboardPage() {
   const navigate = useNavigate();
   const [nodes, setNodes] = useState<NodeRecord[]>([]);
-  const [subscriptions, setSubscriptions] = useState<unknown[]>([]);
+  const [subscriptionsCount, setSubscriptionsCount] = useState(0);
   const [operations, setOperations] = useState<Operation[]>([]);
-  const [cleanupCount, setCleanupCount] = useState(0);
+  const [cleanupItems, setCleanupItems] = useState<CleanupItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -58,14 +68,23 @@ export default function DashboardPage() {
       const [nodesResponse, subscriptionsResponse, operationsResponse, cleanupResponse] =
         await Promise.all([
           api.get<NodeRecord[]>('/nodes'),
-          api.get<unknown[]>('/subscriptions'),
+          api
+            .get<{ count: number }>('/subscriptions/count')
+            .catch(() => api.get<unknown[]>('/subscriptions')),
           api.get<Operation[]>('/rotation/operations'),
-          api.get<unknown[]>('/rotation/cleanup'),
+          api.get<CleanupItem[]>('/rotation/cleanup'),
         ]);
       setNodes(nodesResponse.data);
-      setSubscriptions(subscriptionsResponse.data);
+      const subData = subscriptionsResponse.data;
+      const count =
+        typeof subData === 'object' && subData !== null && 'count' in subData
+          ? (subData as { count: number }).count
+          : Array.isArray(subData)
+            ? subData.length
+            : 0;
+      setSubscriptionsCount(count);
       setOperations(operationsResponse.data);
-      setCleanupCount(cleanupResponse.data.length);
+      setCleanupItems(cleanupResponse.data || []);
       setError('');
     } catch {
       setError('Не удалось загрузить состояние инфраструктуры');
@@ -74,11 +93,64 @@ export default function DashboardPage() {
     }
   }, []);
 
+  const hasActiveOperation = operations.some((op) =>
+    ['queued', 'running'].includes(op.status),
+  );
+
   useEffect(() => {
     void load();
-    const timer = window.setInterval(load, 5000);
-    return () => window.clearInterval(timer);
   }, [load]);
+
+  useEffect(() => {
+    const poll = async () => {
+      if (document.hidden) return;
+      if (hasActiveOperation) {
+        try {
+          const opsRes = await api.get<Operation[]>('/rotation/operations');
+          setOperations(opsRes.data);
+        } catch {
+          // ignore background poll errors
+        }
+      } else {
+        await load();
+      }
+    };
+
+    const intervalMs = hasActiveOperation ? 4000 : 30000;
+    const timer = window.setInterval(() => {
+      void poll();
+    }, intervalMs);
+
+    const onVisibilityChange = () => {
+      if (!document.hidden) {
+        void load();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [hasActiveOperation, load]);
+
+  const handleDeleteCleanup = async (id: number) => {
+    try {
+      await api.delete(`/rotation/cleanup/${id}`);
+      await load();
+    } catch {
+      setError('Не удалось удалить инбаунд из очереди очистки');
+    }
+  };
+
+  const handlePurgeFailed = async () => {
+    try {
+      await api.post('/rotation/cleanup/purge-failed');
+      await load();
+    } catch {
+      setError('Не удалось очистить зависшие задачи');
+    }
+  };
 
   const online = nodes.filter((node) => node.healthStatus === 'online').length;
   const unavailable = nodes.filter((node) =>
@@ -116,8 +188,8 @@ export default function DashboardPage() {
       <Grid container spacing={2}>
         {[
           { label: 'Ноды онлайн', value: `${online}/${nodes.length}`, icon: <Hub />, tone: 'primary' },
-          { label: 'Подписки', value: subscriptions.length, icon: <People />, tone: 'success' },
-          { label: 'Ожидают очистки', value: cleanupCount, icon: <DeleteSweep />, tone: cleanupCount ? 'warning' : 'default' },
+          { label: 'Подписки', value: subscriptionsCount, icon: <People />, tone: 'success' },
+          { label: 'Ожидают очистки', value: cleanupItems.length, icon: <DeleteSweep />, tone: cleanupItems.length ? 'warning' : 'default' },
           { label: 'Текущая операция', value: activeOperation ? statusLabel[activeOperation.status] : 'Нет', icon: <Autorenew />, tone: activeOperation ? 'info' : 'default' },
         ].map((item) => (
           <Grid key={item.label} size={{ xs: 12, sm: 6, xl: 3 }}>
@@ -129,6 +201,63 @@ export default function DashboardPage() {
           </Grid>
         ))}
       </Grid>
+
+      {cleanupItems.length > 0 && (
+        <Paper className="console-panel" sx={{ p: 2.5 }}>
+          <Stack direction="row" justifyContent="space-between" alignItems="center" mb={2}>
+            <Box>
+              <Typography variant="overline" color="warning.main">CLEANUP QUEUE</Typography>
+              <Typography variant="h5">Очередь очистки инбаундов ({cleanupItems.length})</Typography>
+              <Typography variant="body2" color="text.secondary">
+                Инбаунды старых поколений, ожидающие удаления на нодах
+              </Typography>
+            </Box>
+            <Button
+              variant="outlined"
+              color="warning"
+              size="small"
+              startIcon={<DeleteSweep />}
+              onClick={handlePurgeFailed}
+            >
+              Очистить зависшие
+            </Button>
+          </Stack>
+          <Stack spacing={1.25}>
+            {cleanupItems.map((item) => (
+              <Box
+                key={item.id}
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  p: 1.5,
+                  borderRadius: 1.5,
+                  bgcolor: 'action.hover',
+                  gap: 1.5,
+                }}
+              >
+                <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Typography variant="body2" fontWeight={700}>
+                    {item.port ? `Порт ${item.port}` : `ID ${item.id}`} • {(item.protocol || 'TCP').toUpperCase()} {item.remark ? `(${item.remark})` : ''}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" display="block">
+                    Нода: {item.node?.name || 'Не назначена'} • Попыток: {item.cleanupAttempts}
+                    {item.lastCleanupError ? ` • Ошибка: ${item.lastCleanupError}` : ''}
+                  </Typography>
+                </Box>
+                <Button
+                  size="small"
+                  color="error"
+                  variant="text"
+                  onClick={() => handleDeleteCleanup(item.id)}
+                >
+                  Удалить из очереди
+                </Button>
+              </Box>
+            ))}
+          </Stack>
+        </Paper>
+      )}
 
       <Grid container spacing={2}>
         <Grid size={{ xs: 12, lg: 7 }}>

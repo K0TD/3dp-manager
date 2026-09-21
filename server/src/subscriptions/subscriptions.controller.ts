@@ -23,6 +23,11 @@ export class SubscriptionsController {
     return this.subscriptionsService.findAll();
   }
 
+  @Get('count')
+  count() {
+    return this.subscriptionsService.count();
+  }
+
   @Post()
   create(@Body() createSubscriptionDto: CreateSubscriptionDto) {
     return this.subscriptionsService.create(createSubscriptionDto);

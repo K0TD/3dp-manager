@@ -47,6 +47,9 @@ export class XuiService {
     });
 
     this.api.interceptors.request.use((config) => {
+      if (!config.signal) {
+        config.signal = AbortSignal.timeout(config.timeout || 8000);
+      }
       const cookie = this.sessionService.getCookie();
       if (cookie) {
         config.headers['Cookie'] = cookie;
@@ -71,7 +74,7 @@ export class XuiService {
   }
 
   private createApi(baseURL?: string, allowInvalidTls = false): AxiosInstance {
-    return axios.create({
+    const api = axios.create({
       baseURL,
       timeout: 8000,
       proxy: false,
@@ -79,6 +82,15 @@ export class XuiService {
       withCredentials: true,
       maxRedirects: 0,
     });
+
+    api.interceptors.request.use((config) => {
+      if (!config.signal) {
+        config.signal = AbortSignal.timeout(config.timeout || 8000);
+      }
+      return config;
+    });
+
+    return api;
   }
 
   private getAgentConfig(baseURL?: string, allowInvalidTls = false) {
@@ -381,7 +393,15 @@ export class XuiService {
   }
 
   private safeErrorMessage(error: AxiosError) {
-    if (error.code === 'ECONNABORTED') return 'Connection timed out';
+    if (
+      error.code === 'ECONNABORTED' ||
+      error.name === 'CanceledError' ||
+      error.name === 'AbortError' ||
+      error.message?.toLowerCase().includes('timeout') ||
+      error.message?.toLowerCase().includes('aborted')
+    ) {
+      return 'Connection timed out';
+    }
     if (!error.response) return 'Node is unreachable';
     if (error.response.status === 401 || error.response.status === 403) {
       return 'Authentication was rejected';

@@ -593,6 +593,8 @@ export class RotationService implements OnModuleInit {
       .take(50)
       .getMany();
 
+    const failedNodeIdsInBatch = new Set<string>();
+
     for (const inbound of items) {
       const attempts = inbound.cleanupAttempts || 0;
 
@@ -619,9 +621,11 @@ export class RotationService implements OnModuleInit {
       // 3. If node is marked deleted and unreachable/offline, purge immediately
       if (node?.deletedAt) {
         const isOffline =
-          [NodeHealthStatus.Offline, NodeHealthStatus.AuthError].includes(
-            node.healthStatus,
-          ) ||
+          [
+            NodeHealthStatus.Offline,
+            NodeHealthStatus.AuthError,
+            NodeHealthStatus.Degraded,
+          ].includes(node.healthStatus) ||
           node.consecutiveFailures >= 1 ||
           attempts >= 1;
 
@@ -634,15 +638,10 @@ export class RotationService implements OnModuleInit {
         }
       }
 
-      // 4. If node is active but known to be offline, postpone without hanging on 8s timeout
-      if (
-        node &&
-        [NodeHealthStatus.Offline, NodeHealthStatus.AuthError].includes(
-          node.healthStatus,
-        )
-      ) {
+      // 4. Batch Fail-Fast: if node failed earlier in this batch, postpone without network delay
+      if (node && failedNodeIdsInBatch.has(node.id)) {
         inbound.cleanupAttempts = attempts + 1;
-        inbound.lastCleanupError = `Нода «${node.name}» временно недоступна`;
+        inbound.lastCleanupError = `Нода «${node.name}» не отвечает в текущей очереди`;
         inbound.nextCleanupAt = new Date(
           Date.now() + this.cleanupDelay(inbound.cleanupAttempts),
         );
@@ -650,7 +649,26 @@ export class RotationService implements OnModuleInit {
         continue;
       }
 
-      // 5. Normal deletion attempt via 3x-ui API
+      // 5. If node is active but known to be offline or degraded, postpone without hanging on timeout
+      if (
+        node &&
+        ([
+          NodeHealthStatus.Offline,
+          NodeHealthStatus.AuthError,
+          NodeHealthStatus.Degraded,
+        ].includes(node.healthStatus) ||
+          node.consecutiveFailures > 0)
+      ) {
+        inbound.cleanupAttempts = attempts + 1;
+        inbound.lastCleanupError = `Нода «${node.name}» временно недоступна (${node.healthStatus})`;
+        inbound.nextCleanupAt = new Date(
+          Date.now() + this.cleanupDelay(inbound.cleanupAttempts),
+        );
+        await this.inboundRepo.save(inbound);
+        continue;
+      }
+
+      // 6. Normal deletion attempt via 3x-ui API
       const deleted =
         !inbound.xuiId || inbound.xuiId <= 0
           ? true
@@ -659,6 +677,10 @@ export class RotationService implements OnModuleInit {
       if (deleted) {
         await this.inboundRepo.delete(inbound.id);
         continue;
+      }
+
+      if (node?.id) {
+        failedNodeIdsInBatch.add(node.id);
       }
 
       inbound.cleanupAttempts = attempts + 1;
@@ -679,6 +701,47 @@ export class RotationService implements OnModuleInit {
     inbound.nextCleanupAt = new Date();
     await this.inboundRepo.save(inbound);
     return { success: true };
+  }
+
+  async deleteCleanup(id: number) {
+    const inbound = await this.inboundRepo.findOne({ where: { id } });
+    if (!inbound || inbound.status !== InboundStatus.PendingCleanup) {
+      throw new NotFoundException('Cleanup task not found');
+    }
+    await this.inboundRepo.delete(id);
+    this.logger.log(`Инбаунд ${id} принудительно удален из очереди очистки`);
+    return { success: true };
+  }
+
+  async purgeFailedCleanup() {
+    const items = await this.inboundRepo
+      .createQueryBuilder('inbound')
+      .leftJoinAndSelect('inbound.node', 'node')
+      .where('inbound.status = :status', {
+        status: InboundStatus.PendingCleanup,
+      })
+      .getMany();
+
+    let purgedCount = 0;
+    for (const item of items) {
+      const isFailed =
+        (item.cleanupAttempts || 0) >= 1 ||
+        !item.node ||
+        Boolean(item.node.deletedAt) ||
+        item.node.healthStatus === NodeHealthStatus.Offline ||
+        item.node.healthStatus === NodeHealthStatus.AuthError ||
+        item.node.healthStatus === NodeHealthStatus.Degraded;
+
+      if (isFailed) {
+        await this.inboundRepo.delete(item.id);
+        purgedCount++;
+      }
+    }
+
+    this.logger.log(
+      `Принудительно очищено ${purgedCount} зависших задач очистки.`,
+    );
+    return { success: true, purgedCount };
   }
 
   listCleanup() {

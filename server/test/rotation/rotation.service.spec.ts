@@ -222,4 +222,33 @@ describe('RotationService resilient generations', () => {
       subscriptionIds: ['sub-1'],
     });
   });
+
+  it('deletes a cleanup item by id', async () => {
+    inboundRepo.findOne.mockResolvedValue({
+      id: 55,
+      status: InboundStatus.PendingCleanup,
+    });
+    inboundRepo.delete.mockResolvedValue({ affected: 1 });
+
+    const result = await service.deleteCleanup(55);
+    expect(result).toEqual({ success: true });
+    expect(inboundRepo.delete).toHaveBeenCalledWith(55);
+  });
+
+  it('purges failed cleanup items', async () => {
+    inboundRepo.createQueryBuilder.mockReturnValue({
+      leftJoinAndSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue([
+        { id: 101, cleanupAttempts: 2, status: InboundStatus.PendingCleanup },
+        { id: 102, cleanupAttempts: 0, status: InboundStatus.PendingCleanup, node: { healthStatus: 'offline' } },
+      ]),
+    });
+    inboundRepo.delete.mockResolvedValue({ affected: 1 });
+
+    const result = await service.purgeFailedCleanup();
+    expect(result).toEqual({ success: true, purgedCount: 2 });
+    expect(inboundRepo.delete).toHaveBeenCalledWith(101);
+    expect(inboundRepo.delete).toHaveBeenCalledWith(102);
+  });
 });

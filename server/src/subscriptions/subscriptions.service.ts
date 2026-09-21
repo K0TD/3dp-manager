@@ -47,6 +47,11 @@ export class SubscriptionsService {
     return subscriptions;
   }
 
+  async count() {
+    const count = await this.subRepo.count();
+    return { count };
+  }
+
   async create(dto: CreateSubscriptionDto) {
     await this.validateInboundsConfig(dto.inboundsConfig);
     const sub = this.subRepo.create({

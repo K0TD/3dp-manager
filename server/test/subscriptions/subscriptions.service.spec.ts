@@ -28,6 +28,7 @@ describe('SubscriptionsService', () => {
     save: jest.fn(),
     delete: jest.fn(),
     remove: jest.fn(),
+    count: jest.fn(),
     manager: {
       transaction: jest.fn(
         async (
@@ -125,6 +126,15 @@ describe('SubscriptionsService', () => {
         relations: ['inbounds', 'node', 'relayServer'],
         order: { createdAt: 'DESC' },
       });
+    });
+
+    it('должен возвращать количество подписок', async () => {
+      mockSubRepo.count.mockResolvedValue(12);
+
+      const result = await service.count();
+
+      expect(result).toEqual({ count: 12 });
+      expect(subRepo.count).toHaveBeenCalledTimes(1);
     });
 
     it('должен вернуть пустой массив, если подписок нет', async () => {

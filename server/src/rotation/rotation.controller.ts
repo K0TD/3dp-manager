@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -49,5 +50,15 @@ export class RotationController {
   @Post('cleanup/:id/retry')
   retryCleanup(@Param('id') id: string) {
     return this.rotationService.retryCleanup(Number(id));
+  }
+
+  @Delete('cleanup/:id')
+  deleteCleanup(@Param('id') id: string) {
+    return this.rotationService.deleteCleanup(Number(id));
+  }
+
+  @Post('cleanup/purge-failed')
+  purgeFailedCleanup() {
+    return this.rotationService.purgeFailedCleanup();
   }
 }

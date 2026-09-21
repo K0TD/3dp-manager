@@ -14,6 +14,8 @@ describe('RotationController', () => {
     getOperation: jest.fn(),
     listCleanup: jest.fn(),
     retryCleanup: jest.fn(),
+    deleteCleanup: jest.fn(),
+    purgeFailedCleanup: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -81,6 +83,31 @@ describe('RotationController', () => {
       const result = await controller.rotateSingle('non-existent');
 
       expect(result).toEqual(mockError);
+    });
+  });
+
+  describe('deleteCleanup', () => {
+    it('должен удалить инбаунд из очереди очистки', async () => {
+      mockRotationService.deleteCleanup.mockResolvedValue({ success: true });
+
+      const result = await controller.deleteCleanup('42');
+
+      expect(result).toEqual({ success: true });
+      expect(rotationService.deleteCleanup).toHaveBeenCalledWith(42);
+    });
+  });
+
+  describe('purgeFailedCleanup', () => {
+    it('должен удалить все зависшие задачи очистки', async () => {
+      mockRotationService.purgeFailedCleanup.mockResolvedValue({
+        success: true,
+        purgedCount: 3,
+      });
+
+      const result = await controller.purgeFailedCleanup();
+
+      expect(result).toEqual({ success: true, purgedCount: 3 });
+      expect(rotationService.purgeFailedCleanup).toHaveBeenCalledTimes(1);
     });
   });
 });
