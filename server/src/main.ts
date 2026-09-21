@@ -14,7 +14,7 @@ async function bootstrap() {
   const logger = new Logger('Bootstrap');
 
   // Настройка уровня логирования из переменной окружения
-  const configuredLevel = configService.get<string>('LOG_LEVEL', 'error');
+  const configuredLevel = configService.get<string>('LOG_LEVEL', 'log');
   const logLevels: LogLevel[] =
     configuredLevel === 'debug'
       ? ['error', 'warn', 'log', 'debug']
@@ -27,9 +27,17 @@ async function bootstrap() {
   app.use((req: Request, res: Response, next: NextFunction) => {
     const startedAt = Date.now();
     res.on('finish', () => {
-      logger.debug(
-        `${req.method} ${req.originalUrl} -> ${res.statusCode} (${Date.now() - startedAt}ms)`,
-      );
+      const message = `${req.method} ${req.originalUrl} -> ${res.statusCode} (${Date.now() - startedAt}ms)`;
+      if (
+        req.originalUrl.startsWith('/api/rotation') ||
+        req.originalUrl.startsWith('/api/nodes') ||
+        req.method !== 'GET' ||
+        res.statusCode >= 400
+      ) {
+        logger.log(message);
+      } else {
+        logger.debug(message);
+      }
     });
     next();
   });

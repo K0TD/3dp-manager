@@ -102,15 +102,20 @@ export class RotationService implements OnModuleInit {
   }
 
   async enqueueRotation(subscriptionIds?: string[]) {
-    return this.operationRepo.save(
+    const uniqueIds = subscriptionIds?.length
+      ? [...new Set(subscriptionIds)]
+      : undefined;
+    const operation = await this.operationRepo.save(
       this.operationRepo.create({
         status: RotationOperationStatus.Queued,
-        subscriptionIds: subscriptionIds?.length
-          ? [...new Set(subscriptionIds)]
-          : undefined,
+        subscriptionIds: uniqueIds,
         results: [],
       }),
     );
+    this.logger.log(
+      `[RotationService] Операция ротации ${operation.id} поставлена в очередь (цели: ${uniqueIds?.join(', ') || 'все с авторотацией'})`,
+    );
+    return operation;
   }
 
   async getOperation(id: string) {
@@ -138,6 +143,11 @@ export class RotationService implements OnModuleInit {
     operation.error = undefined;
     await this.operationRepo.save(operation);
 
+    this.logger.log(
+      `[RotationService] Начало обработки операции ${operation.id} (подписки: ${operation.subscriptionIds?.join(', ') || 'все с авторотацией'})...`,
+    );
+
+    const startedAt = Date.now();
     try {
       const result = await this.performRotation(operation.subscriptionIds);
       operation.results = result.results;
@@ -147,9 +157,24 @@ export class RotationService implements OnModuleInit {
           ? RotationOperationStatus.Partial
           : RotationOperationStatus.Failed;
       operation.error = result.success ? undefined : result.message;
+
+      const durationMs = Date.now() - startedAt;
+      if (result.success) {
+        this.logger.log(
+          `[RotationService] Операция ${operation.id} успешно завершена за ${durationMs}ms`,
+        );
+      } else {
+        this.logger.warn(
+          `[RotationService] Операция ${operation.id} завершена со статусом ${operation.status} за ${durationMs}ms: ${result.message}`,
+        );
+      }
     } catch (error) {
       operation.status = RotationOperationStatus.Failed;
       operation.error = this.safeMessage(error);
+      this.logger.error(
+        `[RotationService] Сбой обработки операции ${operation.id}: ${this.safeMessage(error)}`,
+        error instanceof Error ? error.stack : undefined,
+      );
     } finally {
       operation.finishedAt = new Date();
       await this.operationRepo.save(operation);
@@ -190,15 +215,31 @@ export class RotationService implements OnModuleInit {
       relations: ['inbounds', 'inbounds.node', 'node', 'relayServer'],
     });
     if (!subscriptions.length) {
+      const msg = subscriptionIds?.length
+        ? `Подписки [${subscriptionIds.join(', ')}] не найдены или отключены`
+        : 'Нет активных подписок для ротации';
+      this.logger.warn(`[RotationService] ${msg}`);
       return {
         success: false,
-        message: 'Нет активных подписок для ротации',
+        message: msg,
         results: [] as RotationNodeResult[],
       };
     }
 
+    this.logger.log(
+      `[RotationService] Найдено подписок для обработки: ${subscriptions.length} (${subscriptions.map((s) => `«${s.name}» [${s.id}]`).join(', ')})`,
+    );
+
     const domains = await this.domainRepo.find({ where: { isEnabled: true } });
     const defaultNode = await this.getDefaultNode();
+    if (defaultNode) {
+      this.logger.log(
+        `[RotationService] Основная нода по умолчанию: «${defaultNode.name}» [${defaultNode.id}] (url: ${defaultNode.url || `${defaultNode.protocol}://${defaultNode.host}:${defaultNode.port}`})`,
+      );
+    } else {
+      this.logger.warn('[RotationService] В системе нет ни одной активной ноды!');
+    }
+
     const results: RotationNodeResult[] = [];
     for (const subscription of subscriptions) {
       results.push(
@@ -226,6 +267,9 @@ export class RotationService implements OnModuleInit {
     domains: Domain[],
     defaultNode: Node | null,
   ) {
+    this.logger.log(
+      `[RotationService] Обработка подписки «${subscription.name}» (${subscription.id}), конфигураций инбаундов: ${subscription.inboundsConfig?.length || 0}`,
+    );
     const groups = new Map<
       string,
       { node?: Node; configs: PositionedInboundConfig[] }
@@ -248,6 +292,10 @@ export class RotationService implements OnModuleInit {
       const group = groups.get(key) || { node, configs: [] };
       group.configs.push(positionedConfig);
       groups.set(key, group);
+
+      this.logger.log(
+        `[RotationService] Инбаунд «${config.name || config.type}» (порт: ${config.port || 'random'}) -> нода «${node?.name || (key === '__custom' ? 'Локальные' : 'Отсутствует')}» (${node?.id || key})`,
+      );
     }
 
     const results: RotationNodeResult[] = [];
@@ -266,6 +314,11 @@ export class RotationService implements OnModuleInit {
           : inbound.nodeId || '__missing';
       return !desiredKeys.has(key);
     });
+    if (obsolete.length > 0) {
+      this.logger.log(
+        `[RotationService] Помечено на очистку ${obsolete.length} устаревших инбаундов для подписки «${subscription.name}»`,
+      );
+    }
     await this.queueCleanup(obsolete);
     return results;
   }
@@ -282,6 +335,13 @@ export class RotationService implements OnModuleInit {
     let realityKeys:
       | Awaited<ReturnType<XuiService['getNewX25519Cert']>>
       | undefined;
+
+    const nodeLabel =
+      group.node?.name ||
+      (key === '__custom' ? 'Локальные ссылки' : 'Без ноды');
+    this.logger.log(
+      `[RotationService] Запуск ротации группы ноды «${nodeLabel}» для подписки «${subscription.name}» (${group.configs.length} инбаундов)...`,
+    );
 
     try {
       if (key === '__missing')
@@ -300,8 +360,18 @@ export class RotationService implements OnModuleInit {
       for (const positionedConfig of group.configs) {
         const { config } = positionedConfig;
         if (config.type?.includes('reality') && !realityKeys) {
+          this.logger.log(
+            `[RotationService] Запрос ключей Reality для ноды «${group.node?.name || 'main'}»...`,
+          );
           realityKeys = await this.xuiService.getNewX25519Cert(group.node);
-          if (!realityKeys) throw new Error('Нода не выдала Reality-ключи');
+          if (!realityKeys) {
+            throw new Error(
+              `Нода «${group.node?.name || 'main'}» не выдала Reality-ключи`,
+            );
+          }
+          this.logger.log(
+            `[RotationService] Ключи Reality успешно получены для ноды «${group.node?.name || 'main'}»`,
+          );
         }
         const inbound = await this.createInbound({
           subscription,
@@ -342,6 +412,9 @@ export class RotationService implements OnModuleInit {
           );
         }
       });
+      this.logger.log(
+        `[RotationService] Успешно создано ${created.length} инбаундов для подписки «${subscription.name}» на ноде «${nodeLabel}» (устаревших: ${old.length})`,
+      );
       return {
         subscriptionId: subscription.id,
         subscriptionName: subscription.name,
@@ -352,6 +425,11 @@ export class RotationService implements OnModuleInit {
         pendingCleanup: old.length,
       };
     } catch (error) {
+      const errMessage = this.safeMessage(error);
+      this.logger.error(
+        `[RotationService] Сбой ротации для подписки «${subscription.name}» на ноде «${nodeLabel}»: ${errMessage}`,
+        error instanceof Error ? error.stack : undefined,
+      );
       await this.queueCleanup(created);
       return {
         subscriptionId: subscription.id,
@@ -363,7 +441,7 @@ export class RotationService implements OnModuleInit {
         status: 'preserved',
         created: 0,
         pendingCleanup: created.length,
-        message: this.safeMessage(error),
+        message: errMessage,
       };
     }
   }
@@ -434,7 +512,15 @@ export class RotationService implements OnModuleInit {
       });
       if (config.name?.trim()) built.remark = config.name.trim();
       const xuiId = await this.xuiService.addInbound(built, node);
-      if (!xuiId) return null;
+      if (!xuiId) {
+        this.logger.error(
+          `[RotationService] 3x-ui отклонил добавление hysteria2 инбаунда на ноде «${node.name}» (порт ${port})`,
+        );
+        return null;
+      }
+      this.logger.log(
+        `[RotationService] Hysteria2 инбаунд успешно создан с ID ${xuiId} на ноде «${node.name}» (порт ${port})`,
+      );
       return this.saveStagedInbound({
         subscription,
         config,
@@ -465,7 +551,15 @@ export class RotationService implements OnModuleInit {
     if (!built) throw new Error(`Неизвестный тип inbound: ${config.type}`);
     if (config.name?.trim()) built.remark = config.name.trim();
     const xuiId = await this.xuiService.addInbound(built, node);
-    if (!xuiId) return null;
+    if (!xuiId) {
+      this.logger.error(
+        `[RotationService] 3x-ui отклонил добавление инбаунда «${built.remark}» (${built.protocol}) на ноде «${node.name}» (порт ${port})`,
+      );
+      return null;
+    }
+    this.logger.log(
+      `[RotationService] Инбаунд «${built.remark}» (${built.protocol}) успешно создан с ID ${xuiId} на ноде «${node.name}» (порт ${port})`,
+    );
     const settings = JSON.parse(built.settings) as {
       clients?: Array<{ id?: string; password?: string }>;
     };
@@ -811,13 +905,22 @@ export class RotationService implements OnModuleInit {
     await this.settingRepo.save(setting);
   }
 
-  private async getDefaultNode() {
-    return this.nodeRepo
+  private async getDefaultNode(): Promise<Node | null> {
+    const mainNode = await this.nodeRepo
       .createQueryBuilder('node')
       .addSelect('node.password')
       .addSelect('node.token')
       .where('node.isMain = true')
       .andWhere('node.deletedAt IS NULL')
+      .getOne();
+    if (mainNode) return mainNode;
+
+    return this.nodeRepo
+      .createQueryBuilder('node')
+      .addSelect('node.password')
+      .addSelect('node.token')
+      .where('node.deletedAt IS NULL')
+      .orderBy('node.createdAt', 'ASC')
       .getOne();
   }
 
@@ -825,27 +928,34 @@ export class RotationService implements OnModuleInit {
     nodeId?: string,
     subscriptionNode?: Node,
     defaultNode?: Node | null,
-  ) {
-    if (!nodeId) return subscriptionNode ?? defaultNode ?? undefined;
-    return (
-      (await this.nodeRepo
+  ): Promise<Node | undefined> {
+    const targetId = nodeId || subscriptionNode?.id;
+    if (targetId) {
+      const node = await this.nodeRepo
         .createQueryBuilder('node')
         .addSelect('node.password')
         .addSelect('node.token')
-        .where('node.id = :nodeId', { nodeId })
+        .where('node.id = :nodeId', { nodeId: targetId })
         .andWhere('node.deletedAt IS NULL')
-        .getOne()) || undefined
-    );
+        .getOne();
+      if (node) return node;
+      this.logger.warn(
+        `[RotationService] Нода с ID "${targetId}" не найдена или была удалена. Выполняется откат на основную ноду.`,
+      );
+    }
+    return defaultNode ?? undefined;
   }
 
-  private async resolveInboundNode(inbound: Inbound) {
-    if (!inbound.nodeId) return inbound.node;
+  private async resolveInboundNode(inbound: Inbound): Promise<Node | undefined> {
+    const targetId = inbound.nodeId || inbound.node?.id;
+    if (!targetId) return inbound.node;
     return (
       (await this.nodeRepo
         .createQueryBuilder('node')
         .addSelect('node.password')
         .addSelect('node.token')
-        .where('node.id = :nodeId', { nodeId: inbound.nodeId })
+        .where('node.id = :nodeId', { nodeId: targetId })
+        .andWhere('node.deletedAt IS NULL')
         .getOne()) || inbound.node
     );
   }

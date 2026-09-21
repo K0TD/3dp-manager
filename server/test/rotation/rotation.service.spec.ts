@@ -251,4 +251,51 @@ describe('RotationService resilient generations', () => {
     expect(inboundRepo.delete).toHaveBeenCalledWith(101);
     expect(inboundRepo.delete).toHaveBeenCalledWith(102);
   });
+
+  it('falls back to default node when the configured nodeId is deleted or not found', async () => {
+    const defaultNode = {
+      id: 'default-node-id',
+      name: 'Default Node',
+      isMain: true,
+    } as Node;
+
+    nodeRepo.createQueryBuilder.mockReturnValue({
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockResolvedValue(null),
+    });
+
+    const resolved = await (service as any).resolveNode(
+      'deleted-node-id',
+      undefined,
+      defaultNode,
+    );
+    expect(resolved).toBe(defaultNode);
+  });
+
+  it('falls back to first available node in getDefaultNode when no node has isMain: true', async () => {
+    const fallbackNode = {
+      id: 'first-node-id',
+      name: 'First Node',
+      isMain: false,
+    } as Node;
+
+    nodeRepo.createQueryBuilder
+      .mockReturnValueOnce({
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(null),
+      })
+      .mockReturnValueOnce({
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(fallbackNode),
+      });
+
+    const node = await (service as any).getDefaultNode();
+    expect(node).toBe(fallbackNode);
+  });
 });

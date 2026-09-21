@@ -109,53 +109,134 @@ export class XuiService {
       return success ? this.api : null;
     }
 
+    const baseUrl = this.getNodeBaseUrl(node);
     const api = this.createApi(
-      this.getNodeBaseUrl(node),
+      baseUrl,
       node.allowInvalidTls === true,
     );
 
     if (node.authType === NodeAuthType.Token) {
-      if (!node.token) return null;
+      if (!node.token) {
+        this.logger.error(
+          `[XuiService] Нода «${node.name}» (${node.id}) настроена на Token-аутентификацию, но токен пуст!`,
+        );
+        return null;
+      }
       api.defaults.headers.common.Authorization = `Bearer ${node.token}`;
       return api;
     }
 
-    if (!node.login || !node.password) return null;
-
-    const res = await api.post<LoginResponse>('/login', {
-      username: node.login,
-      password: node.password,
-    });
-
-    if (!res.data?.success || !res.headers['set-cookie']) {
+    if (!node.login || !node.password) {
+      this.logger.error(
+        `[XuiService] У ноды «${node.name}» (${node.id}) не заданы учетные данные: login=${node.login ? 'задан' : 'пуст'}, password=${node.password ? 'задан' : 'пуст'}`,
+      );
       return null;
     }
 
-    api.defaults.headers.common.Cookie = res.headers['set-cookie'].join('; ');
-    await this.attachCsrfToken(api);
-    return api;
+    try {
+      this.logger.debug(
+        `[XuiService] Выполняется вход на ноду «${node.name}» (${baseUrl}/login) под пользователем «${node.login}»...`,
+      );
+      const res = await api.post<LoginResponse>('/login', {
+        username: node.login,
+        password: node.password,
+      });
+
+      if (!res.data?.success || !res.headers['set-cookie']) {
+        this.logger.error(
+          `[XuiService] Вход на ноду «${node.name}» отклонен 3x-ui: success=${res.data?.success}, msg=${res.data?.msg || 'нет сообщения'}, cookies=${Boolean(res.headers['set-cookie'])}`,
+        );
+        return null;
+      }
+
+      api.defaults.headers.common.Cookie = res.headers['set-cookie'].join('; ');
+      await this.attachCsrfToken(api, res.headers as Record<string, unknown>);
+      this.logger.debug(
+        `[XuiService] Успешная аутентификация на ноде «${node.name}»`,
+      );
+      return api;
+    } catch (e) {
+      const err = e as AxiosError;
+      const status = err.response?.status;
+      const dataStr = err.response?.data ? JSON.stringify(err.response.data) : '';
+      this.logger.error(
+        `[XuiService] Ошибка подключения/авторизации к ноде «${node.name}» (${baseUrl}): ${err.message} ${status ? `(HTTP ${status}: ${dataStr})` : ''}`,
+      );
+      return null;
+    }
   }
 
-  private async attachCsrfToken(api: AxiosInstance) {
+  private async attachCsrfToken(
+    api: AxiosInstance,
+    initialHeaders?: Record<string, unknown>,
+  ) {
+    // 1. Проверяем наличие токена в ответе логина (в заголовках или cookie x-ui-csrf)
+    if (initialHeaders) {
+      const headerToken = initialHeaders['x-csrf-token'] as string | undefined;
+      if (headerToken) {
+        api.defaults.headers.common['X-CSRF-Token'] = headerToken;
+        this.logger.debug(`Найден CSRF токен в заголовке ответа логина`);
+        return;
+      }
+      const setCookie = initialHeaders['set-cookie'];
+      if (Array.isArray(setCookie) || typeof setCookie === 'string') {
+        const cookiesStr = Array.isArray(setCookie) ? setCookie.join('; ') : setCookie;
+        const match = cookiesStr.match(/(?:x-ui-csrf|x_ui_csrf|csrf_token|csrfToken)=([^;]+)/i);
+        if (match && match[1]) {
+          api.defaults.headers.common['X-CSRF-Token'] = match[1];
+          this.logger.debug(`Извлечен CSRF токен из Set-Cookie: ${match[1].slice(0, 8)}...`);
+          return;
+        }
+      }
+    }
+
+    // 2. Пробуем запросить GET /csrf-token (поддерживается в некоторых версиях панели)
     try {
       const response = await api.get('/csrf-token');
+      const headerToken = response.headers?.['x-csrf-token'] as string | undefined;
+      if (headerToken) {
+        api.defaults.headers.common['X-CSRF-Token'] = headerToken;
+        return;
+      }
       const data = response.data as {
         csrfToken?: string;
         token?: string;
         obj?: string | { token?: string; csrfToken?: string };
       };
       const token =
-        data.csrfToken ||
-        data.token ||
-        (typeof data.obj === 'string'
+        data?.csrfToken ||
+        data?.token ||
+        (typeof data?.obj === 'string'
           ? data.obj
-          : data.obj?.csrfToken || data.obj?.token);
-      if (token) api.defaults.headers.common['X-CSRF-Token'] = token;
-    } catch (error) {
-      const status = (error as AxiosError).response?.status;
-      if (status !== 404) {
-        this.logger.debug(`CSRF token is unavailable: ${(error as Error).message}`);
+          : data?.obj?.csrfToken || data?.obj?.token);
+      if (token) {
+        api.defaults.headers.common['X-CSRF-Token'] = token;
+        return;
       }
+    } catch {
+      // 404 нормален для версий без JSON-эндпоинта /csrf-token
+    }
+
+    // 3. Резервный поиск: извлечение из <meta name="csrf-token" content="..."> на корневой HTML странице
+    try {
+      const htmlRes = await api.get('/');
+      const headerToken = htmlRes.headers?.['x-csrf-token'] as string | undefined;
+      if (headerToken) {
+        api.defaults.headers.common['X-CSRF-Token'] = headerToken;
+        return;
+      }
+      if (typeof htmlRes.data === 'string') {
+        const metaMatch = htmlRes.data.match(
+          /<meta\s+name=["']csrf-token["']\s+content=["']([^"']+)["']/i,
+        );
+        if (metaMatch && metaMatch[1]) {
+          api.defaults.headers.common['X-CSRF-Token'] = metaMatch[1];
+          this.logger.debug(`Извлечен CSRF токен из HTML meta: ${metaMatch[1].slice(0, 8)}...`);
+          return;
+        }
+      }
+    } catch {
+      // Игнорируем ошибки фонового поиска
     }
   }
 
@@ -196,7 +277,7 @@ export class XuiService {
 
       if (res.headers['set-cookie']) {
         this.sessionService.setFromHeaders(res.headers['set-cookie']);
-        await this.attachCsrfToken(this.api);
+        await this.attachCsrfToken(this.api, res.headers as Record<string, unknown>);
         this.logger.log('3x-ui login successful');
         return true;
       } else {
@@ -216,7 +297,10 @@ export class XuiService {
     let attempts = 0;
     const maxAttempts = 3;
 
-    this.logger.log(`Adding inbound on port ${inboundConfig.port}`);
+    const nodeName = node?.name || 'main';
+    this.logger.log(
+      `[XuiService] Создание инбаунда на ноде «${nodeName}» (протокол: ${inboundConfig.protocol}, порт: ${inboundConfig.port}, remark: «${inboundConfig.remark || ''}»)`,
+    );
 
     while (attempts < maxAttempts) {
       attempts++;
@@ -224,7 +308,9 @@ export class XuiService {
       try {
         const api = await this.createAuthenticatedApi(node);
         if (!api) {
-          this.logger.error('3x-ui authentication failed before addInbound');
+          this.logger.error(
+            `[XuiService] Ошибка аутентификации перед добавлением инбаунда на ноде «${nodeName}»`,
+          );
           return null;
         }
 
@@ -234,18 +320,24 @@ export class XuiService {
         );
 
         if (res.data?.success) {
-          this.logger.log(
-            `Inbound created successfully with ID: ${res.data.obj.id}`,
-          );
           const obj = res.data.obj;
           const id =
             typeof obj === 'number'
               ? obj
               : obj && typeof obj === 'object' && 'id' in obj
                 ? Number(obj.id)
-                : NaN;
-          if (Number.isInteger(id) && id > 0) return id;
-          this.logger.error('3x-ui created an inbound but did not return its id');
+                : typeof obj === 'string' && /^\d+$/.test(obj)
+                  ? Number(obj)
+                  : NaN;
+          if (Number.isInteger(id) && id > 0) {
+            this.logger.log(
+              `[XuiService] Инбаунд успешно создан на ноде «${nodeName}» с ID: ${id} (порт: ${inboundConfig.port})`,
+            );
+            return id;
+          }
+          this.logger.error(
+            `[XuiService] 3x-ui на ноде «${nodeName}» создал инбаунд, но вернул неожиданный формат ID: ${JSON.stringify(obj)}`,
+          );
           return null;
         } else {
           const msg = res.data?.msg || '';
@@ -254,50 +346,68 @@ export class XuiService {
             msg.toLowerCase().includes('port') &&
             msg.toLowerCase().includes('exists')
           ) {
-            this.logger.warn(
-              `Попытка ${attempts}/${maxAttempts}: Порт ${inboundConfig.port} занят. Генерируем новый...`,
-            );
-
+            const oldPort = inboundConfig.port;
             inboundConfig.port = Math.floor(
               Math.random() * (60000 - 10000 + 1) + 10000,
             );
+            this.logger.warn(
+              `[XuiService] Попытка ${attempts}/${maxAttempts}: Порт ${oldPort} занят. Сгенерирован новый порт ${inboundConfig.port}. Повтор...`,
+            );
           } else {
-            this.logger.error(`3x-ui отклонил создание: ${msg}`);
+            this.logger.error(
+              `[XuiService] 3x-ui на ноде «${nodeName}» отклонил создание инбаунда: ${msg || 'нет текста ошибки'}`,
+            );
             return null;
           }
         }
       } catch (e) {
         const error = e as AxiosError;
-        if (error.response?.status === 401) {
-          this.logger.log('Сессия истекла, пробуем релогин...');
-          if (!node && (await this.login())) {
-            return this.addInbound(inboundConfig);
+        const status = error.response?.status;
+        const dataStr = error.response?.data
+          ? JSON.stringify(error.response.data)
+          : '';
+        this.logger.error(
+          `[XuiService] Ошибка при добавлении инбаунда на ноде «${nodeName}»: ${error.message} ${status ? `(HTTP ${status}: ${dataStr})` : ''}`,
+        );
+
+        if (status === 401 && attempts < maxAttempts) {
+          this.logger.log(
+            `[XuiService] Сессия истекла (401) на ноде «${nodeName}», попытка повторной авторизации...`,
+          );
+          if (!node) {
+            await this.login();
           }
+          continue;
         }
 
-        this.logger.error(
-          `Ошибка сети/валидации при добавлении инбаунда: ${error.message}`,
-        );
         return null;
       }
     }
 
     this.logger.error(
-      `Не удалось создать инбаунд после ${maxAttempts} попыток смены порта.`,
+      `[XuiService] Не удалось создать инбаунд на ноде «${nodeName}» после ${maxAttempts} попыток смены порта.`,
     );
     return null;
   }
 
   async deleteInbound(id: number, node?: Node): Promise<boolean> {
     if (!id || id <= 0) {
-      this.logger.debug(`Skipping 3x-ui inbound deletion for non-remote id: ${id}`);
+      this.logger.debug(
+        `Skipping 3x-ui inbound deletion for non-remote id: ${id}`,
+      );
       return true;
     }
 
+    const nodeName = node?.name || 'main';
+    this.logger.log(
+      `[XuiService] Удаление инбаунда ${id} на ноде «${nodeName}»...`,
+    );
     try {
       const api = await this.createAuthenticatedApi(node);
       if (!api) {
-        this.logger.error(`3x-ui authentication failed before deleting inbound ${id}`);
+        this.logger.error(
+          `[XuiService] 3x-ui ошибка аутентификации перед удалением инбаунда ${id} на ноде «${nodeName}»`,
+        );
         return false;
       }
       const res = await api.post<XuiResponse<unknown>>(
@@ -305,20 +415,35 @@ export class XuiService {
       );
       if (!res.data?.success) {
         const message = (res.data?.msg || '').toLowerCase();
-        if (message.includes('not found') || message.includes('does not exist')) {
+        if (
+          message.includes('not found') ||
+          message.includes('does not exist')
+        ) {
+          this.logger.log(
+            `[XuiService] Инбаунд ${id} уже отсутствует на панели 3x-ui ноды «${nodeName}»`,
+          );
           return true;
         }
         this.logger.error(
-          `3x-ui rejected inbound deletion ${id}: ${res.data?.msg || 'unknown error'}`,
+          `[XuiService] 3x-ui отклонил удаление инбаунда ${id} на ноде «${nodeName}»: ${res.data?.msg || 'неизвестная ошибка'}`,
         );
         return false;
       }
-      this.logger.debug(`Inbound ${id} deleted`);
+      this.logger.log(
+        `[XuiService] Инбаунд ${id} успешно удален на ноде «${nodeName}»`,
+      );
       return true;
     } catch (e) {
       const error = e as AxiosError;
-      if (error.response?.status === 404) return true;
-      this.logger.error(`Ошибка удаления инбаунда ${id}: ${error.message}`);
+      if (error.response?.status === 404) {
+        this.logger.log(
+          `[XuiService] Инбаунд ${id} вернул 404 (уже удален) на ноде «${nodeName}»`,
+        );
+        return true;
+      }
+      this.logger.error(
+        `[XuiService] Ошибка удаления инбаунда ${id} на ноде «${nodeName}»: ${error.message} ${error.response ? `(HTTP ${error.response.status})` : ''}`,
+      );
     }
 
     return false;
@@ -410,17 +535,39 @@ export class XuiService {
   }
 
   async getNewX25519Cert(node?: Node): Promise<XuiCertResult | null> {
+    const nodeName = node?.name || 'main';
     try {
+      this.logger.log(
+        `[XuiService] Запрос сертификата Reality (X25519) у ноды «${nodeName}» (/panel/api/server/getNewX25519Cert)...`,
+      );
       const api = await this.createAuthenticatedApi(node);
-      if (!api) return null;
+      if (!api) {
+        this.logger.error(
+          `[XuiService] Не удалось пройти аутентификацию для получения Reality-ключей на ноде «${nodeName}»`,
+        );
+        return null;
+      }
       const res = await api.get<XuiResponse<XuiCertResult>>(
         '/panel/api/server/getNewX25519Cert',
       );
-      if (res.data?.success && res.data.obj) return res.data.obj;
+      if (res.data?.success && res.data.obj) {
+        this.logger.log(
+          `[XuiService] Reality-ключи успешно получены от ноды «${nodeName}»`,
+        );
+        return res.data.obj;
+      }
+      this.logger.error(
+        `[XuiService] 3x-ui на ноде «${nodeName}» вернул ошибку при получении ключей Reality: ${res.data?.msg || 'пустой ответ'}`,
+      );
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
+      const axiosErr = error as AxiosError;
+      const status = axiosErr.response?.status;
+      const dataStr = axiosErr.response?.data
+        ? JSON.stringify(axiosErr.response.data)
+        : '';
       this.logger.error(
-        `Ошибка получения ключей Reality (${node?.name || 'main'}): ${msg}`,
+        `[XuiService] Ошибка получения ключей Reality (${nodeName}): ${msg} ${status ? `(HTTP ${status}: ${dataStr})` : ''}`,
       );
     }
     return null;

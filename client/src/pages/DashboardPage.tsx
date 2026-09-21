@@ -16,6 +16,7 @@ import {
   CheckCircle,
   CloudOff,
   DeleteSweep,
+  Error as ErrorIcon,
   Hub,
   People,
 } from '@mui/icons-material';
@@ -43,6 +44,7 @@ interface Operation {
   id: string;
   status: 'queued' | 'running' | 'succeeded' | 'partial' | 'failed';
   createdAt: string;
+  error?: string;
   results?: OperationResult[];
 }
 
@@ -295,17 +297,44 @@ export default function DashboardPage() {
               {recent.map((operation) => (
                 <Box key={operation.id} className="operation-row">
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    {operation.status === 'succeeded' ? <CheckCircle color="success" fontSize="small" /> : <Autorenew color="action" fontSize="small" />}
-                    <Typography fontWeight={700}>{statusLabel[operation.status]}</Typography>
+                    {operation.status === 'succeeded' ? (
+                      <CheckCircle color="success" fontSize="small" />
+                    ) : operation.status === 'failed' ? (
+                      <ErrorIcon color="error" fontSize="small" />
+                    ) : (
+                      <Autorenew color="action" fontSize="small" />
+                    )}
+                    <Typography
+                      fontWeight={700}
+                      color={operation.status === 'failed' ? 'error.main' : undefined}
+                    >
+                      {statusLabel[operation.status]}
+                    </Typography>
                   </Box>
                   <Typography variant="caption" color="text.secondary">
                     {new Date(operation.createdAt).toLocaleString('ru-RU')}
                   </Typography>
                   {operation.status === 'running' && <LinearProgress sx={{ mt: 1 }} />}
-                  {operation.results?.some((item) => item.status !== 'succeeded') && (
-                    <Typography variant="caption" color="warning.main" display="block" mt={0.5}>
-                      Старые подключения сохранены для недоступных нод
+                  {operation.error && (
+                    <Typography variant="caption" color="error.main" display="block" mt={0.5}>
+                      Ошибка: {operation.error}
                     </Typography>
+                  )}
+                  {operation.results?.some((item) => item.status !== 'succeeded') && (
+                    <Box sx={{ mt: 0.5 }}>
+                      {operation.results
+                        .filter((item) => item.status !== 'succeeded')
+                        .map((item, idx) => (
+                          <Typography
+                            key={idx}
+                            variant="caption"
+                            color="warning.main"
+                            display="block"
+                          >
+                            {item.nodeName}: {item.message || 'Старые подключения сохранены'}
+                          </Typography>
+                        ))}
+                    </Box>
                   )}
                 </Box>
               ))}

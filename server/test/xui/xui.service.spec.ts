@@ -261,4 +261,47 @@ describe('XuiService', () => {
       expect(result).toBeNull();
     });
   });
+
+  describe('CSRF token handling', () => {
+    it('извлекает CSRF токен из cookie x-ui-csrf при логине', async () => {
+      mockSettingsRepo.find.mockResolvedValue([
+        { key: 'xui_url', value: 'http://localhost:3100' },
+        { key: 'xui_login', value: 'admin' },
+        { key: 'xui_password', value: 'password' },
+      ]);
+      mockAxiosInstance.post.mockResolvedValueOnce({
+        headers: {
+          'set-cookie': ['session=s1', 'x-ui-csrf=token123; Path=/'],
+        },
+      });
+
+      await service.login();
+
+      expect(mockAxiosInstance.defaults.headers.common['X-CSRF-Token']).toBe('token123');
+    });
+
+    it('извлекает CSRF токен из HTML meta если cookie отсутствует', async () => {
+      mockSettingsRepo.find.mockResolvedValue([
+        { key: 'xui_url', value: 'http://localhost:3100' },
+        { key: 'xui_login', value: 'admin' },
+        { key: 'xui_password', value: 'password' },
+      ]);
+      mockAxiosInstance.post.mockResolvedValueOnce({
+        headers: {
+          'set-cookie': ['session=s1'],
+        },
+      });
+      // GET /csrf-token returns 404, GET / returns HTML with meta
+      mockAxiosInstance.get
+        .mockRejectedValueOnce({ response: { status: 404 } })
+        .mockResolvedValueOnce({
+          data: '<html><head><meta name="csrf-token" content="metaToken999"></head><body></body></html>',
+          headers: {},
+        });
+
+      await service.login();
+
+      expect(mockAxiosInstance.defaults.headers.common['X-CSRF-Token']).toBe('metaToken999');
+    });
+  });
 });
