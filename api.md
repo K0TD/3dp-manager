@@ -126,14 +126,18 @@
   "name": "My Subscription",
   "inboundsConfig": [
     {
-      "type": "vless",
+      "configId": "8d1f6bf3-47f0-4f56-9ed4-8f9d89e10616",
+      "type": "vless-tcp-tls",
       "port": 443,
-      "sni": "example.com"
+      "sni": "example.com",
+      "certificateFile": "/root/cert/example.com/fullchain.pem",
+      "keyFile": "/root/cert/example.com/privkey.pem"
     },
     {
-      "type": "vmess",
+      "configId": "ee34c44c-6735-49ae-92ab-38843f5c9276",
+      "type": "vless-ws-tls",
       "port": 8443,
-      "transport": "websocket"
+      "sni": "example.com"
     }
   ],
   "isAutoRotationEnabled": true
@@ -714,6 +718,14 @@ GET /bus/abc-123-def/1
   name: string;
   isEnabled: boolean;
   isAutoRotationEnabled: boolean;
+  inboundsConfig: Array<{
+    configId: string;
+    type: 'vless-tcp-reality' | 'vless-xhttp-reality' | 'vless-grpc-reality' |
+      'vless-ws' | 'vless-tcp-tls' | 'vless-ws-tls' | 'hysteria2-udp' |
+      'vmess-tcp' | 'shadowsocks-tcp' | 'trojan-tcp-reality' | 'custom';
+    port?: number | 'random';
+    sni?: string;
+  }>;
   inbounds: Inbound[];
   createdAt: Date;
   updatedAt: Date;
@@ -728,6 +740,8 @@ GET /bus/abc-123-def/1
   port: number | string;
   sni?: string;
   link: string;
+  configId?: string;
+  position: number;
   transport?: 'tcp' | 'websocket' | 'grpc' | 'xhttp';
 }
 ```

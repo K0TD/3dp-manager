@@ -8,6 +8,14 @@ import {
   XuiStreamSettings,
 } from './xui-inbound.types';
 
+interface VlessTlsParams {
+  port: number;
+  uuid: string;
+  sni: string;
+  certificateFile?: string;
+  keyFile?: string;
+}
+
 @Injectable()
 export class InboundBuilderService {
   private flag = process.env.COUNTRY_FLAG ?? '%F0%9F%92%AF';
@@ -206,6 +214,105 @@ export class InboundBuilderService {
           serviceName: 'myservice',
           authority: sni,
           multiMode: false,
+        },
+      }),
+      sniffing: JSON.stringify({
+        enabled: false,
+        destOverride: ['http', 'tls', 'quic', 'fakedns'],
+        metadataOnly: false,
+        routeOnly: false,
+      }),
+    };
+  }
+
+  buildVlessTlsTcp(params: VlessTlsParams) {
+    return this.buildVlessTlsInbound(params, {
+      network: 'tcp',
+      remark: 'vless-tcp-tls',
+      flow: 'xtls-rprx-vision',
+      transportSettings: {
+        tcpSettings: { acceptProxyProtocol: false, header: { type: 'none' } },
+      },
+    });
+  }
+
+  buildVlessTlsWs(params: VlessTlsParams) {
+    return this.buildVlessTlsInbound(params, {
+      network: 'ws',
+      remark: 'vless-ws-tls',
+      flow: '',
+      transportSettings: {
+        wsSettings: {
+          path: '/',
+          headers: { Host: params.sni },
+          acceptProxyProtocol: false,
+          heartbeatPeriod: 0,
+        },
+      },
+    });
+  }
+
+  private buildVlessTlsInbound(
+    params: VlessTlsParams,
+    transport: {
+      network: 'tcp' | 'ws';
+      remark: string;
+      flow: string;
+      transportSettings: Record<string, unknown>;
+    },
+  ) {
+    const certificateFile =
+      params.certificateFile || `/root/cert/${params.sni}/fullchain.pem`;
+    const keyFile = params.keyFile || `/root/cert/${params.sni}/privkey.pem`;
+    return {
+      enable: true,
+      port: params.port,
+      protocol: 'vless',
+      remark: transport.remark,
+      settings: JSON.stringify({
+        clients: [
+          {
+            id: params.uuid,
+            email: params.uuid,
+            flow: transport.flow,
+            enable: true,
+            limitIp: 0,
+            totalGB: 0,
+            expiryTime: 0,
+            tgId: '',
+            subId: '',
+            reset: 0,
+          },
+        ],
+        decryption: 'none',
+        encryption: 'none',
+        fallbacks: [],
+      }),
+      streamSettings: JSON.stringify({
+        network: transport.network,
+        security: 'tls',
+        externalProxy: [],
+        ...transport.transportSettings,
+        tlsSettings: {
+          serverName: params.sni,
+          alpn: ['h2', 'http/1.1'],
+          certificates: [
+            {
+              buildChain: false,
+              certificateFile,
+              keyFile,
+              oneTimeLoading: false,
+              usage: 'encipherment',
+            },
+          ],
+          cipherSuites: '',
+          disableSystemRoot: false,
+          echForceQuery: 'none',
+          echServerKeys: '',
+          enableSessionResumption: false,
+          maxVersion: '1.3',
+          minVersion: '1.2',
+          rejectUnknownSni: false,
         },
       }),
       sniffing: JSON.stringify({
@@ -432,8 +539,7 @@ export class InboundBuilderService {
     const { port, uuid, sni } = params;
     const certificateFile =
       params.certificateFile || `/root/cert/${sni}/fullchain.pem`;
-    const keyFile =
-      params.keyFile || `/root/cert/${sni}/privkey.pem`;
+    const keyFile = params.keyFile || `/root/cert/${sni}/privkey.pem`;
     const obfsPassword = crypto.randomBytes(8).toString('hex');
     return {
       enable: true,
@@ -509,7 +615,6 @@ export class InboundBuilderService {
       }),
     };
   }
-
 
   generateUuid() {
     return uuidv4();
@@ -596,6 +701,15 @@ export class InboundBuilderService {
           ).grpcSettings || {};
         params.set('serviceName', g.serviceName || 'grpc');
         params.set('authority', g.authority || r.serverNames?.[0] || '');
+      }
+    }
+
+    if (security === 'tls') {
+      params.set('sni', stream.tlsSettings?.serverName || '');
+      params.set('fp', 'chrome');
+      if (network === 'tcp') {
+        const flow = settings.clients?.[0]?.flow;
+        if (flow) params.set('flow', flow);
       }
     }
 
@@ -696,12 +810,17 @@ export class InboundBuilderService {
   ) {
     const stream = JSON.parse(inbound.streamSettings) as {
       tlsSettings?: { serverName?: string };
-      finalmask?: { udp?: Array<{ type?: string; settings?: { password?: string } }> };
+      finalmask?: {
+        udp?: Array<{ type?: string; settings?: { password?: string } }>;
+      };
     };
     const settings = JSON.parse(inbound.settings) as {
       clients?: Array<{ auth?: string; password?: string }>;
     };
-    const auth = settings.clients?.[0]?.auth || settings.clients?.[0]?.password || password;
+    const auth =
+      settings.clients?.[0]?.auth ||
+      settings.clients?.[0]?.password ||
+      password;
     const finalmask = stream.finalmask?.udp?.[0];
     const params = new URLSearchParams();
     params.set('security', 'tls');

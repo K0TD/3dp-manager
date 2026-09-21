@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 import { Subscription } from './entities/subscription.entity';
 import { XuiService } from '../xui/xui.service';
 import { CreateSubscriptionDto } from './dto/create-subscription.dto';
@@ -9,6 +9,16 @@ import { v4 as uuidv4 } from 'uuid';
 import { Node } from '../nodes/entities/node.entity';
 import { Tunnel } from '../tunnels/entities/tunnel.entity';
 import { Inbound, InboundStatus } from '../inbounds/entities/inbound.entity';
+import { sortInboundsByPosition } from '../inbounds/inbound-order';
+import {
+  INBOUND_TYPES,
+  InboundType,
+  VLESS_TLS_TYPES,
+} from './inbound-config.constants';
+
+type InboundConfig = NonNullable<
+  CreateSubscriptionDto['inboundsConfig']
+>[number];
 
 @Injectable()
 export class SubscriptionsService {
@@ -28,8 +38,10 @@ export class SubscriptionsService {
       order: { createdAt: 'DESC' },
     });
     for (const subscription of subscriptions) {
-      subscription.inbounds = (subscription.inbounds || []).filter(
-        (inbound) => inbound.status === InboundStatus.Active,
+      subscription.inbounds = sortInboundsByPosition(
+        (subscription.inbounds || []).filter(
+          (inbound) => inbound.status === InboundStatus.Active,
+        ),
       );
     }
     return subscriptions;
@@ -40,7 +52,7 @@ export class SubscriptionsService {
     const sub = this.subRepo.create({
       name: dto.name,
       uuid: uuidv4(),
-      inboundsConfig: dto.inboundsConfig || [],
+      inboundsConfig: this.withConfigIds(dto.inboundsConfig || []),
       isAutoRotationEnabled: dto.isAutoRotationEnabled ?? true,
       node: await this.resolveNode(dto.nodeId),
       relayServer: await this.resolveRelay(dto.relayServerId),
@@ -64,9 +76,11 @@ export class SubscriptionsService {
       sub.name = dto.name;
     }
 
+    let nextConfigs: InboundConfig[] | undefined;
     if (dto.inboundsConfig) {
       await this.validateInboundsConfig(dto.inboundsConfig);
-      sub.inboundsConfig = dto.inboundsConfig;
+      nextConfigs = this.withConfigIds(dto.inboundsConfig);
+      sub.inboundsConfig = nextConfigs;
     }
 
     if (dto.isAutoRotationEnabled !== undefined) {
@@ -83,7 +97,13 @@ export class SubscriptionsService {
       sub.relayServerId = dto.relayServerId;
     }
 
-    return this.subRepo.save(sub);
+    if (!nextConfigs) return this.subRepo.save(sub);
+
+    return this.subRepo.manager.transaction(async (entityManager) => {
+      const savedSubscription = await entityManager.save(Subscription, sub);
+      await this.syncActivePositions(entityManager, id, nextConfigs);
+      return savedSubscription;
+    });
   }
 
   async remove(id: string) {
@@ -158,54 +178,112 @@ export class SubscriptionsService {
   private async validateInboundsConfig(
     inboundsConfig?: CreateSubscriptionDto['inboundsConfig'],
   ) {
+    const configIds = new Set<string>();
     for (const config of inboundsConfig || []) {
+      this.validateConfigIdentity(config, configIds);
+      this.validateTlsConfig(config);
       if (config.type === 'custom') continue;
 
-      if (config.nodeId) {
-        const node = await this.nodeRepo.findOne({
-          where: { id: config.nodeId },
-        });
-        if (!node) {
-          throw new BadRequestException('Node not found');
-        }
-      }
+      await this.validateConfigRelations(config);
+      this.validateConfigPort(config.port);
+    }
+  }
 
-      if (config.relayServerId) {
-        const relay = await this.tunnelRepo.findOne({
-          where: { id: config.relayServerId },
-        });
-        if (!relay) {
-          throw new BadRequestException('Relay server not found');
-        }
+  private withConfigIds(configs: InboundConfig[]): InboundConfig[] {
+    return configs.map((config) => ({
+      ...config,
+      configId: config.configId || uuidv4(),
+      certificateFile: config.certificateFile?.trim() || undefined,
+      keyFile: config.keyFile?.trim() || undefined,
+    }));
+  }
 
-        if (config.nodeId && relay.nodeId && relay.nodeId !== config.nodeId) {
-          throw new BadRequestException(
-            'Relay server belongs to another node',
-          );
-        }
-      }
+  private validateConfigIdentity(
+    config: InboundConfig,
+    configIds: Set<string>,
+  ) {
+    if (
+      !INBOUND_TYPES.includes(config.type as (typeof INBOUND_TYPES)[number])
+    ) {
+      throw new BadRequestException('Unsupported inbound type');
+    }
+    if (!config.configId) return;
+    if (configIds.has(config.configId)) {
+      throw new BadRequestException('Duplicate inbound config ID');
+    }
+    configIds.add(config.configId);
+  }
 
-      if (
-        config.port === undefined ||
-        config.port === null ||
-        config.port === '' ||
-        config.port === 'random'
-      ) {
-        continue;
-      }
+  private validateTlsConfig(config: InboundConfig) {
+    if (!VLESS_TLS_TYPES.has(config.type as InboundType)) return;
+    if (!config.sni?.trim()) {
+      throw new BadRequestException('SNI is required for VLESS TLS');
+    }
+    const hasCertificate = Boolean(config.certificateFile?.trim());
+    const hasPrivateKey = Boolean(config.keyFile?.trim());
+    if (hasCertificate !== hasPrivateKey) {
+      throw new BadRequestException(
+        'Certificate and private key must be provided together',
+      );
+    }
+  }
 
-      const port =
-        typeof config.port === 'number'
-          ? config.port
-          : /^\d+$/.test(config.port)
-            ? Number(config.port)
-            : NaN;
+  private async validateConfigRelations(config: InboundConfig) {
+    if (config.nodeId) {
+      const node = await this.nodeRepo.findOne({
+        where: { id: config.nodeId },
+      });
+      if (!node) throw new BadRequestException('Node not found');
+    }
+    if (!config.relayServerId) return;
 
-      if (!Number.isInteger(port) || port < 1 || port > 65535) {
-        throw new BadRequestException(
-          'Port must be "random" or an integer from 1 to 65535',
-        );
-      }
+    const relay = await this.tunnelRepo.findOne({
+      where: { id: config.relayServerId },
+    });
+    if (!relay) throw new BadRequestException('Relay server not found');
+    if (config.nodeId && relay.nodeId && relay.nodeId !== config.nodeId) {
+      throw new BadRequestException('Relay server belongs to another node');
+    }
+  }
+
+  private validateConfigPort(port?: number | string) {
+    if (
+      port === undefined ||
+      port === null ||
+      port === '' ||
+      port === 'random'
+    ) {
+      return;
+    }
+    const parsedPort =
+      typeof port === 'number' ? port : /^\d+$/.test(port) ? Number(port) : NaN;
+    if (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
+      throw new BadRequestException(
+        'Port must be "random" or an integer from 1 to 65535',
+      );
+    }
+  }
+
+  private async syncActivePositions(
+    entityManager: EntityManager,
+    subscriptionId: string,
+    configs: InboundConfig[],
+  ) {
+    await entityManager.update(
+      Inbound,
+      { subscriptionId, status: InboundStatus.Active },
+      { position: configs.length },
+    );
+    for (const [position, config] of configs.entries()) {
+      await entityManager.update(
+        Inbound,
+        {
+          subscriptionId,
+          configId: config.configId,
+          status: InboundStatus.Active,
+        },
+        { position },
+      );
     }
   }
 }

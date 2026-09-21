@@ -30,6 +30,7 @@ export class Subscription {
 
   @Column({ type: 'simple-json', nullable: true })
   inboundsConfig: Array<{
+    configId?: string;
     type?: string;
     port?: number | string;
     sni?: string;

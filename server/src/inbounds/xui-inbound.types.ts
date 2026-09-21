@@ -61,4 +61,12 @@ export interface XuiStreamSettings {
     host?: string;
     mode?: string;
   };
+  tlsSettings?: {
+    serverName?: string;
+    alpn?: string[];
+    certificates?: Array<{
+      certificateFile: string;
+      keyFile: string;
+    }>;
+  };
 }

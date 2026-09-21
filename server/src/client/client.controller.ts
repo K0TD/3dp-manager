@@ -22,6 +22,7 @@ import { Public } from '../auth/public.decorator';
 import { Tunnel } from 'src/tunnels/entities/tunnel.entity';
 import { generateSubscriptionHtmlWithQr } from './templates/subscription.template';
 import { InboundStatus } from '../inbounds/entities/inbound.entity';
+import { sortInboundsByPosition } from '../inbounds/inbound-order';
 
 @Controller()
 export class ClientController {
@@ -52,11 +53,10 @@ export class ClientController {
       throw new HttpException('Subscription not found', HttpStatus.NOT_FOUND);
     }
 
-    const links =
-      sub.inbounds
-        ?.filter((inbound) => inbound.status === InboundStatus.Active)
-        .map((i) => i.link)
-        .filter((l) => l && l.length > 0) || [];
+    const links = sortInboundsByPosition(sub.inbounds || [])
+      .filter((inbound) => inbound.status === InboundStatus.Active)
+      .map((inbound) => inbound.link)
+      .filter((link) => link && link.length > 0);
 
     const plainTextList = links.join('\n');
     const base64Config = Buffer.from(plainTextList).toString('base64');
@@ -123,18 +123,17 @@ export class ClientController {
       throw new HttpException('Subscription not found', HttpStatus.NOT_FOUND);
     }
 
-    const links =
-      sub.inbounds
-        ?.filter(
-          (i) =>
-            i.status === InboundStatus.Active && i.link && i.link.length > 0,
-        )
-        .map((i) => {
-          if (i.protocol === 'custom') {
-            return i.link;
-          }
-          return this.patchLink(i.link, relayHost);
-        }) || [];
+    const links = sortInboundsByPosition(sub.inbounds || [])
+      .filter(
+        (inbound) =>
+          inbound.status === InboundStatus.Active &&
+          inbound.link &&
+          inbound.link.length > 0,
+      )
+      .map((inbound) => {
+        if (inbound.protocol === 'custom') return inbound.link;
+        return this.patchLink(inbound.link, relayHost);
+      });
 
     const plainTextList = links.join('\n');
     const base64Config = Buffer.from(plainTextList).toString('base64');

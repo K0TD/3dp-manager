@@ -162,6 +162,60 @@ describe('InboundBuilderService', () => {
     });
   });
 
+  describe('VLESS TLS', () => {
+    const params = {
+      port: 443,
+      uuid: 'test-uuid-tls',
+      sni: 'tls.example.com',
+    };
+
+    it('должен создать TCP TLS inbound с сертификатом по умолчанию', () => {
+      const inbound = service.buildVlessTlsTcp(params);
+      const settings = JSON.parse(inbound.settings);
+      const streamSettings = JSON.parse(inbound.streamSettings);
+
+      expect(inbound.remark).toBe('vless-tcp-tls');
+      expect(settings.clients[0].flow).toBe('xtls-rprx-vision');
+      expect(streamSettings).toMatchObject({
+        network: 'tcp',
+        security: 'tls',
+        tlsSettings: {
+          serverName: 'tls.example.com',
+          certificates: [
+            {
+              certificateFile: '/root/cert/tls.example.com/fullchain.pem',
+              keyFile: '/root/cert/tls.example.com/privkey.pem',
+            },
+          ],
+        },
+      });
+    });
+
+    it('должен создать WebSocket TLS inbound и ссылку', () => {
+      const inbound = service.buildVlessTlsWs({
+        ...params,
+        certificateFile: '/cert/fullchain.pem',
+        keyFile: '/cert/privkey.pem',
+      });
+      const streamSettings = JSON.parse(inbound.streamSettings);
+      const link = service.buildInboundLink(
+        inbound,
+        '203.0.113.10',
+        params.uuid,
+        '%F0%9F%92%AF',
+      );
+
+      expect(streamSettings.wsSettings).toMatchObject({
+        path: '/',
+        headers: { Host: 'tls.example.com' },
+      });
+      expect(link).toContain('type=ws');
+      expect(link).toContain('security=tls');
+      expect(link).toContain('sni=tls.example.com');
+      expect(link).toContain('host=tls.example.com');
+    });
+  });
+
   describe('buildVmessTcp', () => {
     const params = {
       port: 20000,

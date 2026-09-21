@@ -53,14 +53,18 @@ export class NodesService {
     });
   }
 
-  async findOneWithSecrets(id: string) {
-    const node = await this.nodesRepo
+  async findOneWithSecrets(id: string, includeDeleted = false) {
+    const qb = this.nodesRepo
       .createQueryBuilder('node')
       .addSelect('node.password')
       .addSelect('node.token')
-      .where('node.id = :id', { id })
-      .andWhere('node.deletedAt IS NULL')
-      .getOne();
+      .where('node.id = :id', { id });
+
+    if (!includeDeleted) {
+      qb.andWhere('node.deletedAt IS NULL');
+    }
+
+    const node = await qb.getOne();
 
     if (!node) {
       throw new NotFoundException('Node not found');
@@ -153,25 +157,56 @@ export class NodesService {
     return this.nodesRepo.save(node);
   }
 
-  async remove(id: string, mode: 'safe' | 'deferred' = 'safe') {
-    const node = await this.findOneWithSecrets(id);
+  async remove(id: string, mode: 'safe' | 'deferred' | 'force' = 'safe') {
+    const node = await this.findOneWithSecrets(id, mode === 'force');
+    if (mode === 'force') return this.forcePurgeNode(node);
     if (mode === 'deferred') return this.deferRemoval(node);
     await this.cleanupNodeDependencies(node);
     await this.nodesRepo.remove(node);
 
-    const main = await this.getDefaultNode();
-    if (!main) {
-      const fallback = await this.nodesRepo.findOne({
-        where: { deletedAt: IsNull() },
-        order: { createdAt: 'DESC' },
+    await this.ensureMainNode();
+    return { success: true };
+  }
+
+  private async forcePurgeNode(node: Node) {
+    const id = node.id;
+
+    const subscriptions = await this.subscriptionsRepo.find();
+    for (const subscription of subscriptions) {
+      const inheritedDeletedNode = subscription.nodeId === node.id;
+      let changed = inheritedDeletedNode;
+      subscription.inboundsConfig = (subscription.inboundsConfig || []).map((item) => {
+        if (item.nodeId !== node.id && !(inheritedDeletedNode && !item.nodeId)) {
+          return item;
+        }
+        changed = true;
+        const { nodeId: _nodeId, relayServerId: _relayId, ...rest } = item;
+        return {
+          ...rest,
+          enabled: false,
+          disabledReason: `Нода «${node.name}» удалена`,
+        };
       });
-      if (fallback) {
-        fallback.isMain = true;
-        await this.nodesRepo.save(fallback);
+      if (inheritedDeletedNode) {
+        subscription.nodeId = undefined;
+        subscription.node = undefined;
       }
+      if (changed) await this.subscriptionsRepo.save(subscription);
     }
 
-    return { success: true };
+    const tunnels = await this.tunnelsRepo.find({ where: { nodeId: node.id } });
+    for (const tunnel of tunnels) {
+      tunnel.nodeId = undefined;
+      tunnel.node = undefined;
+      tunnel.isInstalled = false;
+    }
+    if (tunnels.length) await this.tunnelsRepo.save(tunnels);
+
+    await this.tunnelsRepo.delete({ nodeId: id });
+    await this.inboundsRepo.delete({ nodeId: id });
+    await this.nodesRepo.remove(node);
+    await this.ensureMainNode();
+    return { success: true, forced: true };
   }
 
   private async deferRemoval(node: Node) {
@@ -242,7 +277,11 @@ export class NodesService {
 
     await this.tunnelsRepo.delete({ nodeId: id });
     await this.inboundsRepo.delete({ nodeId: id });
+    await this.detachNodeSubscriptions(node);
+  }
 
+  private async detachNodeSubscriptions(node: Node) {
+    const id = node.id;
     const subscriptions = await this.subscriptionsRepo.find({
       where: [{ nodeId: id }],
     });

@@ -397,8 +397,11 @@ export class XuiService {
         '/panel/api/server/getNewX25519Cert',
       );
       if (res.data?.success && res.data.obj) return res.data.obj;
-    } catch {
-      this.logger.error('Ошибка получения ключей Reality');
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `Ошибка получения ключей Reality (${node?.name || 'main'}): ${msg}`,
+      );
     }
     return null;
   }

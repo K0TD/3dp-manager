@@ -35,6 +35,8 @@ import {
 } from '@mui/material';
 import {
   Add,
+  ArrowDownward,
+  ArrowUpward,
   ContentCopy,
   Delete,
   Edit,
@@ -73,6 +75,7 @@ interface Tunnel {
 
 interface InboundConfigUI {
   id: string;
+  configId: string;
   type: string;
   port: string;
   sni: string;
@@ -101,6 +104,8 @@ const CONNECTION_OPTIONS = [
   'vless-xhttp-reality',
   'vless-grpc-reality',
   'vless-ws',
+  'vless-tcp-tls',
+  'vless-ws-tls',
   'hysteria2-udp',
   'vmess-tcp',
   'shadowsocks-tcp',
@@ -108,7 +113,11 @@ const CONNECTION_OPTIONS = [
   'custom',
 ];
 
-const generateId = () => Math.random().toString(36).substring(7);
+const CERTIFICATE_TYPES = new Set([
+  'hysteria2-udp',
+  'vless-tcp-tls',
+  'vless-ws-tls',
+]);
 
 const getSubscriptionUrl = (uuid: string) => {
   const path = `/bus/${uuid}`;
@@ -224,9 +233,11 @@ export default function SubscriptionsPage() {
 
   const createInbound = (type = 'vless-tcp-reality'): InboundConfigUI => {
     const nodeId = getDefaultNodeId();
+    const configId = crypto.randomUUID();
     const certDefaults = type === 'hysteria2-udp' ? getHysteriaCertDefaults(nodeId) : {};
     return {
-      id: generateId(),
+      id: configId,
+      configId,
       type,
       port: 'random',
       sni: type === 'hysteria2-udp' ? '' : 'random',
@@ -272,9 +283,14 @@ export default function SubscriptionsPage() {
     setInbounds(
       (sub.inboundsConfig?.length ? sub.inboundsConfig : [createInbound()]).map((item) => {
         const nodeId = item.nodeId || getDefaultNodeId();
-        const certDefaults = getHysteriaCertDefaults(nodeId);
+        const certDefaults =
+          item.type === 'hysteria2-udp'
+            ? getHysteriaCertDefaults(nodeId)
+            : { certificateFile: '', keyFile: '' };
+        const configId = item.configId || crypto.randomUUID();
         return {
-          id: generateId(),
+          id: configId,
+          configId,
           type: item.type || 'vless-tcp-reality',
           port: item.port ? item.port.toString() : 'random',
           sni: item.type === 'hysteria2-udp' ? '' : item.sni || 'random',
@@ -284,11 +300,13 @@ export default function SubscriptionsPage() {
           flag: item.flag || getNodeFlag(nodeId),
           name: item.name || '',
           certificateFile:
-            item.type === 'hysteria2-udp'
+            CERTIFICATE_TYPES.has(item.type)
               ? item.certificateFile || certDefaults.certificateFile
               : undefined,
           keyFile:
-            item.type === 'hysteria2-udp' ? item.keyFile || certDefaults.keyFile : undefined,
+            CERTIFICATE_TYPES.has(item.type)
+              ? item.keyFile || certDefaults.keyFile
+              : undefined,
         };
       }),
     );
@@ -349,9 +367,22 @@ export default function SubscriptionsPage() {
     if (inbounds.length < 20) setInbounds((prev) => [...prev, createInbound()]);
   };
 
+  const moveInbound = (index: number, direction: -1 | 1) => {
+    const targetIndex = index + direction;
+    if (targetIndex < 0 || targetIndex >= inbounds.length) return;
+    setInbounds((previousInbounds) => {
+      const reorderedInbounds = [...previousInbounds];
+      [reorderedInbounds[index], reorderedInbounds[targetIndex]] = [
+        reorderedInbounds[targetIndex],
+        reorderedInbounds[index],
+      ];
+      return reorderedInbounds;
+    });
+  };
+
   const removeInbound = (id?: string) => {
     if (!id) {
-      setInbounds([{ ...createInbound(), id: crypto.randomUUID() }]);
+      setInbounds([createInbound()]);
       setPortErrors({});
       return;
     }
@@ -390,8 +421,13 @@ export default function SubscriptionsPage() {
       name,
       inboundsConfig: inbounds.map((inbound) =>
         inbound.type === 'custom'
-          ? { type: inbound.type, link: inbound.link }
+          ? {
+              configId: inbound.configId,
+              type: inbound.type,
+              link: inbound.link,
+            }
           : {
+              configId: inbound.configId,
               type: inbound.type,
               port: inbound.port === 'random' ? 'random' : parseInt(inbound.port, 10),
               sni: inbound.type === 'hysteria2-udp' ? undefined : inbound.sni,
@@ -402,11 +438,11 @@ export default function SubscriptionsPage() {
               flag: inbound.flag || getNodeFlag(inbound.nodeId) || undefined,
               name: inbound.name?.trim() || undefined,
               certificateFile:
-                inbound.type === 'hysteria2-udp'
+                CERTIFICATE_TYPES.has(inbound.type)
                   ? inbound.certificateFile?.trim() || undefined
                   : undefined,
               keyFile:
-                inbound.type === 'hysteria2-udp'
+                CERTIFICATE_TYPES.has(inbound.type)
                   ? inbound.keyFile?.trim() || undefined
                   : undefined,
             },
@@ -723,13 +759,29 @@ export default function SubscriptionsPage() {
                   p: 2,
                   flexWrap: 'nowrap',
                   width: 'fit-content',
-                  minWidth: inbound.type === 'custom' ? 780 : inbound.type === 'hysteria2-udp' ? 1540 : 1260,
+                  minWidth: inbound.type === 'custom' ? 780 : CERTIFICATE_TYPES.has(inbound.type) ? 1540 : 1260,
                   border: 1,
                   borderColor: 'divider',
                   borderRadius: 1,
                 }}
               >
-                <Typography sx={{ mt: 1, width: 34, flexShrink: 0, fontWeight: 'bold' }}>#{index + 1}</Typography>
+                <Stack sx={{ width: 40, flexShrink: 0 }} alignItems="center" spacing={0.25}>
+                  <Typography sx={{ fontWeight: 'bold' }}>#{index + 1}</Typography>
+                  <Tooltip title="Переместить вверх">
+                    <span>
+                      <IconButton size="small" aria-label={`Переместить строку ${index + 1} вверх`} disabled={index === 0} onClick={() => moveInbound(index, -1)}>
+                        <ArrowUpward fontSize="small" />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                  <Tooltip title="Переместить вниз">
+                    <span>
+                      <IconButton size="small" aria-label={`Переместить строку ${index + 1} вниз`} disabled={index === inbounds.length - 1} onClick={() => moveInbound(index, 1)}>
+                        <ArrowDownward fontSize="small" />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                </Stack>
                 <FormControl size="small" sx={{ width: 185, flexShrink: 0 }}>
                   <InputLabel>Тип</InputLabel>
                   <Select value={inbound.type} label="Тип" onChange={(e) => handleInboundChange(inbound.id, 'type', e.target.value)}>
@@ -763,7 +815,7 @@ export default function SubscriptionsPage() {
                     </FormControl>
                     <TextField size="small" label="Название" value={inbound.name || ''} onChange={(e) => handleInboundChange(inbound.id, 'name', e.target.value)} sx={{ width: 180, flexShrink: 0 }} />
                     <TextField size="small" label="Порт" placeholder="random или порт" value={inbound.port} onChange={(e) => handleInboundChange(inbound.id, 'port', e.target.value)} error={!!portErrors[inbound.id]} helperText={portErrors[inbound.id] || ''} sx={{ width: 150, flexShrink: 0 }} />
-                    {inbound.type === 'hysteria2-udp' && (
+                    {CERTIFICATE_TYPES.has(inbound.type) && (
                       <>
                         <TextField
                           size="small"

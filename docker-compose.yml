@@ -34,6 +34,9 @@ services:
       PORT: ${PORT}
       LOG_LEVEL: ${LOG_LEVEL}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     networks:
       - app-network
 
@@ -45,6 +48,9 @@ services:
       - backend
     ports:
       - "80:80"
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     networks:
       - app-network
 

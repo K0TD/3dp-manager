@@ -16,6 +16,11 @@ describe('SubscriptionsService', () => {
   let subRepo: Repository<Subscription>;
   let xuiService: XuiService;
 
+  const mockEntityManager = {
+    save: jest.fn(async (_entity, subscription) => subscription),
+    update: jest.fn(),
+  };
+
   const mockSubRepo = {
     find: jest.fn(),
     findOne: jest.fn(),
@@ -23,6 +28,13 @@ describe('SubscriptionsService', () => {
     save: jest.fn(),
     delete: jest.fn(),
     remove: jest.fn(),
+    manager: {
+      transaction: jest.fn(
+        async (
+          work: (entityManager: typeof mockEntityManager) => Promise<unknown>,
+        ) => work(mockEntityManager),
+      ),
+    },
   };
 
   const mockNodeRepo = {
@@ -150,7 +162,12 @@ describe('SubscriptionsService', () => {
       expect(subRepo.create).toHaveBeenCalledWith({
         name: 'Test Subscription',
         uuid: expect.any(String),
-        inboundsConfig: createDto.inboundsConfig,
+        inboundsConfig: [
+          expect.objectContaining({
+            ...createDto.inboundsConfig?.[0],
+            configId: expect.any(String),
+          }),
+        ],
         isAutoRotationEnabled: true,
         node: null,
         relayServer: null,
@@ -198,6 +215,33 @@ describe('SubscriptionsService', () => {
         expect.objectContaining({
           isAutoRotationEnabled: true,
         }),
+      );
+    });
+
+    it('должен отклонять неизвестный тип inbound', async () => {
+      await expect(
+        service.create({
+          name: 'Invalid',
+          inboundsConfig: [{ type: 'unknown' }],
+        }),
+      ).rejects.toThrow('Unsupported inbound type');
+    });
+
+    it('должен требовать сертификат и ключ вместе для VLESS TLS', async () => {
+      await expect(
+        service.create({
+          name: 'Invalid TLS',
+          inboundsConfig: [
+            {
+              type: 'vless-tcp-tls',
+              port: 443,
+              sni: 'example.com',
+              certificateFile: '/cert/fullchain.pem',
+            },
+          ],
+        }),
+      ).rejects.toThrow(
+        'Certificate and private key must be provided together',
       );
     });
   });
@@ -251,16 +295,22 @@ describe('SubscriptionsService', () => {
     it('должен обновить inboundsConfig', async () => {
       const newConfig = [{ type: 'vmess-tcp', port: 8080 }];
       mockSubRepo.findOne.mockResolvedValue(existingSub);
-      mockSubRepo.save.mockResolvedValue({
-        ...existingSub,
-        inboundsConfig: newConfig,
-      });
 
       await service.update('test-id', { inboundsConfig: newConfig });
 
-      expect(subRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({ inboundsConfig: newConfig }),
+      expect(mockEntityManager.save).toHaveBeenCalledWith(
+        Subscription,
+        expect.objectContaining({
+          inboundsConfig: [
+            expect.objectContaining({
+              type: 'vmess-tcp',
+              port: 8080,
+              configId: expect.any(String),
+            }),
+          ],
+        }),
       );
+      expect(mockEntityManager.update).toHaveBeenCalledTimes(2);
     });
 
     it('НЕ должен обновлять имя на пустую строку (защита от очистки)', async () => {

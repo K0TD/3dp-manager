@@ -17,11 +17,12 @@ export const nodesApi = {
     return data;
   },
 
-  async remove(id: string, mode: 'safe' | 'deferred' = 'safe') {
-    const { data } = await api.delete<{ success: boolean; deferred?: boolean }>(
-      `/nodes/${id}`,
-      { params: { mode } },
-    );
+  async remove(id: string, mode: 'safe' | 'deferred' | 'force' = 'safe') {
+    const { data } = await api.delete<{
+      success: boolean;
+      deferred?: boolean;
+      forced?: boolean;
+    }>(`/nodes/${id}`, { params: { mode } });
     return data;
   },
 

@@ -4,6 +4,7 @@ import {
   PrimaryGeneratedColumn,
   ManyToOne,
   CreateDateColumn,
+  JoinColumn,
 } from 'typeorm';
 import { Subscription } from '../../subscriptions/entities/subscription.entity';
 import { Node } from '../../nodes/entities/node.entity';
@@ -35,6 +36,12 @@ export class Inbound {
   @Column({ type: 'text', nullable: true })
   link: string;
 
+  @Column({ type: 'uuid', nullable: true })
+  configId?: string;
+
+  @Column({ type: 'int', default: 0 })
+  position: number;
+
   @Column({ type: 'varchar', default: InboundStatus.Active })
   status: InboundStatus;
 
@@ -50,7 +57,11 @@ export class Inbound {
   @Column({ type: 'text', nullable: true })
   lastCleanupError?: string;
 
+  @Column({ type: 'uuid', nullable: true })
+  subscriptionId?: string;
+
   @ManyToOne(() => Subscription, (sub) => sub.inbounds, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'subscriptionId' })
   subscription: Subscription;
 
   @Column({ nullable: true })

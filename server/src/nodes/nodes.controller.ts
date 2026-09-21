@@ -48,7 +48,7 @@ export class NodesController {
   @Delete(':id')
   remove(
     @Param('id') id: string,
-    @Query('mode') mode: 'safe' | 'deferred' = 'safe',
+    @Query('mode') mode: 'safe' | 'deferred' | 'force' = 'safe',
   ) {
     return this.nodesService.remove(id, mode);
   }

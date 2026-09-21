@@ -193,10 +193,19 @@ Web UI доступен по адресу, который показал уст�
 - SNI: конкретный домен или `random`;
 - готовую внешнюю ссылку для типа `custom`.
 
-Для `hysteria2-udp` можно указать отдельные пути к сертификату и ключу:
+Доступны варианты VLESS с обычным TLS:
+
+- `vless-tcp-tls` — TCP + TLS с flow `xtls-rprx-vision`;
+- `vless-ws-tls` — WebSocket + TLS с путём `/` и Host, равным SNI.
+
+Для `hysteria2-udp`, `vless-tcp-tls` и `vless-ws-tls` можно указать отдельные пути к сертификату и ключу:
 
 - `certificateFile`, например `/root/cert/example.com/fullchain.pem`;
 - `keyFile`, например `/root/cert/example.com/privkey.pem`.
+
+Если пути для VLESS TLS не заданы, используются `/root/cert/<SNI>/fullchain.pem` и `/root/cert/<SNI>/privkey.pem`.
+
+Стрелки рядом с номером инбаунда меняют порядок ссылок. Новый порядок применяется к активной подписке сразу после сохранения и сохраняется при последующих ротациях.
 
 Если порт или SNI указаны как `random`, значение будет выбрано при ротации из доступного диапазона или whitelist доменов.
 

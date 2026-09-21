@@ -31,6 +31,7 @@ import { AddResilientRotation1780000000000 } from './migrations/1780000000000-ad
 import { RotationOperation } from './rotation/entities/rotation-operation.entity';
 import { BackupModule } from './backup/backup.module';
 import { InitialSchema1700000000000 } from './migrations/1700000000000-initial-schema';
+import { AddInboundOrder1790000000000 } from './migrations/1790000000000-add-inbound-order';
 
 @Module({
   imports: [
@@ -65,6 +66,7 @@ import { InitialSchema1700000000000 } from './migrations/1700000000000-initial-s
         AddNodeIpFlagAndInboundLabels1770000000000,
         AddNodeDomain1770000000001,
         AddResilientRotation1780000000000,
+        AddInboundOrder1790000000000,
       ],
       synchronize: process.env.DB_SYNCHRONIZE === 'true',
       migrationsRun: process.env.DB_MIGRATIONS_RUN !== 'false',

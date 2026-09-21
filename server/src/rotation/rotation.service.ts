@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit, NotFoundException } from '@nestjs/common';
+import { Injectable, OnModuleInit, NotFoundException, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
@@ -21,8 +21,39 @@ import {
 
 type InboundConfig = NonNullable<Subscription['inboundsConfig']>[number];
 
+interface PositionedInboundConfig {
+  config: InboundConfig;
+  position: number;
+}
+
+interface CreateInboundRequest {
+  subscription: Subscription;
+  positionedConfig: PositionedInboundConfig;
+  node?: Node;
+  domains: Domain[];
+  usedPorts: Set<number>;
+  generationId: string;
+  realityKeys?: { privateKey: string; publicKey: string } | null;
+}
+
+interface SaveStagedInboundRequest {
+  subscription: Subscription;
+  config: InboundConfig;
+  position: number;
+  node: Node;
+  relayServer?: Tunnel;
+  generationId: string;
+  xuiId: number;
+  port: number;
+  protocol: string;
+  remark?: string;
+  link: string;
+}
+
 @Injectable()
 export class RotationService implements OnModuleInit {
+  private readonly logger = new Logger(RotationService.name);
+  private readonly maxCleanupAttempts = 5;
   private processingOperation = false;
 
   constructor(
@@ -65,7 +96,8 @@ export class RotationService implements OnModuleInit {
     };
     for (const [key, value] of Object.entries(defaults)) {
       const existing = await this.settingRepo.findOne({ where: { key } });
-      if (!existing) await this.settingRepo.save(this.settingRepo.create({ key, value }));
+      if (!existing)
+        await this.settingRepo.save(this.settingRepo.create({ key, value }));
     }
   }
 
@@ -169,13 +201,18 @@ export class RotationService implements OnModuleInit {
     const defaultNode = await this.getDefaultNode();
     const results: RotationNodeResult[] = [];
     for (const subscription of subscriptions) {
-      results.push(...(await this.rotateSubscription(subscription, domains, defaultNode)));
+      results.push(
+        ...(await this.rotateSubscription(subscription, domains, defaultNode)),
+      );
     }
     const success =
-      results.length > 0 && results.every((item) => item.status === 'succeeded');
+      results.length > 0 &&
+      results.every((item) => item.status === 'succeeded');
     return {
       success,
-      message: success ? 'Ротация успешно выполнена' : 'Ротация завершена частично',
+      message: success
+        ? 'Ротация успешно выполнена'
+        : 'Ротация завершена частично',
       results,
     };
   }
@@ -189,29 +226,44 @@ export class RotationService implements OnModuleInit {
     domains: Domain[],
     defaultNode: Node | null,
   ) {
-    const groups = new Map<string, { node?: Node; configs: InboundConfig[] }>();
-    for (const config of (subscription.inboundsConfig || []).filter(
-      (item) => item.enabled !== false,
-    )) {
+    const groups = new Map<
+      string,
+      { node?: Node; configs: PositionedInboundConfig[] }
+    >();
+    const enabledConfigs = (subscription.inboundsConfig || [])
+      .map((config, position) => ({ config, position }))
+      .filter(({ config }) => config.enabled !== false);
+    for (const positionedConfig of enabledConfigs) {
+      const { config } = positionedConfig;
       const node =
         config.type === 'custom'
           ? undefined
-          : await this.resolveNode(config.nodeId, subscription.node, defaultNode);
-      const key = config.type === 'custom' ? '__custom' : node?.id || '__missing';
+          : await this.resolveNode(
+              config.nodeId,
+              subscription.node,
+              defaultNode,
+            );
+      const key =
+        config.type === 'custom' ? '__custom' : node?.id || '__missing';
       const group = groups.get(key) || { node, configs: [] };
-      group.configs.push(config);
+      group.configs.push(positionedConfig);
       groups.set(key, group);
     }
 
     const results: RotationNodeResult[] = [];
     const desiredKeys = new Set(groups.keys());
     for (const [key, group] of groups) {
-      results.push(await this.rotateNodeGroup(subscription, key, group, domains));
+      results.push(
+        await this.rotateNodeGroup(subscription, key, group, domains),
+      );
     }
 
     const obsolete = (subscription.inbounds || []).filter((inbound) => {
       if (inbound.status !== InboundStatus.Active) return false;
-      const key = inbound.protocol === 'custom' ? '__custom' : inbound.nodeId || '__missing';
+      const key =
+        inbound.protocol === 'custom'
+          ? '__custom'
+          : inbound.nodeId || '__missing';
       return !desiredKeys.has(key);
     });
     await this.queueCleanup(obsolete);
@@ -221,16 +273,19 @@ export class RotationService implements OnModuleInit {
   private async rotateNodeGroup(
     subscription: Subscription,
     key: string,
-    group: { node?: Node; configs: InboundConfig[] },
+    group: { node?: Node; configs: PositionedInboundConfig[] },
     domains: Domain[],
   ): Promise<RotationNodeResult> {
     const generationId = uuidv4();
     const created: Inbound[] = [];
     const usedPorts = new Set<number>();
-    let realityKeys: Awaited<ReturnType<XuiService['getNewX25519Cert']>> | undefined;
+    let realityKeys:
+      | Awaited<ReturnType<XuiService['getNewX25519Cert']>>
+      | undefined;
 
     try {
-      if (key === '__missing') throw new Error('Для конфигурации не назначена нода');
+      if (key === '__missing')
+        throw new Error('Для конфигурации не назначена нода');
       if (
         group.node &&
         group.node.consecutiveFailures >= 3 &&
@@ -242,22 +297,25 @@ export class RotationService implements OnModuleInit {
       ) {
         throw new Error(`Нода ${group.node.name} временно недоступна`);
       }
-      for (const config of group.configs) {
+      for (const positionedConfig of group.configs) {
+        const { config } = positionedConfig;
         if (config.type?.includes('reality') && !realityKeys) {
           realityKeys = await this.xuiService.getNewX25519Cert(group.node);
           if (!realityKeys) throw new Error('Нода не выдала Reality-ключи');
         }
-        const inbound = await this.createInbound(
+        const inbound = await this.createInbound({
           subscription,
-          config,
-          group.node,
+          positionedConfig,
+          node: group.node,
           domains,
           usedPorts,
           generationId,
           realityKeys,
-        );
+        });
         if (!inbound) {
-          throw new Error(`3x-ui отклонил inbound «${config.name || config.type}»`);
+          throw new Error(
+            `3x-ui отклонил inbound «${config.name || config.type}»`,
+          );
         }
         created.push(inbound);
       }
@@ -300,7 +358,8 @@ export class RotationService implements OnModuleInit {
         subscriptionName: subscription.name,
         nodeId: group.node?.id,
         nodeName:
-          group.node?.name || (key === '__custom' ? 'Локальные ссылки' : 'Без ноды'),
+          group.node?.name ||
+          (key === '__custom' ? 'Локальные ссылки' : 'Без ноды'),
         status: 'preserved',
         created: 0,
         pendingCleanup: created.length,
@@ -309,15 +368,16 @@ export class RotationService implements OnModuleInit {
     }
   }
 
-  private async createInbound(
-    subscription: Subscription,
-    config: InboundConfig,
-    node: Node | undefined,
-    domains: Domain[],
-    usedPorts: Set<number>,
-    generationId: string,
-    realityKeys?: { privateKey: string; publicKey: string } | null,
-  ) {
+  private async createInbound(request: CreateInboundRequest) {
+    const {
+      subscription,
+      positionedConfig: { config, position },
+      node,
+      domains,
+      usedPorts,
+      generationId,
+      realityKeys,
+    } = request;
     if (config.type === 'custom') {
       return this.inboundRepo.save(
         this.inboundRepo.create({
@@ -326,6 +386,8 @@ export class RotationService implements OnModuleInit {
           protocol: 'custom',
           remark: config.name?.trim() || 'custom-link',
           link: config.link || '',
+          configId: config.configId,
+          position,
           subscription,
           status: InboundStatus.Staged,
           generationId,
@@ -339,7 +401,9 @@ export class RotationService implements OnModuleInit {
     );
     const relayServer =
       relay && this.isRelayAvailableForNode(relay, node) ? relay : undefined;
-    const hostSetting = await this.settingRepo.findOne({ where: { key: 'xui_host' } });
+    const hostSetting = await this.settingRepo.findOne({
+      where: { key: 'xui_host' },
+    });
     const targetAddress =
       relayServer?.domain ||
       relayServer?.ip ||
@@ -349,14 +413,16 @@ export class RotationService implements OnModuleInit {
     const flagSetting = await this.settingRepo.findOne({
       where: { key: 'xui_geo_flag' },
     });
-    const flag = config.flag || node.flag || flagSetting?.value || '%F0%9F%92%AF';
+    const flag =
+      config.flag || node.flag || flagSetting?.value || '%F0%9F%92%AF';
     const port =
       config.port === 'random' || !config.port
         ? await this.getFreePort(usedPorts)
         : Number(config.port);
     usedPorts.add(port);
     const uuid = uuidv4();
-    const sni = config.sni === 'random' ? this.pickDomain(domains) : config.sni || '';
+    const sni =
+      config.sni === 'random' ? this.pickDomain(domains) : config.sni || '';
 
     if (config.type === 'hysteria2-udp') {
       const built = this.inboundBuilder.buildHysteria2Inbound({
@@ -369,51 +435,33 @@ export class RotationService implements OnModuleInit {
       if (config.name?.trim()) built.remark = config.name.trim();
       const xuiId = await this.xuiService.addInbound(built, node);
       if (!xuiId) return null;
-      return this.saveStagedInbound(
+      return this.saveStagedInbound({
         subscription,
+        config,
+        position,
         node,
         relayServer,
         generationId,
         xuiId,
         port,
-        'hysteria2',
-        built.remark,
-        this.inboundBuilder.buildInboundLink(built, targetAddress, uuid, flag),
-      );
+        protocol: 'hysteria2',
+        remark: built.remark,
+        link: this.inboundBuilder.buildInboundLink(
+          built,
+          targetAddress,
+          uuid,
+          flag,
+        ),
+      });
     }
 
-    let built: XuiInboundRaw | null = null;
-    switch (config.type) {
-      case 'vless-tcp-reality':
-        built = realityKeys
-          ? this.inboundBuilder.buildVlessRealityTcp({ port, uuid, sni, ...realityKeys })
-          : null;
-        break;
-      case 'vless-xhttp-reality':
-        built = realityKeys
-          ? this.inboundBuilder.buildVlessRealityXhttp({ port, uuid, sni, ...realityKeys })
-          : null;
-        break;
-      case 'vless-grpc-reality':
-        built = realityKeys
-          ? this.inboundBuilder.buildVlessRealityGrpc({ port, uuid, sni, ...realityKeys })
-          : null;
-        break;
-      case 'vless-ws':
-        built = this.inboundBuilder.buildVlessWs({ port, uuid, sni });
-        break;
-      case 'vmess-tcp':
-        built = this.inboundBuilder.buildVmessTcp({ port, uuid });
-        break;
-      case 'shadowsocks-tcp':
-        built = this.inboundBuilder.buildShadowsocksTcp({ port, uuid });
-        break;
-      case 'trojan-tcp-reality':
-        built = realityKeys
-          ? this.inboundBuilder.buildTrojanRealityTcp({ port, uuid, sni, ...realityKeys })
-          : null;
-        break;
-    }
+    const built = this.buildPanelInbound({
+      config,
+      port,
+      uuid,
+      sni,
+      realityKeys,
+    });
     if (!built) throw new Error(`Неизвестный тип inbound: ${config.type}`);
     if (config.name?.trim()) built.remark = config.name.trim();
     const xuiId = await this.xuiService.addInbound(built, node);
@@ -423,35 +471,92 @@ export class RotationService implements OnModuleInit {
     };
     const credential =
       settings.clients?.[0]?.id || settings.clients?.[0]?.password || '';
-    return this.saveStagedInbound(
+    return this.saveStagedInbound({
       subscription,
+      config,
+      position,
       node,
       relayServer,
       generationId,
       xuiId,
       port,
-      built.protocol,
-      built.remark,
-      this.inboundBuilder.buildInboundLink(
+      protocol: built.protocol,
+      remark: built.remark,
+      link: this.inboundBuilder.buildInboundLink(
         built,
         targetAddress,
         credential,
         flag,
       ),
-    );
+    });
   }
 
-  private saveStagedInbound(
-    subscription: Subscription,
-    node: Node,
-    relayServer: Tunnel | undefined,
-    generationId: string,
-    xuiId: number,
-    port: number,
-    protocol: string,
-    remark: string | undefined,
-    link: string,
-  ) {
+  private buildPanelInbound(request: {
+    config: InboundConfig;
+    port: number;
+    uuid: string;
+    sni: string;
+    realityKeys?: { privateKey: string; publicKey: string } | null;
+  }): XuiInboundRaw | null {
+    const { config, port, uuid, sni, realityKeys } = request;
+    const realityParams = realityKeys
+      ? { port, uuid, sni, ...realityKeys }
+      : null;
+    const builders: Record<string, () => XuiInboundRaw | null> = {
+      'vless-tcp-reality': () =>
+        realityParams
+          ? this.inboundBuilder.buildVlessRealityTcp(realityParams)
+          : null,
+      'vless-xhttp-reality': () =>
+        realityParams
+          ? this.inboundBuilder.buildVlessRealityXhttp(realityParams)
+          : null,
+      'vless-grpc-reality': () =>
+        realityParams
+          ? this.inboundBuilder.buildVlessRealityGrpc(realityParams)
+          : null,
+      'trojan-tcp-reality': () =>
+        realityParams
+          ? this.inboundBuilder.buildTrojanRealityTcp(realityParams)
+          : null,
+      'vless-ws': () => this.inboundBuilder.buildVlessWs({ port, uuid, sni }),
+      'vless-tcp-tls': () =>
+        this.inboundBuilder.buildVlessTlsTcp({
+          port,
+          uuid,
+          sni,
+          certificateFile: config.certificateFile,
+          keyFile: config.keyFile,
+        }),
+      'vless-ws-tls': () =>
+        this.inboundBuilder.buildVlessTlsWs({
+          port,
+          uuid,
+          sni,
+          certificateFile: config.certificateFile,
+          keyFile: config.keyFile,
+        }),
+      'vmess-tcp': () => this.inboundBuilder.buildVmessTcp({ port, uuid }),
+      'shadowsocks-tcp': () =>
+        this.inboundBuilder.buildShadowsocksTcp({ port, uuid }),
+    };
+    return builders[config.type || '']?.() ?? null;
+  }
+
+  private saveStagedInbound(request: SaveStagedInboundRequest) {
+    const {
+      subscription,
+      config,
+      position,
+      node,
+      relayServer,
+      generationId,
+      xuiId,
+      port,
+      protocol,
+      remark,
+      link,
+    } = request;
     return this.inboundRepo.save(
       this.inboundRepo.create({
         xuiId,
@@ -459,6 +564,8 @@ export class RotationService implements OnModuleInit {
         protocol,
         remark,
         link,
+        configId: config.configId,
+        position,
         subscription,
         node,
         relayServer,
@@ -473,24 +580,88 @@ export class RotationService implements OnModuleInit {
     const items = await this.inboundRepo
       .createQueryBuilder('inbound')
       .leftJoinAndSelect('inbound.node', 'node')
-      .where('inbound.status = :status', { status: InboundStatus.PendingCleanup })
-      .andWhere('(inbound.nextCleanupAt IS NULL OR inbound.nextCleanupAt <= :now)', {
-        now: new Date(),
+      .where('inbound.status = :status', {
+        status: InboundStatus.PendingCleanup,
       })
+      .andWhere(
+        '(inbound.nextCleanupAt IS NULL OR inbound.nextCleanupAt <= :now)',
+        {
+          now: new Date(),
+        },
+      )
       .orderBy('inbound.createdAt', 'ASC')
       .take(50)
       .getMany();
+
     for (const inbound of items) {
+      const attempts = inbound.cleanupAttempts || 0;
+
+      // 1. If max cleanup attempts exceeded, purge from DB
+      if (attempts >= this.maxCleanupAttempts) {
+        this.logger.warn(
+          `Превышен лимит попыток очистки (${this.maxCleanupAttempts}) для инбаунда ${inbound.id} (xuiId ${inbound.xuiId}). Запись удалена из локальной БД.`,
+        );
+        await this.inboundRepo.delete(inbound.id);
+        continue;
+      }
+
       const node = await this.resolveInboundNode(inbound);
+
+      // 2. If inbound has nodeId but node does not exist, purge from DB
+      if (inbound.nodeId && !node) {
+        this.logger.warn(
+          `Инбаунд ${inbound.id} привязан к несуществующей ноде ${inbound.nodeId}. Удаление из локальной БД.`,
+        );
+        await this.inboundRepo.delete(inbound.id);
+        continue;
+      }
+
+      // 3. If node is marked deleted and unreachable/offline, purge immediately
+      if (node?.deletedAt) {
+        const isOffline =
+          [NodeHealthStatus.Offline, NodeHealthStatus.AuthError].includes(
+            node.healthStatus,
+          ) ||
+          node.consecutiveFailures >= 1 ||
+          attempts >= 1;
+
+        if (isOffline) {
+          this.logger.warn(
+            `Удаление инбаунда ${inbound.id} (xuiId ${inbound.xuiId}) из локальной БД: нода «${node.name}» удалена и недоступна.`,
+          );
+          await this.inboundRepo.delete(inbound.id);
+          continue;
+        }
+      }
+
+      // 4. If node is active but known to be offline, postpone without hanging on 8s timeout
+      if (
+        node &&
+        [NodeHealthStatus.Offline, NodeHealthStatus.AuthError].includes(
+          node.healthStatus,
+        )
+      ) {
+        inbound.cleanupAttempts = attempts + 1;
+        inbound.lastCleanupError = `Нода «${node.name}» временно недоступна`;
+        inbound.nextCleanupAt = new Date(
+          Date.now() + this.cleanupDelay(inbound.cleanupAttempts),
+        );
+        await this.inboundRepo.save(inbound);
+        continue;
+      }
+
+      // 5. Normal deletion attempt via 3x-ui API
       const deleted =
         !inbound.xuiId || inbound.xuiId <= 0
           ? true
           : await this.xuiService.deleteInbound(inbound.xuiId, node);
+
       if (deleted) {
         await this.inboundRepo.delete(inbound.id);
         continue;
       }
-      inbound.cleanupAttempts = (inbound.cleanupAttempts || 0) + 1;
+
+      inbound.cleanupAttempts = attempts + 1;
       inbound.lastCleanupError = 'Нода недоступна или отклонила удаление';
       inbound.nextCleanupAt = new Date(
         Date.now() + this.cleanupDelay(inbound.cleanupAttempts),
@@ -532,8 +703,15 @@ export class RotationService implements OnModuleInit {
       .where('node.deletedAt IS NOT NULL')
       .getMany();
     for (const node of nodes) {
-      const remaining = await this.inboundRepo.count({ where: { nodeId: node.id } });
-      if (remaining === 0) await this.nodeRepo.remove(node);
+      const remaining = await this.inboundRepo.count({
+        where: { nodeId: node.id },
+      });
+      if (remaining === 0) {
+        this.logger.log(
+          `Удалённая нода «${node.name}» (${node.id}) окончательно очищена и удалена.`,
+        );
+        await this.nodeRepo.remove(node);
+      }
     }
   }
 
@@ -609,10 +787,14 @@ export class RotationService implements OnModuleInit {
     );
   }
 
-  private async resolveRelay(relayServerId?: number, subscriptionRelay?: Tunnel) {
+  private async resolveRelay(
+    relayServerId?: number,
+    subscriptionRelay?: Tunnel,
+  ) {
     if (!relayServerId) return subscriptionRelay ?? undefined;
     return (
-      (await this.tunnelRepo.findOne({ where: { id: relayServerId } })) || undefined
+      (await this.tunnelRepo.findOne({ where: { id: relayServerId } })) ||
+      undefined
     );
   }
 
@@ -633,7 +815,8 @@ export class RotationService implements OnModuleInit {
   }
 
   private safeMessage(error: unknown) {
-    const message = error instanceof Error ? error.message : 'Неизвестная ошибка';
+    const message =
+      error instanceof Error ? error.message : 'Неизвестная ошибка';
     return message.replace(/https?:\/\/[^\s]+/g, '[node]').slice(0, 300);
   }
 }

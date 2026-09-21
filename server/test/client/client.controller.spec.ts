@@ -172,6 +172,36 @@ describe('ClientController', () => {
 
       expect(mockResponse.send).toHaveBeenCalledWith('');
     });
+
+    it('должен выдавать активные ссылки в сохранённом порядке', async () => {
+      mockRequest.headers['user-agent'] = 'curl/7.68.0';
+      mockSubRepo.findOne.mockResolvedValue({
+        ...mockSubscription,
+        inbounds: [
+          {
+            id: 10,
+            position: 1,
+            status: 'active',
+            link: 'vless://second',
+            protocol: 'vless',
+          },
+          {
+            id: 11,
+            position: 0,
+            status: 'active',
+            link: 'vless://first',
+            protocol: 'vless',
+          },
+        ],
+      });
+
+      await controller.getSubscription('test-uuid', mockRequest, mockResponse);
+
+      const encodedSubscription = mockResponse.send.mock.calls[0][0] as string;
+      expect(Buffer.from(encodedSubscription, 'base64').toString('utf8')).toBe(
+        'vless://first\nvless://second',
+      );
+    });
   });
 
   describe('getRelaySubscription', () => {

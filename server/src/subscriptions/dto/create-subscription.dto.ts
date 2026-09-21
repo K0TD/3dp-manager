@@ -11,8 +11,11 @@ import {
   ArrayMaxSize,
   ValidateBy,
   ValidationOptions,
+  IsIn,
+  MaxLength,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { INBOUND_TYPES } from '../inbound-config.constants';
 
 const PORT_OR_RANDOM = 'portOrRandom';
 
@@ -43,7 +46,12 @@ function IsPortOrRandom(validationOptions?: ValidationOptions) {
 }
 
 export class InboundConfigDto {
+  @IsUUID()
+  @IsOptional()
+  configId?: string;
+
   @IsString()
+  @IsIn(INBOUND_TYPES)
   type: string;
 
   @IsOptional()
@@ -56,6 +64,7 @@ export class InboundConfigDto {
 
   @IsString()
   @IsOptional()
+  @MaxLength(2048)
   link?: string;
 
   @IsUUID()
@@ -77,10 +86,12 @@ export class InboundConfigDto {
 
   @IsString()
   @IsOptional()
+  @MaxLength(2048)
   certificateFile?: string;
 
   @IsString()
   @IsOptional()
+  @MaxLength(2048)
   keyFile?: string;
 
   @IsBoolean()

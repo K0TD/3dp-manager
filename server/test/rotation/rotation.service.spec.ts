@@ -13,7 +13,9 @@ import { InboundBuilderService } from 'src/inbounds/inbound-builder.service';
 describe('RotationService resilient generations', () => {
   const manager = {
     update: jest.fn().mockResolvedValue({}),
-    transaction: jest.fn(async (work: (value: typeof manager) => Promise<void>) => work(manager)),
+    transaction: jest.fn(
+      async (work: (value: typeof manager) => Promise<void>) => work(manager),
+    ),
   };
   const subRepo = { find: jest.fn() };
   const inboundRepo = {
@@ -27,7 +29,11 @@ describe('RotationService resilient generations', () => {
     createQueryBuilder: jest.fn(),
   };
   const domainRepo = { find: jest.fn() };
-  const settingRepo = { findOne: jest.fn(), create: jest.fn((value) => value), save: jest.fn() };
+  const settingRepo = {
+    findOne: jest.fn(),
+    create: jest.fn((value) => value),
+    save: jest.fn(),
+  };
   const nodeRepo = { createQueryBuilder: jest.fn(), remove: jest.fn() };
   const tunnelRepo = { findOne: jest.fn() };
   const operationRepo = {
@@ -47,6 +53,8 @@ describe('RotationService resilient generations', () => {
     buildVlessRealityXhttp: jest.fn(),
     buildVlessRealityGrpc: jest.fn(),
     buildVlessWs: jest.fn(),
+    buildVlessTlsTcp: jest.fn(),
+    buildVlessTlsWs: jest.fn(),
     buildVmessTcp: jest.fn(),
     buildShadowsocksTcp: jest.fn(),
     buildTrojanRealityTcp: jest.fn(),
@@ -85,7 +93,14 @@ describe('RotationService resilient generations', () => {
       name: 'Primary',
       node,
       inbounds: [old],
-      inboundsConfig: [{ type: 'vless-tcp-reality', nodeId: node.id, port: 443, sni: 'example.com' }],
+      inboundsConfig: [
+        {
+          type: 'vless-tcp-reality',
+          nodeId: node.id,
+          port: 443,
+          sni: 'example.com',
+        },
+      ],
     } as Subscription;
     nodeRepo.createQueryBuilder.mockReturnValue({
       addSelect: jest.fn().mockReturnThis(),
@@ -119,24 +134,92 @@ describe('RotationService resilient generations', () => {
       inboundsConfig: [{ type: 'custom', link: 'vless://new' }],
     } as Subscription;
 
-    const results = await (service as any).rotateSubscription(subscription, [], null);
+    const results = await (service as any).rotateSubscription(
+      subscription,
+      [],
+      null,
+    );
 
-    expect(results[0]).toMatchObject({ status: 'succeeded', created: 1, pendingCleanup: 1 });
+    expect(results[0]).toMatchObject({
+      status: 'succeeded',
+      created: 1,
+      pendingCleanup: 1,
+    });
     expect(manager.transaction).toHaveBeenCalled();
     expect(manager.update).toHaveBeenCalledWith(
       Inbound,
       expect.anything(),
       expect.objectContaining({ status: InboundStatus.PendingCleanup }),
     );
-    expect(manager.update).toHaveBeenCalledWith(
-      Inbound,
-      expect.anything(),
-      { status: InboundStatus.Active },
+    expect(manager.update).toHaveBeenCalledWith(Inbound, expect.anything(), {
+      status: InboundStatus.Active,
+    });
+  });
+
+  it('generates VLESS TLS without requesting Reality keys and keeps its position', async () => {
+    const node = {
+      id: 'node-tls',
+      name: 'TLS node',
+      url: 'https://node',
+      healthStatus: 'online',
+      consecutiveFailures: 0,
+    } as Node;
+    const builtInbound = {
+      port: 443,
+      protocol: 'vless',
+      remark: 'vless-tcp-tls',
+      settings: JSON.stringify({ clients: [{ id: 'credential' }] }),
+      streamSettings: JSON.stringify({ network: 'tcp', security: 'tls' }),
+    };
+    const subscription = {
+      id: 'sub-tls',
+      name: 'TLS',
+      node,
+      inbounds: [],
+      inboundsConfig: [
+        {
+          configId: '11111111-1111-4111-8111-111111111111',
+          type: 'vless-tcp-tls',
+          nodeId: node.id,
+          port: 443,
+          sni: 'example.com',
+        },
+      ],
+    } as Subscription;
+    nodeRepo.createQueryBuilder.mockReturnValue({
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockResolvedValue(node),
+    });
+    xuiService.addInbound.mockResolvedValue(101);
+    inboundBuilder.buildVlessTlsTcp.mockReturnValue(builtInbound);
+    inboundBuilder.buildInboundLink.mockReturnValue('vless://tls');
+
+    const rotationResults = await (service as any).rotateSubscription(
+      subscription,
+      [{ name: 'example.com' }],
+      node,
+    );
+
+    expect(rotationResults[0]).toMatchObject({
+      status: 'succeeded',
+      created: 1,
+    });
+    expect(xuiService.getNewX25519Cert).not.toHaveBeenCalled();
+    expect(inboundRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        configId: '11111111-1111-4111-8111-111111111111',
+        position: 0,
+      }),
     );
   });
 
   it('returns an operation id immediately when rotation is queued', async () => {
     const operation = await service.enqueueRotation(['sub-1', 'sub-1']);
-    expect(operation).toMatchObject({ id: 'operation-1', subscriptionIds: ['sub-1'] });
+    expect(operation).toMatchObject({
+      id: 'operation-1',
+      subscriptionIds: ['sub-1'],
+    });
   });
 });

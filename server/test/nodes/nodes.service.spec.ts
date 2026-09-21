@@ -157,4 +157,32 @@ describe('NodesService', () => {
     });
     expect(xuiService.deleteInbound).not.toHaveBeenCalled();
   });
+
+  it('force purges a node and its inbounds without calling 3x-ui API', async () => {
+    const node = { id: 'dead-node', name: 'Dead Node', isMain: true } as Node;
+    const subscription = {
+      id: 1,
+      nodeId: 'dead-node',
+      inboundsConfig: [{ type: 'vless-ws', nodeId: 'dead-node', enabled: true }],
+    } as unknown as Subscription;
+    const getOne = jest.fn().mockResolvedValueOnce(node).mockResolvedValueOnce(null);
+    const nodeRepo = createNodeRepo(getOne);
+    nodeRepo.findOne.mockResolvedValue(null);
+    const { service, subscriptionsRepo, inboundsRepo, tunnelsRepo, xuiService } =
+      createService(nodeRepo);
+    subscriptionsRepo.find.mockResolvedValue([subscription]);
+
+    const result = await service.remove('dead-node', 'force');
+
+    expect(result).toEqual({ success: true, forced: true });
+    expect(xuiService.deleteInbound).not.toHaveBeenCalled();
+    expect(inboundsRepo.delete).toHaveBeenCalledWith({ nodeId: 'dead-node' });
+    expect(tunnelsRepo.delete).toHaveBeenCalledWith({ nodeId: 'dead-node' });
+    expect(nodeRepo.remove).toHaveBeenCalledWith(node);
+    expect(subscription.nodeId).toBeUndefined();
+    expect(subscription.inboundsConfig[0]).toMatchObject({
+      enabled: false,
+      disabledReason: 'Нода «Dead Node» удалена',
+    });
+  });
 });

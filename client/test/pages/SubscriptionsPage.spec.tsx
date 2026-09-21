@@ -248,6 +248,17 @@ describe('SubscriptionsPage', () => {
       })
     })
 
+    it('должен предлагать оба варианта VLESS TLS', async () => {
+      setupMockGet()
+      renderSubscriptionsPage()
+
+      fireEvent.click(await screen.findByText('Создать'))
+      fireEvent.mouseDown((await screen.findAllByRole('combobox'))[0])
+
+      expect(await screen.findByText('vless-tcp-tls')).toBeInTheDocument()
+      expect(screen.getByText('vless-ws-tls')).toBeInTheDocument()
+    })
+
     it('должен позволять вводить имя подписки', async () => {
       setupMockGet()
       renderSubscriptionsPage()
@@ -352,6 +363,44 @@ describe('SubscriptionsPage', () => {
         expect(addButton).toBeDisabled()
       })
     }, 15000)
+
+    it('должен менять порядок инбаундов стрелками и сохранять его', async () => {
+      const firstConfigId = '11111111-1111-4111-8111-111111111111'
+      const secondConfigId = '22222222-2222-4222-8222-222222222222'
+      setupMockGet({
+        subscriptions: [
+          {
+            id: 'sub-1',
+            name: 'Ordered Sub',
+            uuid: 'sub-uuid',
+            inbounds: [],
+            inboundsConfig: [
+              { configId: firstConfigId, type: 'vmess-tcp', port: 10001, sni: 'random' },
+              { configId: secondConfigId, type: 'vmess-tcp', port: 10002, sni: 'random' },
+            ],
+          },
+        ],
+      })
+      mockPut.mockResolvedValue({})
+      renderSubscriptionsPage()
+
+      fireEvent.click(await screen.findByTestId('icon-MoreVert'))
+      fireEvent.click(await screen.findByText('Редактировать'))
+      fireEvent.click(await screen.findByRole('button', { name: 'Переместить строку 1 вниз' }))
+      fireEvent.click(screen.getByText('Сохранить'))
+
+      await waitFor(() => {
+        expect(mockPut).toHaveBeenCalledWith(
+          '/subscriptions/sub-1',
+          expect.objectContaining({
+            inboundsConfig: [
+              expect.objectContaining({ configId: secondConfigId }),
+              expect.objectContaining({ configId: firstConfigId }),
+            ],
+          }),
+        )
+      })
+    })
   })
 
   describe('Сохранение подписки', () => {

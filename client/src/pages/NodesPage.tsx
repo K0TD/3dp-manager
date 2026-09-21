@@ -227,17 +227,19 @@ export default function NodesPage() {
     });
   };
 
-  const removeNode = async (deferred = false) => {
+  const removeNode = async (mode: 'safe' | 'deferred' | 'force' = 'safe') => {
     if (!deleteTarget) return;
     try {
-      const result = await nodesApi.remove(deleteTarget.id, deferred ? 'deferred' : 'safe');
+      const result = await nodesApi.remove(deleteTarget.id, mode);
       setDeleteTarget(null);
       setMessage({
         open: true,
         type: 'success',
-        text: result.deferred
-          ? 'Нода скрыта, удаление inbound продолжится в фоне'
-          : 'Нода удалена',
+        text: result.forced
+          ? 'Нода и её инбаунды принудительно удалены из базы данных'
+          : result.deferred
+            ? 'Нода скрыта, удаление inbound продолжится в фоне'
+            : 'Нода удалена',
       });
       loadNodes();
     } catch (error) {
@@ -455,17 +457,22 @@ export default function NodesPage() {
       </Dialog>
 
       <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
-        <DialogTitle>Удалить ноду?</DialogTitle>
+        <DialogTitle>Удалить ноду {deleteTarget?.name}?</DialogTitle>
         <DialogContent>
-          <Typography>Сначала панель попробует удалить все связанные inbound с ноды {deleteTarget?.name}.</Typography>
+          <Typography>
+            Выберите способ удаления в зависимости от доступности сервера:
+          </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-            Если нода недоступна, принудительное удаление скроет её сразу и продолжит очистку после восстановления.
+            • <b>Удалить безопасно</b>: удалит инбаунды на панели 3x-ui, затем удалит ноду из системы.<br />
+            • <b>Удалить принудительно</b>: немедленно удалит ноду и её инбаунды из базы данных без обращений к 3x-ui (используйте, если сервер выключен или недоступен навсегда).<br />
+            • <b>В фоне</b>: скроет ноду сейчас и продолжит попытки очистки инбаундов в фоне.
           </Typography>
         </DialogContent>
-        <DialogActions>
+        <DialogActions sx={{ px: 3, pb: 2, gap: 1, flexWrap: 'wrap' }}>
           <Button onClick={() => setDeleteTarget(null)}>Отмена</Button>
-          <Button color="warning" onClick={() => removeNode(true)}>Удалить принудительно</Button>
-          <Button color="error" variant="contained" onClick={() => removeNode(false)}>Удалить безопасно</Button>
+          <Button color="secondary" onClick={() => removeNode('deferred')}>В фоне</Button>
+          <Button color="warning" onClick={() => removeNode('force')}>Удалить принудительно</Button>
+          <Button color="error" variant="contained" onClick={() => removeNode('safe')}>Удалить безопасно</Button>
         </DialogActions>
       </Dialog>
 
