@@ -6,6 +6,7 @@ on:
     paths:
       - 'client/**'
       - 'server/**'
+      - '.github/workflows/docker-publish.yml'
   workflow_dispatch:
 
 env:
@@ -40,6 +41,9 @@ jobs:
         with:
           context: ./server
           push: true
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=GPL-3.0-only
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-server:${{ github.ref_name }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-server:stable
@@ -49,6 +53,9 @@ jobs:
         with:
           context: ./client
           push: true
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=GPL-3.0-only
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-client:${{ github.ref_name }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-client:stable

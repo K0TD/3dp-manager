@@ -318,6 +318,76 @@ switch_to_k0td_images() {
     "$compose_file"
 }
 
+prepare_local_build_fallback() {
+  local compose_file="$PROJECT_DIR/docker-compose.yml"
+  local source_dir="$PROJECT_DIR/source"
+  local download_dir
+  local compose_tmp
+
+  download_dir="$(mktemp -d)"
+  compose_tmp="$(mktemp)"
+
+  warn "GHCR недоступен. Загружаю исходники K0TD для локальной сборки..."
+  if ! curl -fsSL https://github.com/k0td/3dp-manager/archive/refs/heads/main.tar.gz \
+    | tar -xz -C "$download_dir" --strip-components=1; then
+    rm -rf "$download_dir"
+    rm -f "$compose_tmp"
+    die "Не удалось загрузить исходники K0TD"
+  fi
+
+  [[ -f "$download_dir/server/Dockerfile" ]] || die "В архиве отсутствует server/Dockerfile"
+  [[ -f "$download_dir/client/Dockerfile" ]] || die "В архиве отсутствует client/Dockerfile"
+
+  rm -rf "$source_dir"
+  mkdir -p "$source_dir"
+  cp -a "$download_dir/server" "$source_dir/server"
+  cp -a "$download_dir/client" "$source_dir/client"
+  rm -rf "$download_dir"
+
+  awk '
+    /^  [a-zA-Z0-9_-]+:[[:space:]]*$/ {
+      service = $1
+      sub(/:$/, "", service)
+    }
+
+    (service == "backend" || service == "frontend") && /^[[:space:]]+(image|build):/ {
+      if (!configured[service]) {
+        if (service == "backend") {
+          print "    image: 3dp-manager-server:local"
+          print "    build: ./source/server"
+        } else {
+          print "    image: 3dp-manager-client:local"
+          print "    build: ./source/client"
+        }
+        configured[service] = 1
+      }
+      next
+    }
+
+    { print }
+
+    END {
+      if (!configured["backend"] || !configured["frontend"]) exit 42
+    }
+  ' "$compose_file" > "$compose_tmp" || {
+    rm -f "$compose_tmp"
+    die "Не удалось переключить docker-compose.yml на локальную сборку"
+  }
+
+  mv "$compose_tmp" "$compose_file"
+  log "Локальная сборка backend и frontend..."
+  "${COMPOSE_CMD[@]}" build backend frontend
+}
+
+pull_images_or_build_locally() {
+  if "${COMPOSE_CMD[@]}" pull; then
+    log "Образы успешно загружены."
+    return 0
+  fi
+
+  prepare_local_build_fallback
+}
+
 get_node_count() {
   docker exec 3dp-postgres sh -c '
     psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "
@@ -398,11 +468,7 @@ backup_file="$BACKUP_FILE"
 # REBUILD BACKEND
 #################################
 log "Скачивание последних версий Docker-образов..."
-if "${COMPOSE_CMD[@]}" pull; then
-    log "Образы успешно загружены."
-else
-    die "Ошибка при скачивании образов. Проверьте подключение к интернету или доступность GitHub Container Registry."
-fi
+pull_images_or_build_locally
 
 log "Пересоздание контейнеров..."
 "${COMPOSE_CMD[@]}" up -d
