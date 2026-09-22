@@ -25,6 +25,15 @@ import {
 } from './templates/subscription.template';
 import { InboundStatus } from '../inbounds/entities/inbound.entity';
 import { sortInboundsByPosition } from '../inbounds/inbound-order';
+import {
+  amneziaConfigFileName,
+  attachmentDisposition,
+} from './subscription-name';
+import {
+  amneziaConfigFromLink,
+  patchAmneziaVpnEndpoint,
+  renameAmneziaVpnLink,
+} from '../inbounds/amnezia-vpn-link';
 
 @Controller()
 export class ClientController {
@@ -62,6 +71,7 @@ export class ClientController {
           protocol: inbound.protocol,
           link: inbound.link,
         })),
+      sub.name,
     );
     if (req.query.format === 'amneziawg') {
       const requestedIndex =
@@ -69,6 +79,7 @@ export class ClientController {
       return this.sendAmneziaConfig(
         previewData.amneziaLinks,
         requestedIndex,
+        sub.name,
         res,
       );
     }
@@ -151,6 +162,7 @@ export class ClientController {
               ? inbound.link
               : this.patchLink(inbound.link, relayHost),
         })),
+      sub.name,
     );
     if (req.query.format === 'amneziawg') {
       const requestedIndex =
@@ -158,6 +170,7 @@ export class ClientController {
       return this.sendAmneziaConfig(
         previewData.amneziaLinks,
         requestedIndex,
+        sub.name,
         res,
       );
     }
@@ -246,25 +259,12 @@ export class ClientController {
   }
 
   private tryPatchAmneziaWgLink(link: string, newHost: string): string {
-    try {
-      const vpnConfig = Buffer.from(
-        link.slice('vpn://'.length),
-        'base64url',
-      ).toString('utf8');
-      const relayEndpoint = newHost.includes(':') ? `[${newHost}]` : newHost;
-      const patchedConfig = vpnConfig.replace(
-        /^(Endpoint\s*=\s*)(?:\[[^\]]+\]|[^:\r\n]+):(\d+)\s*$/m,
-        `$1${relayEndpoint}:$2`,
-      );
-      if (patchedConfig === vpnConfig) return link;
-      return `vpn://${Buffer.from(patchedConfig, 'utf8').toString('base64url')}`;
-    } catch {
-      return link;
-    }
+    return patchAmneziaVpnEndpoint(link, newHost);
   }
 
   private buildPreviewData(
     inbounds: Array<{ protocol?: string; link?: string | null }>,
+    subscriptionName: string,
   ): Pick<
     SubscriptionPreviewData,
     'subscriptionLinks' | 'amneziaLinks' | 'telegramProxyLinks'
@@ -283,7 +283,9 @@ export class ClientController {
         inbound.protocol === 'amneziawg' &&
         link.toLowerCase().startsWith('vpn://')
       ) {
-        groupedLinks.amneziaLinks.push(link);
+        groupedLinks.amneziaLinks.push(
+          this.withAmneziaConnectionName(link, subscriptionName),
+        );
         continue;
       }
 
@@ -301,9 +303,14 @@ export class ClientController {
     return groupedLinks;
   }
 
+  private withAmneziaConnectionName(link: string, subscriptionName: string) {
+    return renameAmneziaVpnLink(link, subscriptionName);
+  }
+
   private sendAmneziaConfig(
     amneziaLinks: string[],
     requestedIndex: string | undefined,
+    subscriptionName: string,
     res: Response,
   ) {
     const indexText = requestedIndex ?? '0';
@@ -322,37 +329,39 @@ export class ClientController {
         .send('Invalid AmneziaWG config');
     }
 
-    this.setAmneziaDownloadHeaders(res, configIndex);
+    this.setAmneziaDownloadHeaders(
+      res,
+      amneziaConfigFileName(subscriptionName, configIndex, amneziaLinks.length),
+    );
     return res.send(config);
   }
 
   private decodeAmneziaConfig(link: string): string | null {
-    const config = Buffer.from(
-      link.slice('vpn://'.length),
-      'base64url',
-    ).toString('utf8');
+    const config = amneziaConfigFromLink(link);
+    if (!config) return null;
     return this.isValidAmneziaConfig(config) ? config : null;
   }
 
   private isValidAmneziaConfig(config: string): boolean {
+    const numericFields = ['MTU', 'Jc', 'Jmin', 'Jmax', 'S1', 'S2', 'S3', 'S4'];
     return (
       config.startsWith('[Interface]') &&
       config.includes('[Peer]') &&
       /^PrivateKey\s*=\s*\S+/m.test(config) &&
       /^PublicKey\s*=\s*\S+/m.test(config) &&
-      /^Endpoint\s*=\s*\S+:\d+$/m.test(config)
+      /^Endpoint\s*=\s*\S+:\d+$/m.test(config) &&
+      numericFields.every((field) =>
+        new RegExp(`^${field}\\s*=\\s*\\d+$`, 'm').test(config),
+      )
     );
   }
 
-  private setAmneziaDownloadHeaders(res: Response, configIndex: number) {
+  private setAmneziaDownloadHeaders(res: Response, fileName: string) {
     res.setHeader(
       'Content-Type',
       'application/x-wireguard-profile; charset=utf-8',
     );
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="amneziawg-${configIndex + 1}.conf"`,
-    );
+    res.setHeader('Content-Disposition', attachmentDisposition(fileName));
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
   }

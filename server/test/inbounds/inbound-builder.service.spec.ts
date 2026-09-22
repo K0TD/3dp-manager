@@ -3,9 +3,11 @@
 
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 /* eslint-disable @typescript-eslint/no-unsafe-argument */
+/* eslint-disable @typescript-eslint/no-unsafe-return */
 
 import { Test, TestingModule } from '@nestjs/testing';
 import { InboundBuilderService } from 'src/inbounds/inbound-builder.service';
+import { amneziaConfigFromLink } from 'src/inbounds/amnezia-vpn-link';
 
 // Mock crypto.randomBytes для детерминированных тестов
 jest.mock('crypto', () => ({
@@ -15,7 +17,7 @@ jest.mock('crypto', () => ({
     if (size === 16) return Buffer.alloc(16, 0xcd);
     return Buffer.from('abcd1234', 'hex');
   }),
-  randomInt: jest.fn((min: number, max: number) => min),
+  randomInt: jest.fn((min: number, _max: number) => min),
   randomFillSync: jest.fn((buffer: Buffer) => {
     for (let i = 0; i < buffer.length; i++) {
       buffer[i] = i;
@@ -107,16 +109,28 @@ describe('InboundBuilderService', () => {
         '%F0%9F%92%AF',
       );
       expect(link.startsWith('vpn://')).toBe(true);
-      const config = Buffer.from(
-        link.slice('vpn://'.length),
-        'base64url',
-      ).toString('utf8');
+      const config = amneziaConfigFromLink(link);
+      expect(config).not.toBeNull();
+      if (!config) throw new Error('AmneziaVPN link has no config');
       expect(config).toContain('[Interface]');
       expect(config).toContain(
         `PrivateKey = ${settings.clients[0].privateKey}`,
       );
       expect(config).toContain(`PublicKey = ${settings.server.publicKey}`);
       expect(config).toContain('Endpoint = example.com:51820');
+      for (const field of [
+        'MTU',
+        'Jc',
+        'Jmin',
+        'Jmax',
+        'S1',
+        'S2',
+        'S3',
+        'S4',
+      ]) {
+        expect(config).toMatch(new RegExp(`^${field} = \\d+$`, 'm'));
+      }
+      expect(config).not.toMatch(/^(?:MTU|Jc|Jmin|Jmax|S1|S2|S3|S4)\s*=\s*$/m);
     });
   });
 

@@ -11,6 +11,7 @@ import {
   isValidFakeTlsDomain,
   normalizeFakeTlsDomain,
 } from './mtproto-faketls';
+import { createAmneziaVpnLink } from './amnezia-vpn-link';
 
 interface VlessTlsParams {
   port: number;
@@ -886,8 +887,16 @@ export class InboundBuilderService {
     const client = settings.clients?.[0];
     if (!server || !client) return '';
     if (/\r|\n/.test(address)) return '';
-    const line = (key: string, value: unknown, fallback = '') =>
-      `${key} = ${typeof value === 'string' && value.trim() ? value : fallback}\n`;
+    const line = (key: string, rawFieldValue: unknown, fallback = '') => {
+      const scalar =
+        typeof rawFieldValue === 'string'
+          ? rawFieldValue.trim()
+          : typeof rawFieldValue === 'number' && Number.isFinite(rawFieldValue)
+            ? String(rawFieldValue)
+            : '';
+      const safeValue = scalar && !/[\r\n]/.test(scalar) ? scalar : fallback;
+      return `${key} = ${safeValue}\n`;
+    };
     let decodedFlag = flagEmoji || '';
     try {
       decodedFlag = decodeURIComponent(decodedFlag);
@@ -939,7 +948,12 @@ export class InboundBuilderService {
     config += `Endpoint = ${endpoint}:${inbound.port}`;
     if (Number(client.keepAlive) > 0)
       config += `\nPersistentKeepalive = ${String(client.keepAlive)}`;
-    return `vpn://${Buffer.from(config, 'utf8').toString('base64url')}`;
+    return createAmneziaVpnLink({
+      config,
+      description: remark || 'AmneziaWG',
+      clientPublicKey:
+        typeof client.publicKey === 'string' ? client.publicKey : undefined,
+    });
   }
 
   private buildVlessLink(inbound: XuiInboundRaw, sni: string, uuid: string) {

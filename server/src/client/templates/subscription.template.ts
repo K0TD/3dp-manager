@@ -1,3 +1,6 @@
+import { amneziaConfigFileName } from '../subscription-name';
+import { amneziaConfigFromLink } from '../../inbounds/amnezia-vpn-link';
+
 export interface SubscriptionPreviewData {
   currentUrl: string;
   qrDataUrl: string;
@@ -53,31 +56,42 @@ function renderTelegramActions(links: string[]): string {
 function renderAmneziaActions(
   links: string[],
   subscriptionUrl: string,
+  subscriptionName: string,
 ): string {
   return links
     .map((link, index) => {
-      const vpnConfig = Buffer.from(
-        link.slice('vpn://'.length),
-        'base64url',
-      ).toString('utf8');
+      const vpnConfig = amneziaConfigFromLink(link) ?? '';
       const downloadUrl = new URL(subscriptionUrl);
       downloadUrl.searchParams.set('format', 'amneziawg');
       downloadUrl.searchParams.set('index', String(index));
       const safeDownloadUrl = escapeHtml(downloadUrl.toString());
+      const safeVpnLink = escapeHtml(link);
       const safeConfig = escapeHtml(vpnConfig);
+      const fileName = amneziaConfigFileName(
+        subscriptionName,
+        index,
+        links.length,
+      );
+      const safeFileName = escapeHtml(fileName);
+      const safeSubscriptionName = escapeHtml(subscriptionName);
       const suffix = links.length > 1 ? ` ${index + 1}` : '';
 
       return `
         <div class="connection-action">
           <span class="connection-index" aria-hidden="true">${String(index + 1).padStart(2, '0')}</span>
-          <a class="button button--primary" href="${safeDownloadUrl}" download="amneziawg-${index + 1}.conf">Скачать профиль .conf${suffix}</a>
+          <a class="button button--primary" href="${safeVpnLink}">Открыть «${safeSubscriptionName}» в AmneziaVPN${suffix}</a>
+          <a class="button button--ghost" href="${safeDownloadUrl}" download="${safeFileName}">Скачать ${safeFileName}</a>
           <button class="button button--ghost copy-special" type="button" data-copy="${safeConfig}">Копировать настройки</button>
         </div>`;
     })
     .join('');
 }
 
-function renderAmneziaGuide(links: string[], subscriptionUrl: string): string {
+function renderAmneziaGuide(
+  links: string[],
+  subscriptionUrl: string,
+  subscriptionName: string,
+): string {
   if (links.length === 0) return '';
   return `
     <article class="guide guide--amnezia">
@@ -85,13 +99,13 @@ function renderAmneziaGuide(links: string[], subscriptionUrl: string): string {
         <div><p class="eyebrow">Отдельный импорт</p><h2>AmneziaWG</h2></div>
         <span class="count-badge">${links.length} ${connectionWord(links.length)}</span>
       </header>
-      <p class="guide-lead">Этот тип подключается через профиль <code>.conf</code>, а не через общую ссылку подписки.</p>
+      <p class="guide-lead">Откройте подключение в AmneziaVPN по ссылке или импортируйте профиль <code>.conf</code> в отдельное приложение AmneziaWG.</p>
       <ol class="steps">
-        <li><span>1</span><p>Скачайте профиль на устройство, где установлен <strong>AmneziaWG</strong>.</p></li>
-        <li><span>2</span><p>На телефоне откройте скачанный файл через меню <strong>«Поделиться» → AmneziaWG</strong>.</p></li>
-        <li><span>3</span><p>Либо в AmneziaWG выберите <strong>«Импорт туннелей из файла»</strong> и укажите профиль.</p></li>
+        <li><span>1</span><p>Для <strong>AmneziaVPN</strong> нажмите первую кнопку и подтвердите открытие приложения.</p></li>
+        <li><span>2</span><p>Для <strong>AmneziaWG</strong> скачайте профиль с названием подписки.</p></li>
+        <li><span>3</span><p>Откройте файл через «Поделиться» или выберите <strong>«Импорт туннелей из файла»</strong>.</p></li>
       </ol>
-      <div class="connection-list">${renderAmneziaActions(links, subscriptionUrl)}</div>
+      <div class="connection-list">${renderAmneziaActions(links, subscriptionUrl, subscriptionName)}</div>
     </article>`;
 }
 
@@ -267,7 +281,7 @@ export function generateSubscriptionHtmlWithQr(
       </div></aside>
     </section>
     <section class="guides" aria-label="Инструкции по специальным подключениям">
-      ${renderAmneziaGuide(preview.amneziaLinks, preview.currentUrl)}
+      ${renderAmneziaGuide(preview.amneziaLinks, preview.currentUrl, preview.subscriptionName)}
       ${renderTelegramGuide(preview.telegramProxyLinks)}
     </section>
     <footer class="footer"><span>Ссылки обновляются автоматически вместе с подпиской.</span><span>Не передавайте эту страницу посторонним.</span></footer>

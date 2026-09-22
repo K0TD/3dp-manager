@@ -14,6 +14,7 @@ import { Tunnel } from 'src/tunnels/entities/tunnel.entity';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import * as QRCode from 'qrcode';
 import { generateSubscriptionHtmlWithQr } from 'src/client/templates/subscription.template';
+import { amneziaConfigFromLink } from 'src/inbounds/amnezia-vpn-link';
 
 jest.mock('qrcode', () => ({
   toDataURL: jest.fn(),
@@ -207,6 +208,9 @@ describe('ClientController', () => {
     });
 
     it('отделяет AmneziaWG и TGProxy от обычной подписки для превью', async () => {
+      const amneziaConfig =
+        '[Interface]\nPrivateKey = private\n\n# old name\n[Peer]\nPublicKey = public';
+      const amneziaLink = `vpn://${Buffer.from(amneziaConfig).toString('base64url')}`;
       mockRequest.headers['user-agent'] = 'Mozilla/5.0 Chrome/120.0';
       mockSubRepo.findOne.mockResolvedValue({
         ...mockSubscription,
@@ -221,7 +225,7 @@ describe('ClientController', () => {
             position: 1,
             status: 'active',
             protocol: 'amneziawg',
-            link: 'vpn://amnezia-config',
+            link: amneziaLink,
           },
           {
             position: 2,
@@ -238,12 +242,16 @@ describe('ClientController', () => {
       expect(generateSubscriptionHtmlWithQr).toHaveBeenCalledWith(
         expect.objectContaining({
           subscriptionLinks: ['vless://regular'],
-          amneziaLinks: ['vpn://amnezia-config'],
+          amneziaLinks: [expect.stringMatching(/^vpn:\/\//)],
           telegramProxyLinks: [
             'tg://proxy?server=example.com&port=443&secret=eeaa',
           ],
         }),
       );
+      const preview = (generateSubscriptionHtmlWithQr as jest.Mock).mock
+        .calls[0][0] as { amneziaLinks: string[] };
+      const namedConfig = amneziaConfigFromLink(preview.amneziaLinks[0]);
+      expect(namedConfig).toContain('# Test Subscription\n[Peer]');
     });
 
     it('не добавляет AmneziaWG и TGProxy в Base64-подписку', async () => {
@@ -282,7 +290,7 @@ describe('ClientController', () => {
 
     it('скачивает валидный conf-профиль AmneziaWG', async () => {
       const config =
-        '[Interface]\nPrivateKey = private\nAddress = 10.8.1.2/32\n\n[Peer]\nPublicKey = public\nEndpoint = example.com:51820';
+        '[Interface]\nPrivateKey = private\nAddress = 10.8.1.2/32\nMTU = 1393\nJc = 4\nJmin = 40\nJmax = 90\nS1 = 15\nS2 = 16\nS3 = 17\nS4 = 18\n\n[Peer]\nPublicKey = public\nEndpoint = example.com:51820';
       mockSubRepo.findOne.mockResolvedValue({
         ...mockSubscription,
         inbounds: [
@@ -305,9 +313,11 @@ describe('ClientController', () => {
       );
       expect(mockResponse.setHeader).toHaveBeenCalledWith(
         'Content-Disposition',
-        'attachment; filename="amneziawg-1.conf"',
+        'attachment; filename="amneziawg.conf"; filename*=UTF-8\'\'Test%20Subscription.conf',
       );
-      expect(mockResponse.send).toHaveBeenCalledWith(config);
+      expect(mockResponse.send).toHaveBeenCalledWith(
+        config.replace('\n[Peer]', '\n# Test Subscription\n[Peer]'),
+      );
     });
 
     it('отклоняет отсутствующий профиль AmneziaWG', async () => {
@@ -532,10 +542,7 @@ describe('ClientController', () => {
       const link = `vpn://${Buffer.from(config).toString('base64url')}`;
 
       const result = (controller as any).patchLink(link, 'relay.example.com');
-      const patchedConfig = Buffer.from(
-        result.slice('vpn://'.length),
-        'base64url',
-      ).toString('utf8');
+      const patchedConfig = amneziaConfigFromLink(result);
 
       expect(patchedConfig).toContain('Endpoint = relay.example.com:51820');
     });

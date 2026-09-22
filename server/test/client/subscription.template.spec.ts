@@ -20,9 +20,10 @@ describe('subscription template', () => {
     });
 
     expect(html).toContain('AmneziaWG');
-    expect(html).toContain('Скачать профиль .conf');
+    expect(html).toContain('Открыть «Моя подписка» в AmneziaVPN');
+    expect(html).toContain('Скачать Моя подписка.conf');
     expect(html).toContain('Импорт туннелей из файла');
-    expect(html).not.toContain('Открыть в AmneziaVPN');
+    expect(html).toContain('href="vpn://config"');
     expect(html).not.toContain('<h2>Telegram Proxy</h2>');
   });
 
@@ -35,7 +36,7 @@ describe('subscription template', () => {
       ],
     });
 
-    expect(html).toContain('download="amneziawg-1.conf"');
+    expect(html).toContain('download="Моя подписка.conf"');
     expect(html).toContain('format=amneziawg&amp;index=0');
     expect(html).toContain('Копировать настройки');
   });
