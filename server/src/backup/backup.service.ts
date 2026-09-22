@@ -19,7 +19,8 @@ export class BackupService {
     const user = login
       ? await this.authService.validateUser(login, currentPassword)
       : null;
-    if (!user) throw new UnauthorizedException('Неверный пароль администратора');
+    if (!user)
+      throw new UnauthorizedException('Неверный пароль администратора');
 
     const host = this.config.get<string>('DB_HOST', 'postgres');
     const port = this.config.get<string>('DB_PORT', '5432');
@@ -28,7 +29,17 @@ export class BackupService {
     const password = this.config.get<string>('DB_PASSWORD', '');
     const { stdout } = await execFileAsync(
       'pg_dump',
-      ['--format=custom', '--no-owner', '-h', host, '-p', port, '-U', username, database],
+      [
+        '--format=custom',
+        '--no-owner',
+        '-h',
+        host,
+        '-p',
+        port,
+        '-U',
+        username,
+        database,
+      ],
       {
         encoding: 'buffer',
         maxBuffer: 256 * 1024 * 1024,

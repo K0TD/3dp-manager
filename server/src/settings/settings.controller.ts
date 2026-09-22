@@ -20,11 +20,14 @@ export class SettingsController {
   @Get()
   async findAll() {
     const settings = await this.settingsRepo.find();
-    const sensitiveKeys = new Set(['admin_password', 'xui_password', 'xui_token']);
-    return settings.filter((setting) => !sensitiveKeys.has(setting.key)).reduce(
-      (acc, curr) => ({ ...acc, [curr.key]: curr.value }),
-      {},
-    );
+    const sensitiveKeys = new Set([
+      'admin_password',
+      'xui_password',
+      'xui_token',
+    ]);
+    return settings
+      .filter((setting) => !sensitiveKeys.has(setting.key))
+      .reduce((acc, curr) => ({ ...acc, [curr.key]: curr.value }), {});
   }
 
   @Get('countries')

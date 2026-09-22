@@ -67,11 +67,15 @@ export class InitialSchema1700000000000 implements MigrationInterface {
         CONSTRAINT "PK_inbound_id" PRIMARY KEY ("id")
       )
     `);
-    await queryRunner.query(`
+    await queryRunner
+      .query(
+        `
       ALTER TABLE "inbound"
       ADD CONSTRAINT "FK_inbound_subscription"
       FOREIGN KEY ("subscriptionId") REFERENCES "subscription"("id") ON DELETE CASCADE
-    `).catch(() => undefined);
+    `,
+      )
+      .catch(() => undefined);
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {

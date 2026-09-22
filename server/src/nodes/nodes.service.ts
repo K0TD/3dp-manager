@@ -148,7 +148,8 @@ export class NodesService {
       node.ip = resolved.ip;
       node.flag = resolved.flag;
     } else {
-      if (dto.domain !== undefined) node.domain = dto.domain.trim() || undefined;
+      if (dto.domain !== undefined)
+        node.domain = dto.domain.trim() || undefined;
       if (dto.ip) node.ip = dto.ip;
       if (dto.flag) node.flag = dto.flag;
     }

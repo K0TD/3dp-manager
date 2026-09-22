@@ -32,7 +32,9 @@ export class SshService {
           this.logger.debug(`Executing SSH command: ${command}`);
 
           timer = setTimeout(() => {
-            finish(() => reject(new Error(`SSH command timeout after ${timeoutMs}ms`)));
+            finish(() =>
+              reject(new Error(`SSH command timeout after ${timeoutMs}ms`)),
+            );
           }, timeoutMs);
 
           conn.exec(command, (err, stream) => {
@@ -47,7 +49,8 @@ export class SshService {
                 this.logger.debug(`SSH Command finished with code ${code}`);
                 finish(() => {
                   if (code === 0) resolve(output);
-                  else reject(new Error(`Exit code ${code}. Output: ${output}`));
+                  else
+                    reject(new Error(`Exit code ${code}. Output: ${output}`));
                 });
               })
               .on('data', (data: Buffer) => {

@@ -53,18 +53,44 @@ export class AddResilientRotation1780000000000 implements MigrationInterface {
 
   public async down(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`DROP TABLE IF EXISTS "rotation_operation"`);
-    await queryRunner.query(`ALTER TABLE "node" DROP COLUMN IF EXISTS "deletedAt"`);
-    await queryRunner.query(`ALTER TABLE "node" DROP COLUMN IF EXISTS "allowInvalidTls"`);
-    await queryRunner.query(`ALTER TABLE "node" DROP COLUMN IF EXISTS "lastError"`);
-    await queryRunner.query(`ALTER TABLE "node" DROP COLUMN IF EXISTS "consecutiveFailures"`);
-    await queryRunner.query(`ALTER TABLE "node" DROP COLUMN IF EXISTS "responseTimeMs"`);
-    await queryRunner.query(`ALTER TABLE "node" DROP COLUMN IF EXISTS "lastCheckedAt"`);
-    await queryRunner.query(`ALTER TABLE "node" DROP COLUMN IF EXISTS "healthStatus"`);
-    await queryRunner.query(`ALTER TABLE "inbound" DROP COLUMN IF EXISTS "createdAt"`);
-    await queryRunner.query(`ALTER TABLE "inbound" DROP COLUMN IF EXISTS "lastCleanupError"`);
-    await queryRunner.query(`ALTER TABLE "inbound" DROP COLUMN IF EXISTS "nextCleanupAt"`);
-    await queryRunner.query(`ALTER TABLE "inbound" DROP COLUMN IF EXISTS "cleanupAttempts"`);
-    await queryRunner.query(`ALTER TABLE "inbound" DROP COLUMN IF EXISTS "generationId"`);
-    await queryRunner.query(`ALTER TABLE "inbound" DROP COLUMN IF EXISTS "status"`);
+    await queryRunner.query(
+      `ALTER TABLE "node" DROP COLUMN IF EXISTS "deletedAt"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "node" DROP COLUMN IF EXISTS "allowInvalidTls"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "node" DROP COLUMN IF EXISTS "lastError"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "node" DROP COLUMN IF EXISTS "consecutiveFailures"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "node" DROP COLUMN IF EXISTS "responseTimeMs"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "node" DROP COLUMN IF EXISTS "lastCheckedAt"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "node" DROP COLUMN IF EXISTS "healthStatus"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "inbound" DROP COLUMN IF EXISTS "createdAt"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "inbound" DROP COLUMN IF EXISTS "lastCleanupError"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "inbound" DROP COLUMN IF EXISTS "nextCleanupAt"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "inbound" DROP COLUMN IF EXISTS "cleanupAttempts"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "inbound" DROP COLUMN IF EXISTS "generationId"`,
+    );
+    await queryRunner.query(
+      `ALTER TABLE "inbound" DROP COLUMN IF EXISTS "status"`,
+    );
   }
 }

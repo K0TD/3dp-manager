@@ -95,7 +95,9 @@ describe('NodesService', () => {
     const nodeRepo = createNodeRepo(getOne);
     nodeRepo.findOne.mockResolvedValue(null);
     const { service, inboundsRepo, xuiService } = createService(nodeRepo);
-    inboundsRepo.find.mockResolvedValue([{ id: 1, xuiId: 101, nodeId: 'main' }]);
+    inboundsRepo.find.mockResolvedValue([
+      { id: 1, xuiId: 101, nodeId: 'main' },
+    ]);
 
     await service.remove('main');
 
@@ -137,7 +139,10 @@ describe('NodesService', () => {
       inboundsConfig: [{ type: 'vless-ws', nodeId: 'node-1', enabled: true }],
     } as unknown as Subscription;
     const inbound = { id: 7, nodeId: 'node-1', status: 'active' } as Inbound;
-    const getOne = jest.fn().mockResolvedValueOnce(node).mockResolvedValueOnce(null);
+    const getOne = jest
+      .fn()
+      .mockResolvedValueOnce(node)
+      .mockResolvedValueOnce(null);
     const nodeRepo = createNodeRepo(getOne);
     nodeRepo.findOne.mockResolvedValue(null);
     const { service, subscriptionsRepo, inboundsRepo, xuiService } =
@@ -147,7 +152,11 @@ describe('NodesService', () => {
 
     const result = await service.remove('node-1', 'deferred');
 
-    expect(result).toMatchObject({ success: true, deferred: true, pendingCleanup: 1 });
+    expect(result).toMatchObject({
+      success: true,
+      deferred: true,
+      pendingCleanup: 1,
+    });
     expect(node.deletedAt).toBeInstanceOf(Date);
     expect(inbound.status).toBe('pending_cleanup');
     expect(subscription.nodeId).toBeUndefined();
@@ -163,13 +172,23 @@ describe('NodesService', () => {
     const subscription = {
       id: 1,
       nodeId: 'dead-node',
-      inboundsConfig: [{ type: 'vless-ws', nodeId: 'dead-node', enabled: true }],
+      inboundsConfig: [
+        { type: 'vless-ws', nodeId: 'dead-node', enabled: true },
+      ],
     } as unknown as Subscription;
-    const getOne = jest.fn().mockResolvedValueOnce(node).mockResolvedValueOnce(null);
+    const getOne = jest
+      .fn()
+      .mockResolvedValueOnce(node)
+      .mockResolvedValueOnce(null);
     const nodeRepo = createNodeRepo(getOne);
     nodeRepo.findOne.mockResolvedValue(null);
-    const { service, subscriptionsRepo, inboundsRepo, tunnelsRepo, xuiService } =
-      createService(nodeRepo);
+    const {
+      service,
+      subscriptionsRepo,
+      inboundsRepo,
+      tunnelsRepo,
+      xuiService,
+    } = createService(nodeRepo);
     subscriptionsRepo.find.mockResolvedValue([subscription]);
 
     const result = await service.remove('dead-node', 'force');

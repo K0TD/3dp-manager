@@ -248,6 +248,45 @@ describe('SubscriptionsPage', () => {
       })
     })
 
+    it('должен отображать настроенные стандартные инбаунды из настроек панели', async () => {
+      mockGet.mockImplementation((url: string) => {
+        if (url === '/settings') {
+          return Promise.resolve({
+            data: {
+              default_inbounds: JSON.stringify([
+                { type: 'vless-tcp-reality', nodeId: 'node-1', port: '443' },
+                { type: 'hysteria2-udp', nodeId: 'node-2', port: '8443' },
+                { type: 'custom', link: 'vless://custom-link' },
+              ]),
+            },
+          })
+        }
+        if (url === '/nodes') {
+          return Promise.resolve({
+            data: [
+              { id: 'node-1', name: 'Node 1', isMain: true, url: 'https://n1.test' },
+              { id: 'node-2', name: 'Node 2', isMain: false, url: 'https://n2.test' },
+            ],
+          })
+        }
+        if (url === '/subscriptions') return Promise.resolve({ data: [] })
+        if (url === '/tunnels') return Promise.resolve({ data: [] })
+        if (url === '/domains/all') return Promise.resolve({ data: [{ id: 1, name: 'domain.test', isEnabled: true }] })
+        if (url === '/settings/countries') return Promise.resolve({ data: [] })
+        return Promise.resolve({ data: {} })
+      })
+
+      renderSubscriptionsPage()
+
+      const createButton = await screen.findByText('Создать')
+      fireEvent.click(createButton)
+
+      await waitFor(() => {
+        expect(screen.getByText('Инбаунды (3/20)')).toBeInTheDocument()
+        expect(screen.getByDisplayValue('vless://custom-link')).toBeInTheDocument()
+      })
+    })
+
     it('должен предлагать оба варианта VLESS TLS', async () => {
       setupMockGet()
       renderSubscriptionsPage()

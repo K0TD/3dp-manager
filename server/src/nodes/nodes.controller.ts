@@ -26,7 +26,10 @@ export class NodesController {
   }
 
   @Put(':id/routing-presets')
-  updateRoutingPresets(@Param('id') id: string, @Body() dto: UpdateRoutingPresetsDto) {
+  updateRoutingPresets(
+    @Param('id') id: string,
+    @Body() dto: UpdateRoutingPresetsDto,
+  ) {
     return this.routingPresets.update(id, dto);
   }
 

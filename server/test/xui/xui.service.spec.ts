@@ -2,6 +2,11 @@ import axios from 'axios';
 import { XuiService } from 'src/xui/xui.service';
 import { Node, NodeAuthType } from 'src/nodes/entities/node.entity';
 import { SessionService } from 'src/session/session.service';
+import { RoutingStore } from 'src/nodes/routing/routing-store.service';
+import {
+  emptyRoutingState,
+  sniffingObject,
+} from 'src/nodes/routing/routing-presets';
 import {
   mergeCookies,
   normalizeInbound,
@@ -120,6 +125,206 @@ describe('3x-ui API contracts', () => {
       expect.objectContaining({
         baseURL: 'https://panel.test/base',
         maxRedirects: 0,
+      }),
+    );
+  });
+
+  const routingConfig = {
+    outbounds: [{ tag: 'direct', protocol: 'freedom' }],
+    routing: { rules: [] },
+  };
+
+  it.each([false, true])(
+    'reads Xray wrapper and template JSON with string encoding=%s',
+    async (encoded) => {
+      const wrapper = {
+        xraySetting: encoded ? JSON.stringify(routingConfig) : routingConfig,
+        outboundTestUrl: 'https://probe.test',
+      };
+      api.post.mockResolvedValue({
+        data: {
+          success: true,
+          obj: encoded ? JSON.stringify(wrapper) : wrapper,
+        },
+      });
+      expect(await service.getXrayTemplate(tokenNode)).toEqual({
+        path: '/panel/api/xray',
+        config: routingConfig,
+        outboundTestUrl: 'https://probe.test',
+      });
+      expect(api.defaults.headers.common.Authorization).toBe('Bearer token');
+    },
+  );
+
+  it('selects legacy routes only after a confirmed missing read route', async () => {
+    api.post
+      .mockRejectedValueOnce({ response: { status: 404 } })
+      .mockResolvedValue({
+        data: {
+          success: true,
+          obj: {
+            xraySetting: routingConfig,
+            outboundTestUrl: 'https://probe.test',
+          },
+        },
+      });
+    expect(await service.getXrayTemplate(tokenNode)).toMatchObject({
+      path: '/panel/xray',
+    });
+    expect(api.post.mock.calls.map((args: unknown[]) => args[0])).toEqual([
+      '/panel/api/xray/',
+      '/panel/xray/',
+    ]);
+  });
+
+  it('does not hide auth failure by trying a different route', async () => {
+    api.post.mockRejectedValue({ response: { status: 403 } });
+    await expect(service.getXrayTemplate(tokenNode)).rejects.toBeDefined();
+    expect(api.post).toHaveBeenCalledTimes(1);
+  });
+
+  it('saves a form-encoded template, preserving the test URL, and never tries alternate write routes', async () => {
+    await service.saveXrayTemplate(tokenNode, {
+      path: '/panel/xray',
+      config: routingConfig,
+      outboundTestUrl: 'https://probe.test/a?b=1&c=2',
+    });
+    const [path, body] = api.post.mock.calls[0] as [string, URLSearchParams];
+    expect(path).toBe('/panel/xray/update');
+    expect(JSON.parse(body.get('xraySetting'))).toEqual(routingConfig);
+    expect(body.get('outboundTestUrl')).toBe('https://probe.test/a?b=1&c=2');
+    api.post.mockClear().mockRejectedValue({ response: { status: 404 } });
+    await expect(
+      service.saveXrayTemplate(tokenNode, {
+        path: '/panel/xray',
+        config: routingConfig,
+        outboundTestUrl: '',
+      }),
+    ).rejects.toBeDefined();
+    expect(api.post).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses password sessions and rotated CSRF tokens for template writes', async () => {
+    await service.saveXrayTemplate(passwordNode, {
+      path: '/panel/api/xray',
+      config: routingConfig,
+      outboundTestUrl: 'https://probe.test',
+    });
+    expect(api.post).toHaveBeenCalledWith(
+      '/login',
+      expect.objectContaining({ username: 'admin' }),
+    );
+    expect(api.defaults.headers.common.Cookie).toContain('session=');
+    expect(api.defaults.headers.common['X-CSRF-Token']).toBe('csrf');
+  });
+
+  it('checks both domain and IP geodata and distinguishes an unavailable validator', async () => {
+    api.post.mockResolvedValue({ data: { success: true, obj: [] } });
+    expect(
+      await service.validateRoutingGeodata(tokenNode, '/panel/api/xray'),
+    ).toBe(true);
+    expect(
+      api.post.mock.calls.map((call: [string, URLSearchParams]) => [
+        call[1].get('kind'),
+        call[1].get('tokens'),
+      ]),
+    ).toEqual([
+      ['domain', 'geosite:category-ru'],
+      ['ip', 'geoip:ru'],
+    ]);
+    api.post.mockRejectedValue({ response: { status: 404 } });
+    expect(
+      await service.validateRoutingGeodata(tokenNode, '/panel/api/xray'),
+    ).toBe(false);
+    api.post.mockResolvedValue({
+      data: { success: true, obj: [{ reason: 'categoryMissing' }] },
+    });
+    await expect(
+      service.validateRoutingGeodata(tokenNode, '/panel/api/xray'),
+    ).rejects.toThrow('category-ru');
+  });
+
+  it('rejects HTTP-200 API errors and invalid Xray templates', async () => {
+    api.post.mockResolvedValue({ data: { success: false, msg: 'rejected' } });
+    await expect(
+      service.saveXrayTemplate(tokenNode, {
+        path: '/panel/api/xray',
+        config: routingConfig,
+        outboundTestUrl: '',
+      }),
+    ).rejects.toThrow('rejected');
+    api.post.mockResolvedValue({
+      data: { success: true, obj: { xraySetting: '{broken' } },
+    });
+    await expect(service.getXrayTemplate(tokenNode)).rejects.toThrow();
+  });
+
+  it('preserves inbound clients/settings and excludes read-only counters during sniffing updates', async () => {
+    await service.updateInboundSniffing(tokenNode, {
+      ...normalizeInbound(inbound),
+      up: 100,
+      down: 200,
+      clientStats: [{ email: 'client' }],
+    });
+    const [path, payload] = api.post.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect(path).toBe('/panel/api/inbounds/update/42');
+    expect(JSON.parse(payload.settings as string)).toEqual(inbound.settings);
+    expect(payload).not.toHaveProperty('up');
+    expect(payload).not.toHaveProperty('clientStats');
+  });
+
+  it('applies active sniffing to newly created/rotated inbounds and persists restoration fields under the node lock', async () => {
+    const state = { ...emptyRoutingState(), blockIpCheckers: true };
+    const store = {
+      node: jest.fn(async () => ({ ...tokenNode, routingPresets: state })),
+      save: jest.fn(async () => undefined),
+      withLock: jest.fn(async (_id: string, work: () => Promise<unknown>) =>
+        work(),
+      ),
+    };
+    service = new XuiService(
+      {} as never,
+      new SessionService(),
+      store as unknown as RoutingStore,
+    );
+    api.get.mockImplementation(async (path: string) => {
+      if (path === '/panel/api/inbounds/get/42')
+        return {
+          data: {
+            success: true,
+            obj: {
+              ...api.post.mock.calls.find(
+                (call: unknown[]) => call[0] === '/panel/api/inbounds/add',
+              )[1],
+              id: 42,
+            },
+          },
+        };
+      throw new Error('unexpected read');
+    });
+    const created = await service.addInbound(
+      { ...normalizeInbound(inbound), sniffing: '{"enabled":false}' },
+      tokenNode,
+    );
+    expect(sniffingObject(created.inbound)).toMatchObject({
+      enabled: true,
+      routeOnly: true,
+      metadataOnly: false,
+    });
+    expect(store.withLock).toHaveBeenCalledWith('node', expect.any(Function));
+    expect(store.save).toHaveBeenCalledWith(
+      'node',
+      expect.objectContaining({
+        sniffing: {
+          '42': expect.objectContaining({
+            fields: expect.objectContaining({
+              enabled: { before: false, after: true },
+            }),
+          }),
+        },
       }),
     );
   });

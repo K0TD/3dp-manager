@@ -66,6 +66,21 @@ describe('SettingsController', () => {
       expect(settingsRepo.find).toHaveBeenCalledTimes(1);
     });
 
+    it('должен возвращать default_inbounds среди настроек', async () => {
+      const defaultInboundsJson = JSON.stringify([
+        { type: 'vless-tcp-reality', port: 'random', nodeId: 'node-1' },
+      ]);
+      mockSettingsRepo.find.mockResolvedValue([
+        { key: 'default_inbounds', value: defaultInboundsJson },
+      ]);
+
+      const result = await controller.findAll();
+
+      expect(result).toEqual({
+        default_inbounds: defaultInboundsJson,
+      });
+    });
+
     it('должен вернуть пустой объект, если настроек нет', async () => {
       mockSettingsRepo.find.mockResolvedValue([]);
 
@@ -123,6 +138,22 @@ describe('SettingsController', () => {
 
       expect(result).toEqual({ success: true });
       expect(settingsRepo.save).toHaveBeenCalledTimes(2);
+    });
+
+    it('должен сохранять default_inbounds с инбаундами для разных нод', async () => {
+      const inbounds = JSON.stringify([
+        { type: 'vless-tcp-reality', nodeId: 'node-1' },
+        { type: 'vless-xhttp-reality', nodeId: 'node-2' },
+      ]);
+      mockSettingsRepo.save.mockResolvedValue({});
+
+      const result = await controller.update({ default_inbounds: inbounds });
+
+      expect(result).toEqual({ success: true });
+      expect(settingsRepo.save).toHaveBeenCalledWith({
+        key: 'default_inbounds',
+        value: inbounds,
+      });
     });
 
     it('должен извлечь host из xui_url и определить IP', async () => {

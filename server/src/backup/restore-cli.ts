@@ -6,7 +6,9 @@ import { BackupEnvelope, openBackupEnvelope } from './backup.crypto';
 function restore() {
   const archivePath = process.argv[2];
   if (!archivePath) throw new Error('Usage: restore-cli <archive>');
-  const envelope = JSON.parse(readFileSync(archivePath, 'utf8')) as BackupEnvelope;
+  const envelope = JSON.parse(
+    readFileSync(archivePath, 'utf8'),
+  ) as BackupEnvelope;
   const dump = openBackupEnvelope(envelope, process.env.BACKUP_PASSPHRASE);
   const dumpPath = `/tmp/3dp-restore-${randomBytes(6).toString('hex')}.dump`;
   writeFileSync(dumpPath, dump, { mode: 0o600 });
@@ -40,6 +42,8 @@ function restore() {
 try {
   restore();
 } catch (error) {
-  process.stderr.write(`${error instanceof Error ? error.message : 'Restore failed'}\n`);
+  process.stderr.write(
+    `${error instanceof Error ? error.message : 'Restore failed'}\n`,
+  );
   process.exitCode = 1;
 }

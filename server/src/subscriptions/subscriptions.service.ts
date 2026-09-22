@@ -240,9 +240,9 @@ export class SubscriptionsService {
     // When changing node in an already created inbound, reset certificate to the target node
     const nodeChanged = Boolean(
       existingConfig &&
-        existingConfig.nodeId &&
-        config.nodeId &&
-        existingConfig.nodeId !== config.nodeId,
+      existingConfig.nodeId &&
+      config.nodeId &&
+      existingConfig.nodeId !== config.nodeId,
     );
     const certificateMode = isCertificateInbound
       ? nodeChanged

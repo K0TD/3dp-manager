@@ -104,7 +104,9 @@ export class TunnelsService {
     const targetNode = tunnel.nodeId
       ? await this.nodeRepo.findOne({ where: { id: tunnel.nodeId } })
       : await this.nodeRepo.findOne({ where: { isMain: true } });
-    const hostSetting = await this.settingRepo.findOne({ where: { key: 'xui_ip' } });
+    const hostSetting = await this.settingRepo.findOne({
+      where: { key: 'xui_ip' },
+    });
 
     if (!targetNode && (!hostSetting || !hostSetting.value)) {
       throw new HttpException(

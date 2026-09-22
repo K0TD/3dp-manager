@@ -2,7 +2,12 @@ import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { AuthService } from './auth/auth.service';
-import { RequestMethod, Logger, LogLevel, ValidationPipe } from '@nestjs/common';
+import {
+  RequestMethod,
+  Logger,
+  LogLevel,
+  ValidationPipe,
+} from '@nestjs/common';
 import { Request, Response, NextFunction, RequestHandler } from 'express';
 import cookieParser from 'cookie-parser';
 import { HttpExceptionFilter } from './client/client.exception-filter';

@@ -51,7 +51,10 @@ export function createBackupEnvelope(
   };
 }
 
-export function openBackupEnvelope(envelope: BackupEnvelope, passphrase?: string) {
+export function openBackupEnvelope(
+  envelope: BackupEnvelope,
+  passphrase?: string,
+) {
   if (envelope.format !== FORMAT) throw new Error('Unsupported backup format');
   let dump: Buffer;
   if (envelope.encrypted) {
@@ -59,7 +62,11 @@ export function openBackupEnvelope(envelope: BackupEnvelope, passphrase?: string
     if (!envelope.salt || !envelope.iv || !envelope.tag) {
       throw new Error('Encrypted backup metadata is incomplete');
     }
-    const key = scryptSync(passphrase, Buffer.from(envelope.salt, 'base64'), 32);
+    const key = scryptSync(
+      passphrase,
+      Buffer.from(envelope.salt, 'base64'),
+      32,
+    );
     const decipher = createDecipheriv(
       'aes-256-gcm',
       key,
@@ -74,6 +81,7 @@ export function openBackupEnvelope(envelope: BackupEnvelope, passphrase?: string
     dump = Buffer.from(envelope.payload, 'base64');
   }
   const checksum = createHash('sha256').update(dump).digest('hex');
-  if (checksum !== envelope.checksum) throw new Error('Backup checksum mismatch');
+  if (checksum !== envelope.checksum)
+    throw new Error('Backup checksum mismatch');
   return dump;
 }

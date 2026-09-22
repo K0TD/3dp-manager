@@ -8,11 +8,11 @@ export class BackupController {
   constructor(private readonly backups: BackupService) {}
 
   @Post('export')
-  async export(
-    @Body() body: ExportBackupDto,
-    @Res() response: Response,
-  ) {
-    const archive = await this.backups.export(body.currentPassword, body.passphrase);
+  async export(@Body() body: ExportBackupDto, @Res() response: Response) {
+    const archive = await this.backups.export(
+      body.currentPassword,
+      body.passphrase,
+    );
     const date = new Date().toISOString().slice(0, 10);
     response.setHeader('Content-Type', 'application/octet-stream');
     response.setHeader(

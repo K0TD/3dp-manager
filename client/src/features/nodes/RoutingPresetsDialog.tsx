@@ -37,8 +37,11 @@ export function RoutingPresetsDialog({ node, onClose }: Props) {
   }, [node.id]);
 
   useEffect(() => {
+    const currentGeneration = generation;
     void load();
-    return () => { generation.current++; };
+    return () => {
+      currentGeneration.current++;
+    };
   }, [load]);
 
   const apply = async () => {

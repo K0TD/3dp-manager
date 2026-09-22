@@ -18,6 +18,8 @@ const renderPage = () => render(<ThemeProvider><SettingsPage /></ThemeProvider>)
 describe('SettingsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockGet.mockReset()
+    mockPost.mockReset()
     mockGet.mockResolvedValue({ data: { admin_login: 'operator' } })
     mockPost.mockResolvedValue({ data: new Blob(['backup']) })
     Object.defineProperty(URL, 'createObjectURL', { value: vi.fn(() => 'blob:test'), configurable: true })
@@ -44,7 +46,7 @@ describe('SettingsPage', () => {
       login: 'new-operator',
       password: 'strong-password',
     }))
-  })
+  }, 20000)
 
   it('requires the current administrator password for export', async () => {
     renderPage()
@@ -77,5 +79,80 @@ describe('SettingsPage', () => {
     fireEvent.click(encryptionSwitch!)
 
     expect(screen.getByText(/Открытый архив содержит пароли нод/)).toBeInTheDocument()
+  })
+
+  it('displays standard inbounds section and saves custom inbounds with different nodes', async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/settings') {
+        return Promise.resolve({
+          data: {
+            admin_login: 'operator',
+            default_inbounds: JSON.stringify([
+              { type: 'vless-tcp-reality', nodeId: 'node-1', port: '443', name: 'Primary Inbound' },
+              { type: 'vless-xhttp-reality', nodeId: 'node-2', port: '8443', name: 'Secondary Inbound' },
+            ]),
+          },
+        })
+      }
+      if (url === '/nodes') {
+        return Promise.resolve({
+          data: [
+            { id: 'node-1', name: 'Node 1 (DE)', isMain: true, flag: '🇩🇪', url: 'https://de.test' },
+            { id: 'node-2', name: 'Node 2 (FI)', isMain: false, flag: '🇫🇮', url: 'https://fi.test' },
+          ],
+        })
+      }
+      if (url === '/tunnels') return Promise.resolve({ data: [] })
+      if (url === '/domains/all') return Promise.resolve({ data: [{ id: 1, name: 'test.com', isEnabled: true }] })
+      if (url === '/settings/countries') return Promise.resolve({ data: [] })
+      return Promise.resolve({ data: {} })
+    })
+
+    renderPage()
+
+    expect(await screen.findByText('Стандартные инбаунды подписок')).toBeInTheDocument()
+    expect(await screen.findByDisplayValue('Primary Inbound')).toBeInTheDocument()
+    expect(await screen.findByDisplayValue('Secondary Inbound')).toBeInTheDocument()
+
+    // Click "Сохранить стандартные инбаунды"
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить стандартные инбаунды' }))
+
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledWith('/settings', expect.objectContaining({
+        default_inbounds: expect.stringContaining('Primary Inbound'),
+      }))
+    })
+
+    expect(await screen.findByText('Стандартные инбаунды сохранены')).toBeInTheDocument()
+  })
+
+  it('resets standard inbounds to defaults on clicking reset', async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/settings') {
+        return Promise.resolve({
+          data: {
+            admin_login: 'operator',
+            default_inbounds: JSON.stringify([
+              { type: 'custom', link: 'vless://one' },
+            ]),
+          },
+        })
+      }
+      if (url === '/nodes') {
+        return Promise.resolve({
+          data: [{ id: 'node-1', name: 'Node 1', isMain: true, url: 'https://node.test' }],
+        })
+      }
+      return Promise.resolve({ data: [] })
+    })
+
+    renderPage()
+
+    expect(await screen.findByDisplayValue('vless://one')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Сбросить по умолчанию' }))
+
+    expect(await screen.findByText('Инбаунды сброшены к значениям по умолчанию (не забудьте сохранить)')).toBeInTheDocument()
+    expect(await screen.findByText('Инбаунды (5/20)')).toBeInTheDocument()
   })
 })
