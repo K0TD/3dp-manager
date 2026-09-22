@@ -17,8 +17,12 @@ import {
   InboundType,
 } from './inbound-config.constants';
 import { supportsInboundType } from '../nodes/node-capabilities';
-import { isValidFakeTlsDomain } from '../inbounds/mtproto-faketls';
+import {
+  isValidFakeTlsDomain,
+  normalizeFakeTlsDomain,
+} from '../inbounds/mtproto-faketls';
 import { isSafeAbsoluteRemotePath } from '../inbounds/tls-config';
+import { Domain } from '../domains/entities/domain.entity';
 
 type InboundConfig = NonNullable<
   CreateSubscriptionDto['inboundsConfig']
@@ -36,6 +40,8 @@ export class SubscriptionsService {
     private nodeRepo: Repository<Node>,
     @InjectRepository(Tunnel)
     private tunnelRepo: Repository<Tunnel>,
+    @InjectRepository(Domain)
+    private domainRepo: Repository<Domain>,
     private xuiService: XuiService,
   ) {}
 
@@ -194,7 +200,7 @@ export class SubscriptionsService {
     for (const config of inboundsConfig || []) {
       this.validateConfigIdentity(config, configIds);
       this.validateTlsConfig(config);
-      this.validateMtprotoConfig(config);
+      await this.validateMtprotoConfig(config);
       if (config.type === 'custom') continue;
 
       await this.validateConfigRelations(config);
@@ -293,17 +299,33 @@ export class SubscriptionsService {
     }
   }
 
-  private validateMtprotoConfig(config: InboundConfig) {
+  private async validateMtprotoConfig(config: InboundConfig) {
     if (config.type !== 'mtproto-faketls') return;
 
     const fakeTlsDomain = config.sni?.trim();
+    if (!fakeTlsDomain) {
+      throw new BadRequestException(
+        'MTProto FakeTLS domain must be selected from SNI domains',
+      );
+    }
+    const normalizedDomain = normalizeFakeTlsDomain(fakeTlsDomain);
     if (
-      !fakeTlsDomain ||
-      fakeTlsDomain === 'random' ||
-      !isValidFakeTlsDomain(fakeTlsDomain)
+      normalizedDomain !== 'random' &&
+      !isValidFakeTlsDomain(normalizedDomain)
     ) {
       throw new BadRequestException(
         'MTProto FakeTLS domain must be a valid hostname',
+      );
+    }
+    const listedDomain = await this.domainRepo.findOne({
+      where:
+        normalizedDomain === 'random'
+          ? { isEnabled: true }
+          : { name: normalizedDomain, isEnabled: true },
+    });
+    if (!listedDomain) {
+      throw new BadRequestException(
+        'MTProto FakeTLS domain must be selected from enabled SNI domains',
       );
     }
   }

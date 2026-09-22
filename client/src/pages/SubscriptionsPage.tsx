@@ -12,7 +12,6 @@ import {
   Divider,
   FormControl,
   IconButton,
-  InputAdornment,
   InputLabel,
   ListItemIcon,
   ListItemText,
@@ -40,7 +39,6 @@ import {
   ContentCopy,
   Delete,
   Edit,
-  HelpOutline,
   Link as LinkIcon,
   MoreVert,
   OpenInNew,
@@ -95,6 +93,7 @@ interface InboundConfigUI {
 interface Domain {
   id: number;
   name: string;
+  isEnabled?: boolean;
 }
 
 interface CountryOption {
@@ -118,10 +117,6 @@ const CONNECTION_OPTIONS = [
   'amneziawg',
   'custom',
 ];
-
-const DEFAULT_MTPROTO_FAKE_TLS_DOMAIN = 'www.cloudflare.com';
-const FAKE_TLS_DOMAIN_PATTERN =
-  /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
 
 const CERTIFICATE_TYPES = new Set([
   'hysteria2-udp',
@@ -193,7 +188,11 @@ export default function SubscriptionsPage() {
           : [],
       );
       setNodes(Array.isArray(nodesRes.data) ? nodesRes.data : []);
-      setDomains(Array.isArray(domainsRes.data) ? domainsRes.data : []);
+      setDomains(
+        Array.isArray(domainsRes.data)
+          ? domainsRes.data.filter((domain: Domain) => domain.isEnabled !== false)
+          : [],
+      );
       setCountries(Array.isArray(countriesRes.data) ? countriesRes.data : []);
       setRotationSettings((prev) => ({ ...prev, ...settingsRes.data }));
     } catch (error) {
@@ -233,6 +232,22 @@ export default function SubscriptionsPage() {
   const hasSni = (type: string) =>
     !CERTIFICATE_TYPES.has(type) && type !== 'amneziawg';
 
+  const isListedSni = (sni: string) => {
+    const normalizedSni = sni.trim().toLowerCase();
+    return (
+      normalizedSni === 'random' ||
+      domains.some((domain) => domain.name.toLowerCase() === normalizedSni)
+    );
+  };
+
+  const inboundSni = (type: string, savedSni?: string) => {
+    if (!hasSni(type)) return '';
+    const configuredSni = savedSni?.trim() || 'random';
+    return type === 'mtproto-faketls' && !isListedSni(configuredSni)
+      ? 'random'
+      : configuredSni;
+  };
+
   const getSelectedNode = (nodeId?: string) =>
     nodes.find((node) => node.id === (nodeId || getDefaultNodeId()));
 
@@ -241,9 +256,6 @@ export default function SubscriptionsPage() {
     const capabilities = getSelectedNode(nodeId)?.capabilities;
     return !capabilities || capabilities.supportedInboundTypes.includes(type);
   };
-
-  const getDefaultSni = (type: string) =>
-    type === 'mtproto-faketls' ? DEFAULT_MTPROTO_FAKE_TLS_DOMAIN : 'random';
 
   const isValidPort = (value: string) =>
     value === 'random' || (/^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= 65535);
@@ -256,7 +268,7 @@ export default function SubscriptionsPage() {
       configId,
       type,
       port: 'random',
-      sni: hasSni(type) ? getDefaultSni(type) : '',
+      sni: inboundSni(type),
       link: '',
       nodeId,
       flag: getNodeFlag(nodeId),
@@ -305,9 +317,7 @@ export default function SubscriptionsPage() {
           configId,
           type: item.type || 'vless-tcp-reality',
           port: item.port ? item.port.toString() : 'random',
-          sni: hasSni(item.type || '')
-            ? item.sni || getDefaultSni(item.type || '')
-            : '',
+          sni: inboundSni(item.type || '', item.sni),
           link: item.link || '',
           nodeId,
           relayServerId: item.relayServerId ? item.relayServerId.toString() : '',
@@ -379,7 +389,7 @@ export default function SubscriptionsPage() {
         }
 
         if (field === 'type' && value === 'mtproto-faketls') {
-          next.sni = DEFAULT_MTPROTO_FAKE_TLS_DOMAIN;
+          next.sni = 'random';
           next.certificateMode = undefined;
           next.tlsServerName = undefined;
           next.certificateFile = '';
@@ -478,13 +488,13 @@ export default function SubscriptionsPage() {
       inbounds.some(
         (inbound) =>
           inbound.type === 'mtproto-faketls' &&
-          !FAKE_TLS_DOMAIN_PATTERN.test(inbound.sni.trim()),
+          !isListedSni(inbound.sni),
       )
     ) {
       setSnackbar({
         open: true,
         type: 'error',
-        message: 'Укажите корректный FakeTLS-домен для MTProto',
+        message: 'Выберите FakeTLS-домен из списка SNI',
       });
       return;
     }
@@ -1035,36 +1045,21 @@ export default function SubscriptionsPage() {
                         )}
                       </>
                     )}
-                    {inbound.type === 'mtproto-faketls' && (
-                      <TextField
-                        size="small"
-                        label="FakeTLS-домен"
-                        placeholder={DEFAULT_MTPROTO_FAKE_TLS_DOMAIN}
-                        value={inbound.sni}
-                        onChange={(e) =>
-                          handleInboundChange(inbound.id, 'sni', e.target.value)
-                        }
-                        error={
-                          inbound.sni.length > 0 &&
-                          !FAKE_TLS_DOMAIN_PATTERN.test(inbound.sni.trim())
-                        }
-                        sx={{ width: 220, flexShrink: 0 }}
-                        InputProps={{
-                          endAdornment: (
-                            <InputAdornment position="end">
-                              <Tooltip title="Домен маскировки FakeTLS. Сертификат и владение доменом не требуются.">
-                                <HelpOutline fontSize="small" color="action" />
-                              </Tooltip>
-                            </InputAdornment>
-                          ),
-                        }}
-                      />
-                    )}
-                    {hasSni(inbound.type) && inbound.type !== 'mtproto-faketls' && (
-                      <FormControl size="small" sx={{ width: 150, flexShrink: 0 }}>
-                        <InputLabel>SNI</InputLabel>
-                        <Select value={inbound.sni} label="SNI" onChange={(e) => handleInboundChange(inbound.id, 'sni', e.target.value)}>
-                          <MenuItem value="random">random</MenuItem>
+                    {hasSni(inbound.type) && (
+                      <FormControl size="small" sx={{ width: 190, flexShrink: 0 }}>
+                        <InputLabel id={`${inbound.id}-sni-label`}>
+                          {inbound.type === 'mtproto-faketls' ? 'FakeTLS SNI' : 'SNI'}
+                        </InputLabel>
+                        <Select
+                          id={`${inbound.id}-sni`}
+                          labelId={`${inbound.id}-sni-label`}
+                          value={inbound.sni}
+                          label={inbound.type === 'mtproto-faketls' ? 'FakeTLS SNI' : 'SNI'}
+                          onChange={(e) => handleInboundChange(inbound.id, 'sni', e.target.value)}
+                        >
+                          <MenuItem value="random">
+                            {inbound.type === 'mtproto-faketls' ? 'random — из списка SNI' : 'random'}
+                          </MenuItem>
                           {domains.map((domain) => <MenuItem key={domain.id} value={domain.name}>{domain.name}</MenuItem>)}
                         </Select>
                       </FormControl>

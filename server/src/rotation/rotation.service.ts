@@ -19,6 +19,7 @@ import { XuiCertificateFiles, XuiService } from '../xui/xui.service';
 import { InboundBuilderService } from '../inbounds/inbound-builder.service';
 import { XuiInboundRaw } from '../inbounds/xui-inbound.types';
 import { isSafeAbsoluteRemotePath } from '../inbounds/tls-config';
+import { normalizeFakeTlsDomain } from '../inbounds/mtproto-faketls';
 import {
   CERTIFICATE_INBOUND_TYPES,
   InboundType,
@@ -685,9 +686,14 @@ export class RotationService implements OnModuleInit {
 
   private resolveInboundSni(config: InboundConfig, domains: Domain[]) {
     if (CERTIFICATE_INBOUND_TYPES.has(config.type as InboundType)) return '';
-    return config.sni === 'random'
-      ? this.pickDomain(domains)
-      : config.sni || '';
+    const configuredSni = config.sni?.trim() || '';
+    if (configuredSni === 'random') return this.pickDomain(domains);
+    if (config.type !== 'mtproto-faketls') return configuredSni;
+    const normalizedSni = normalizeFakeTlsDomain(configuredSni);
+    const listedDomain = domains.find(
+      (domain) => normalizeFakeTlsDomain(domain.name) === normalizedSni,
+    );
+    return listedDomain?.name ?? this.pickDomain(domains);
   }
 
   private async createInbound(request: CreateInboundRequest) {

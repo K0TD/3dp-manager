@@ -402,6 +402,41 @@ describe('SubscriptionsPage', () => {
         )
       })
     })
+
+    it('должен предлагать Telemt домены из списка SNI', async () => {
+      setupMockGet({
+        domains: [
+          { id: 1, name: 'example.com', isEnabled: true },
+          { id: 2, name: 'vk.com', isEnabled: true },
+          { id: 3, name: 'disabled.example.com', isEnabled: false },
+        ],
+        subscriptions: [
+          {
+            id: 'sub-telemt',
+            name: 'Telegram',
+            uuid: 'telemt-uuid',
+            inbounds: [],
+            inboundsConfig: [
+              { type: 'mtproto-faketls', port: 8443, sni: 'random' },
+            ],
+          },
+        ],
+      })
+      renderSubscriptionsPage()
+
+      fireEvent.click(await screen.findByTestId('icon-MoreVert'))
+      fireEvent.click(await screen.findByText('Редактировать'))
+      fireEvent.mouseDown(await screen.findByLabelText('FakeTLS SNI'))
+
+      expect(
+        await screen.findByRole('option', { name: 'random — из списка SNI' }),
+      ).toBeInTheDocument()
+      expect(screen.getByRole('option', { name: 'example.com' })).toBeInTheDocument()
+      expect(screen.getByRole('option', { name: 'vk.com' })).toBeInTheDocument()
+      expect(
+        screen.queryByRole('option', { name: 'disabled.example.com' }),
+      ).not.toBeInTheDocument()
+    })
   })
 
   describe('Сохранение подписки', () => {

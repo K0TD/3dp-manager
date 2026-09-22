@@ -288,7 +288,7 @@ describe('RotationService resilient generations', () => {
     expect(old.status).toBe(InboundStatus.Active);
   });
 
-  it('generates MTProto FakeTLS without Reality keys', async () => {
+  it('generates MTProto FakeTLS with a domain from the SNI list', async () => {
     const node = {
       id: 'node-mtproto',
       name: 'MTProto node',
@@ -305,7 +305,7 @@ describe('RotationService resilient generations', () => {
       protocol: 'mtproto',
       remark: 'mtproto-faketls',
       settings: JSON.stringify({
-        fakeTlsDomain: 'www.cloudflare.com',
+        fakeTlsDomain: 'vk.com',
         clients: [{ email: 'client', secret }],
       }),
       streamSettings: '',
@@ -321,7 +321,7 @@ describe('RotationService resilient generations', () => {
           type: 'mtproto-faketls',
           nodeId: node.id,
           port: 8443,
-          sni: 'www.cloudflare.com',
+          sni: 'random',
         },
       ],
     } as Subscription;
@@ -339,7 +339,7 @@ describe('RotationService resilient generations', () => {
 
     const rotationResults = await (service as any).rotateSubscription(
       subscription,
-      [],
+      [{ name: 'vk.com', isEnabled: true }],
       node,
     );
 
@@ -351,7 +351,7 @@ describe('RotationService resilient generations', () => {
     expect(inboundBuilder.buildMtprotoInbound).toHaveBeenCalledWith({
       port: 8443,
       uuid: expect.any(String),
-      fakeTlsDomain: 'www.cloudflare.com',
+      fakeTlsDomain: 'vk.com',
     });
     expect(inboundBuilder.buildInboundLink).toHaveBeenCalledWith(
       builtInbound,
@@ -366,6 +366,15 @@ describe('RotationService resilient generations', () => {
         position: 0,
       }),
     );
+  });
+
+  it('replaces a removed MTProto SNI with a current domain from the list', () => {
+    const resolvedSni = (service as any).resolveInboundSni(
+      { type: 'mtproto-faketls', sni: 'removed.example.com' },
+      [{ name: 'vk.com', isEnabled: true }],
+    );
+
+    expect(resolvedSni).toBe('vk.com');
   });
 
   it('returns an operation id immediately when rotation is queued', async () => {

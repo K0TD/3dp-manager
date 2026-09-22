@@ -10,6 +10,7 @@ import { XuiService } from 'src/xui/xui.service';
 import { CreateSubscriptionDto } from 'src/subscriptions/dto/create-subscription.dto';
 import { Node } from 'src/nodes/entities/node.entity';
 import { Tunnel } from 'src/tunnels/entities/tunnel.entity';
+import { Domain } from 'src/domains/entities/domain.entity';
 
 describe('SubscriptionsService', () => {
   let service: SubscriptionsService;
@@ -51,6 +52,10 @@ describe('SubscriptionsService', () => {
     findOne: jest.fn(),
   };
 
+  const mockDomainRepo = {
+    findOne: jest.fn(),
+  };
+
   const mockXuiService = {
     deleteInbound: jest.fn(),
   };
@@ -70,6 +75,10 @@ describe('SubscriptionsService', () => {
         {
           provide: getRepositoryToken(Tunnel),
           useValue: mockTunnelRepo,
+        },
+        {
+          provide: getRepositoryToken(Domain),
+          useValue: mockDomainRepo,
         },
         {
           provide: XuiService,
@@ -269,9 +278,56 @@ describe('SubscriptionsService', () => {
       };
       mockSubRepo.create.mockImplementation((value) => value);
       mockSubRepo.save.mockImplementation((value) => Promise.resolve(value));
+      mockDomainRepo.findOne.mockResolvedValue({
+        name: 'www.cloudflare.com',
+        isEnabled: true,
+      });
 
       await expect(service.create(dto)).resolves.toEqual(
         expect.objectContaining({ name: 'Telegram' }),
+      );
+      expect(mockDomainRepo.findOne).toHaveBeenCalledWith({
+        where: { name: 'www.cloudflare.com', isEnabled: true },
+      });
+    });
+
+    it('должен принимать random для выбора из списка SNI', async () => {
+      mockSubRepo.create.mockImplementation((value) => value);
+      mockSubRepo.save.mockImplementation((value) => Promise.resolve(value));
+      mockDomainRepo.findOne.mockResolvedValue({
+        name: 'vk.com',
+        isEnabled: true,
+      });
+
+      await expect(
+        service.create({
+          name: 'Telegram',
+          inboundsConfig: [
+            { type: 'mtproto-faketls', port: 8443, sni: 'random' },
+          ],
+        }),
+      ).resolves.toEqual(expect.objectContaining({ name: 'Telegram' }));
+      expect(mockDomainRepo.findOne).toHaveBeenCalledWith({
+        where: { isEnabled: true },
+      });
+    });
+
+    it('должен отклонять FakeTLS-домен вне списка SNI', async () => {
+      mockDomainRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.create({
+          name: 'Telegram',
+          inboundsConfig: [
+            {
+              type: 'mtproto-faketls',
+              port: 8443,
+              sni: 'outside.example.com',
+            },
+          ],
+        }),
+      ).rejects.toThrow(
+        'MTProto FakeTLS domain must be selected from enabled SNI domains',
       );
     });
 
