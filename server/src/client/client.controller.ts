@@ -7,7 +7,6 @@ import {
   Res,
   Req,
   Inject,
-  Query,
   Logger,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
@@ -64,6 +63,15 @@ export class ClientController {
           link: inbound.link,
         })),
     );
+    if (req.query.format === 'amneziawg') {
+      const requestedIndex =
+        typeof req.query.index === 'string' ? req.query.index : undefined;
+      return this.sendAmneziaConfig(
+        previewData.amneziaLinks,
+        requestedIndex,
+        res,
+      );
+    }
     const plainTextList = previewData.subscriptionLinks.join('\n');
     const base64Config = Buffer.from(plainTextList).toString('base64');
 
@@ -109,7 +117,6 @@ export class ClientController {
   async getRelaySubscription(
     @Param('uuid') uuid: string,
     @Param('tunnelId') tunnelId: string,
-    @Query('format') format: string,
     @Req() req: Request,
     @Res() res: Response,
   ) {
@@ -145,6 +152,15 @@ export class ClientController {
               : this.patchLink(inbound.link, relayHost),
         })),
     );
+    if (req.query.format === 'amneziawg') {
+      const requestedIndex =
+        typeof req.query.index === 'string' ? req.query.index : undefined;
+      return this.sendAmneziaConfig(
+        previewData.amneziaLinks,
+        requestedIndex,
+        res,
+      );
+    }
     const plainTextList = previewData.subscriptionLinks.join('\n');
     const base64Config = Buffer.from(plainTextList).toString('base64');
 
@@ -283,5 +299,61 @@ export class ClientController {
     }
 
     return groupedLinks;
+  }
+
+  private sendAmneziaConfig(
+    amneziaLinks: string[],
+    requestedIndex: string | undefined,
+    res: Response,
+  ) {
+    const indexText = requestedIndex ?? '0';
+    const configIndex = /^\d+$/.test(indexText) ? Number(indexText) : -1;
+    const link = amneziaLinks[configIndex];
+    if (!link) {
+      return res
+        .status(HttpStatus.NOT_FOUND)
+        .send('AmneziaWG config not found');
+    }
+
+    const config = this.decodeAmneziaConfig(link);
+    if (!config) {
+      return res
+        .status(HttpStatus.UNPROCESSABLE_ENTITY)
+        .send('Invalid AmneziaWG config');
+    }
+
+    this.setAmneziaDownloadHeaders(res, configIndex);
+    return res.send(config);
+  }
+
+  private decodeAmneziaConfig(link: string): string | null {
+    const config = Buffer.from(
+      link.slice('vpn://'.length),
+      'base64url',
+    ).toString('utf8');
+    return this.isValidAmneziaConfig(config) ? config : null;
+  }
+
+  private isValidAmneziaConfig(config: string): boolean {
+    return (
+      config.startsWith('[Interface]') &&
+      config.includes('[Peer]') &&
+      /^PrivateKey\s*=\s*\S+/m.test(config) &&
+      /^PublicKey\s*=\s*\S+/m.test(config) &&
+      /^Endpoint\s*=\s*\S+:\d+$/m.test(config)
+    );
+  }
+
+  private setAmneziaDownloadHeaders(res: Response, configIndex: number) {
+    res.setHeader(
+      'Content-Type',
+      'application/x-wireguard-profile; charset=utf-8',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="amneziawg-${configIndex + 1}.conf"`,
+    );
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
   }
 }

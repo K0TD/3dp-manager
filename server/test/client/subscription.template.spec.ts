@@ -20,8 +20,9 @@ describe('subscription template', () => {
     });
 
     expect(html).toContain('AmneziaWG');
-    expect(html).toContain('Открыть в AmneziaVPN');
+    expect(html).toContain('Скачать профиль .conf');
     expect(html).toContain('Импорт туннелей из файла');
+    expect(html).not.toContain('Открыть в AmneziaVPN');
     expect(html).not.toContain('<h2>Telegram Proxy</h2>');
   });
 
@@ -35,7 +36,8 @@ describe('subscription template', () => {
     });
 
     expect(html).toContain('download="amneziawg-1.conf"');
-    expect(html).toContain('data:text/plain;charset=utf-8');
+    expect(html).toContain('format=amneziawg&amp;index=0');
+    expect(html).toContain('Копировать настройки');
   });
 
   it('показывает отдельное действие для Telegram Proxy', () => {
@@ -49,8 +51,19 @@ describe('subscription template', () => {
     expect(html).toContain('Telegram Proxy');
     expect(html).toContain('Добавить в Telegram');
     expect(html).toContain(
-      'tg://proxy?server=example.com&amp;port=443&amp;secret=eeaa',
+      'https://t.me/proxy?server=example.com&amp;port=443&amp;secret=eeaa',
     );
+    expect(html).not.toContain('href="tg://proxy');
+  });
+
+  it('ограничивает QR шириной мобильного контейнера', () => {
+    const html = generateSubscriptionHtmlWithQr(baseData);
+
+    expect(html).toContain(
+      '.qr-frame { width: min(230px,100%); max-width: 100%',
+    );
+    expect(html).toContain('.qr-panel > div { min-width: 0; width: 100%');
+    expect(html).toContain('@media (max-width: 420px)');
   });
 
   it('экранирует данные подписки в HTML-контексте', () => {

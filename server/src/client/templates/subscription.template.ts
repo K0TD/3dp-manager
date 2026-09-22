@@ -25,51 +25,59 @@ function connectionWord(count: number): string {
   return 'подключений';
 }
 
-function renderConnectionActions(
-  links: string[],
-  openLabel: string,
-  copyLabel: string,
-): string {
+function telegramWebLink(link: string): string {
+  const telegramLink = new URL(link);
+  const webLink = new URL('https://t.me/proxy');
+  for (const parameter of ['server', 'port', 'secret']) {
+    const parameterValue = telegramLink.searchParams.get(parameter);
+    if (parameterValue) webLink.searchParams.set(parameter, parameterValue);
+  }
+  return webLink.toString();
+}
+
+function renderTelegramActions(links: string[]): string {
   return links
     .map((link, index) => {
-      const safeLink = escapeHtml(link);
+      const safeLink = escapeHtml(telegramWebLink(link));
       const suffix = links.length > 1 ? ` ${index + 1}` : '';
       return `
         <div class="connection-action">
           <span class="connection-index" aria-hidden="true">${String(index + 1).padStart(2, '0')}</span>
-          <a class="button button--primary" href="${safeLink}">${openLabel}${suffix}</a>
-          <button class="button button--ghost copy-special" type="button" data-copy="${safeLink}">${copyLabel}</button>
+          <a class="button button--primary" href="${safeLink}" target="_blank" rel="noopener">Добавить в Telegram${suffix}</a>
+          <button class="button button--ghost copy-special" type="button" data-copy="${safeLink}">Копировать ссылку</button>
         </div>`;
     })
     .join('');
 }
 
-function renderAmneziaActions(links: string[]): string {
+function renderAmneziaActions(
+  links: string[],
+  subscriptionUrl: string,
+): string {
   return links
     .map((link, index) => {
-      const safeLink = escapeHtml(link);
       const vpnConfig = Buffer.from(
         link.slice('vpn://'.length),
         'base64url',
       ).toString('utf8');
-      const configDownload =
-        vpnConfig.startsWith('[Interface]') && vpnConfig.includes('[Peer]')
-          ? `data:text/plain;charset=utf-8,${encodeURIComponent(vpnConfig)}`
-          : '';
+      const downloadUrl = new URL(subscriptionUrl);
+      downloadUrl.searchParams.set('format', 'amneziawg');
+      downloadUrl.searchParams.set('index', String(index));
+      const safeDownloadUrl = escapeHtml(downloadUrl.toString());
+      const safeConfig = escapeHtml(vpnConfig);
       const suffix = links.length > 1 ? ` ${index + 1}` : '';
 
       return `
         <div class="connection-action">
           <span class="connection-index" aria-hidden="true">${String(index + 1).padStart(2, '0')}</span>
-          <a class="button button--primary" href="${safeLink}">Открыть в AmneziaVPN${suffix}</a>
-          ${configDownload ? `<a class="button button--ghost" href="${escapeHtml(configDownload)}" download="amneziawg-${index + 1}.conf">Скачать .conf для AmneziaWG</a>` : ''}
-          <button class="button button--ghost copy-special" type="button" data-copy="${safeLink}">Копировать ключ</button>
+          <a class="button button--primary" href="${safeDownloadUrl}" download="amneziawg-${index + 1}.conf">Скачать профиль .conf${suffix}</a>
+          <button class="button button--ghost copy-special" type="button" data-copy="${safeConfig}">Копировать настройки</button>
         </div>`;
     })
     .join('');
 }
 
-function renderAmneziaGuide(links: string[]): string {
+function renderAmneziaGuide(links: string[], subscriptionUrl: string): string {
   if (links.length === 0) return '';
   return `
     <article class="guide guide--amnezia">
@@ -77,13 +85,13 @@ function renderAmneziaGuide(links: string[]): string {
         <div><p class="eyebrow">Отдельный импорт</p><h2>AmneziaWG</h2></div>
         <span class="count-badge">${links.length} ${connectionWord(links.length)}</span>
       </header>
-      <p class="guide-lead">Этот тип не добавляется через обычную ссылку подписки. Выберите приложение, которым пользуетесь.</p>
+      <p class="guide-lead">Этот тип подключается через профиль <code>.conf</code>, а не через общую ссылку подписки.</p>
       <ol class="steps">
-        <li><span>1</span><p>Для <strong>AmneziaVPN</strong> нажмите кнопку открытия или скопируйте ключ и добавьте его через «＋».</p></li>
-        <li><span>2</span><p>Для отдельного приложения <strong>AmneziaWG</strong> скачайте файл <code>.conf</code>.</p></li>
-        <li><span>3</span><p>В AmneziaWG выберите <strong>«Импорт туннелей из файла»</strong> и укажите скачанный файл.</p></li>
+        <li><span>1</span><p>Скачайте профиль на устройство, где установлен <strong>AmneziaWG</strong>.</p></li>
+        <li><span>2</span><p>На телефоне откройте скачанный файл через меню <strong>«Поделиться» → AmneziaWG</strong>.</p></li>
+        <li><span>3</span><p>Либо в AmneziaWG выберите <strong>«Импорт туннелей из файла»</strong> и укажите профиль.</p></li>
       </ol>
-      <div class="connection-list">${renderAmneziaActions(links)}</div>
+      <div class="connection-list">${renderAmneziaActions(links, subscriptionUrl)}</div>
     </article>`;
 }
 
@@ -101,7 +109,7 @@ function renderTelegramGuide(links: string[]): string {
         <li><span>2</span><p>Нажмите <strong>«Добавить в Telegram»</strong> и подтвердите открытие приложения.</p></li>
         <li><span>3</span><p>В Telegram проверьте адрес и включите предложенный прокси.</p></li>
       </ol>
-      <div class="connection-list">${renderConnectionActions(links, 'Добавить в Telegram', 'Копировать ссылку')}</div>
+      <div class="connection-list">${renderTelegramActions(links)}</div>
     </article>`;
 }
 
@@ -161,7 +169,7 @@ export function generateSubscriptionHtmlWithQr(
     .theme-toggle svg { width: 20px; height: 20px; }
     .hero { position: relative; display: grid; grid-template-columns: minmax(0,1.25fr) minmax(270px,.75fr); overflow: hidden; background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
     .hero::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 5px; background: var(--cyan); }
-    .hero-copy { padding: clamp(28px,5vw,58px); align-self: center; }
+    .hero-copy { min-width: 0; padding: clamp(28px,5vw,58px); align-self: center; }
     .eyebrow { margin: 0 0 10px; color: var(--cyan); font-size: .72rem; font-weight: 800; letter-spacing: .15em; text-transform: uppercase; }
     h1, h2 { font-family: "Unbounded", "IBM Plex Sans", sans-serif; }
     h1 { max-width: 720px; margin: 0; font-size: clamp(2rem,5vw,4.8rem); line-height: 1.02; letter-spacing: -.055em; overflow-wrap: anywhere; }
@@ -170,10 +178,11 @@ export function generateSubscriptionHtmlWithQr(
     .stats { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
     .stat { padding: 7px 11px; color: var(--muted); background: var(--raised); border: 1px solid var(--line); border-radius: 999px; font-size: .82rem; }
     .stat strong { color: var(--ink); }
-    .qr-panel { position: relative; display: grid; place-items: center; padding: 40px 32px; background: var(--cyan-soft); border-left: 1px solid var(--line); text-align: center; }
+    .qr-panel { position: relative; min-width: 0; display: grid; place-items: center; overflow: hidden; padding: 40px clamp(16px,4vw,32px); background: var(--cyan-soft); border-left: 1px solid var(--line); text-align: center; }
+    .qr-panel > div { min-width: 0; width: 100%; display: grid; justify-items: center; }
     .qr-panel::after { content: "SCAN / OPEN"; position: absolute; right: -33px; top: 74px; color: var(--cyan); font-size: .64rem; font-weight: 800; letter-spacing: .2em; transform: rotate(90deg); }
-    .qr-frame { width: min(230px,74vw); aspect-ratio: 1; padding: 13px; background: #fff; border: 1px solid rgba(0,0,0,.12); border-radius: 13px; box-shadow: 0 14px 35px rgba(0,0,0,.12); }
-    .qr-frame img { display: block; width: 100%; height: 100%; }
+    .qr-frame { width: min(230px,100%); max-width: 100%; aspect-ratio: 1; padding: 13px; background: #fff; border: 1px solid rgba(0,0,0,.12); border-radius: 13px; box-shadow: 0 14px 35px rgba(0,0,0,.12); }
+    .qr-frame img { display: block; width: 100%; max-width: 100%; height: auto; aspect-ratio: 1; }
     .qr-title { margin: 20px 0 5px; font-weight: 800; }
     .qr-note { max-width: 250px; margin: 0; color: var(--muted); font-size: .86rem; line-height: 1.45; }
     .subscription-box { margin-top: 18px; padding: 16px; background: var(--raised); border: 1px solid var(--line); border-radius: 12px; }
@@ -200,19 +209,28 @@ export function generateSubscriptionHtmlWithQr(
     .connection-list { display: grid; gap: 10px; margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--line); }
     .connection-action { display: grid; grid-template-columns: 34px minmax(0,1fr); gap: 8px; }
     .connection-action .button--ghost { grid-column: 2; }
+    .connection-action .button { min-width: 0; width: 100%; white-space: normal; overflow-wrap: anywhere; }
     .connection-index { grid-row: 1 / span 2; display: flex; align-items: center; justify-content: center; color: var(--muted); font: .7rem "IBM Plex Mono",monospace; border-right: 1px solid var(--line); }
     .empty-note { margin: 20px 0 0; padding: 14px 16px; color: var(--muted); background: var(--raised); border-left: 3px solid var(--amber); line-height: 1.5; }
     .footer { display: flex; justify-content: space-between; gap: 20px; margin-top: 28px; color: var(--muted); font-size: .78rem; }
     .toast { position: fixed; left: 50%; bottom: 24px; z-index: 10; padding: 11px 16px; color: #041216; background: var(--green); border-radius: 8px; font-weight: 800; transform: translate(-50%,20px); opacity: 0; pointer-events: none; transition: .2s ease; }
     .toast.is-visible { transform: translate(-50%,0); opacity: 1; }
     @media (max-width: 780px) {
-      .shell { width: min(100% - 20px,620px); padding-top: 16px; }
+      .shell { width: min(100% - 16px,620px); padding-top: 12px; }
       .hero, .guides { grid-template-columns: 1fr; }
       .hero-copy { padding: 34px 25px 30px; }
-      .qr-panel { border-top: 1px solid var(--line); border-left: 0; }
+      .qr-panel { width: 100%; padding: 30px 20px 34px; border-top: 1px solid var(--line); border-left: 0; }
       .qr-panel::after { display: none; }
       .guide { padding: 26px 22px; }
       .footer { flex-direction: column; }
+    }
+    @media (max-width: 420px) {
+      .topbar { margin-bottom: 14px; }
+      .hero-copy { padding: 28px 20px 24px; }
+      .guide { padding: 24px 18px; }
+      .guide-header { flex-direction: column; gap: 10px; }
+      .connection-action { grid-template-columns: 26px minmax(0,1fr); }
+      .button { padding-inline: 12px; }
     }
     @media (prefers-reduced-motion: reduce) { *,*::before,*::after { scroll-behavior: auto !important; transition-duration: .01ms !important; } }
   </style>
@@ -249,7 +267,7 @@ export function generateSubscriptionHtmlWithQr(
       </div></aside>
     </section>
     <section class="guides" aria-label="Инструкции по специальным подключениям">
-      ${renderAmneziaGuide(preview.amneziaLinks)}
+      ${renderAmneziaGuide(preview.amneziaLinks, preview.currentUrl)}
       ${renderTelegramGuide(preview.telegramProxyLinks)}
     </section>
     <footer class="footer"><span>Ссылки обновляются автоматически вместе с подпиской.</span><span>Не передавайте эту страницу посторонним.</span></footer>

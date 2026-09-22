@@ -88,6 +88,7 @@ describe('ClientController', () => {
 
     const mockRequest = {
       headers: {},
+      query: {},
       protocol: 'https',
       get: jest.fn().mockReturnValue('example.com'),
     } as any;
@@ -95,6 +96,7 @@ describe('ClientController', () => {
     const mockResponse = {
       setHeader: jest.fn(),
       send: jest.fn(),
+      status: jest.fn().mockReturnThis(),
     } as any;
 
     it('должен вернуть base64 подписку для не-браузера', async () => {
@@ -277,6 +279,64 @@ describe('ClientController', () => {
         'vless://regular',
       );
     });
+
+    it('скачивает валидный conf-профиль AmneziaWG', async () => {
+      const config =
+        '[Interface]\nPrivateKey = private\nAddress = 10.8.1.2/32\n\n[Peer]\nPublicKey = public\nEndpoint = example.com:51820';
+      mockSubRepo.findOne.mockResolvedValue({
+        ...mockSubscription,
+        inbounds: [
+          {
+            position: 0,
+            status: 'active',
+            protocol: 'amneziawg',
+            link: `vpn://${Buffer.from(config).toString('base64url')}`,
+          },
+        ],
+      });
+
+      mockRequest.query = { format: 'amneziawg', index: '0' };
+
+      await controller.getSubscription('test-uuid', mockRequest, mockResponse);
+
+      expect(mockResponse.setHeader).toHaveBeenCalledWith(
+        'Content-Type',
+        'application/x-wireguard-profile; charset=utf-8',
+      );
+      expect(mockResponse.setHeader).toHaveBeenCalledWith(
+        'Content-Disposition',
+        'attachment; filename="amneziawg-1.conf"',
+      );
+      expect(mockResponse.send).toHaveBeenCalledWith(config);
+    });
+
+    it('отклоняет отсутствующий профиль AmneziaWG', async () => {
+      mockSubRepo.findOne.mockResolvedValue({
+        ...mockSubscription,
+        inbounds: [],
+      });
+
+      mockRequest.query = { format: 'amneziawg', index: '4' };
+
+      await controller.getSubscription('test-uuid', mockRequest, mockResponse);
+
+      expect(mockResponse.status).toHaveBeenCalledWith(404);
+      expect(mockResponse.send).toHaveBeenCalledWith(
+        'AmneziaWG config not found',
+      );
+    });
+
+    it('отклоняет некорректный индекс профиля AmneziaWG', async () => {
+      mockSubRepo.findOne.mockResolvedValue({
+        ...mockSubscription,
+        inbounds: [],
+      });
+      mockRequest.query = { format: 'amneziawg', index: '1.5' };
+
+      await controller.getSubscription('test-uuid', mockRequest, mockResponse);
+
+      expect(mockResponse.status).toHaveBeenCalledWith(404);
+    });
   });
 
   describe('getRelaySubscription', () => {
@@ -299,6 +359,7 @@ describe('ClientController', () => {
 
     const mockRequest = {
       headers: {},
+      query: {},
       protocol: 'https',
       get: jest.fn().mockReturnValue('example.com'),
     } as any;
@@ -315,7 +376,6 @@ describe('ClientController', () => {
       await controller.getRelaySubscription(
         'test-uuid',
         '999',
-        'base64',
         mockRequest,
         mockResponse,
       );
@@ -332,7 +392,6 @@ describe('ClientController', () => {
       await controller.getRelaySubscription(
         'test-uuid',
         '1',
-        'base64',
         mockRequest,
         mockResponse,
       );
@@ -356,7 +415,6 @@ describe('ClientController', () => {
       await controller.getRelaySubscription(
         'test-uuid',
         '1',
-        'base64',
         mockRequest,
         mockResponse,
       );
@@ -378,7 +436,6 @@ describe('ClientController', () => {
         controller.getRelaySubscription(
           'non-existent',
           '1',
-          'base64',
           mockRequest,
           mockResponse,
         ),
@@ -394,7 +451,6 @@ describe('ClientController', () => {
       await controller.getRelaySubscription(
         'test-uuid',
         '1',
-        'base64',
         mockRequest,
         mockResponse,
       );
