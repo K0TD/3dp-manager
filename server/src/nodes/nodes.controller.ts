@@ -10,10 +10,25 @@ import {
 } from '@nestjs/common';
 import { CreateNodeDto, UpdateNodeDto } from './dto/node.dto';
 import { NodesService } from './nodes.service';
+import { RoutingPresetsService } from './routing/routing-presets.service';
+import { UpdateRoutingPresetsDto } from './dto/routing-presets.dto';
 
 @Controller('nodes')
 export class NodesController {
-  constructor(private readonly nodesService: NodesService) {}
+  constructor(
+    private readonly nodesService: NodesService,
+    private readonly routingPresets: RoutingPresetsService,
+  ) {}
+
+  @Get(':id/routing-presets')
+  getRoutingPresets(@Param('id') id: string) {
+    return this.routingPresets.get(id);
+  }
+
+  @Put(':id/routing-presets')
+  updateRoutingPresets(@Param('id') id: string, @Body() dto: UpdateRoutingPresetsDto) {
+    return this.routingPresets.update(id, dto);
+  }
 
   @Get()
   findAll() {

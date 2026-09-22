@@ -32,11 +32,13 @@ import {
   CheckCircle,
   Delete,
   Edit,
+  Settings,
   Star,
   StarBorder,
 } from '@mui/icons-material';
 import api from '../api';
 import { nodesApi } from '../features/nodes/api';
+import { RoutingPresetsDialog } from '../features/nodes/RoutingPresetsDialog';
 import type { NodeAuthType, NodePayload, NodeRecord } from '../types/node';
 import { getApiErrorMessage } from '../utils/errorHandlers';
 import { FlagIcon, FlagOptionLabel } from '../utils/flags';
@@ -83,6 +85,7 @@ export default function NodesPage() {
   const [nodes, setNodes] = useState<NodeRecord[]>([]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<NodeRecord | null>(null);
+  const [settingsNode, setSettingsNode] = useState<NodeRecord | null>(null);
   const [form, setForm] = useState<NodePayload>(emptyForm);
   const [countries, setCountries] = useState<CountryOption[]>([]);
   const [detectingLocation, setDetectingLocation] = useState(false);
@@ -361,6 +364,10 @@ export default function NodesPage() {
                   </Stack>
                 </TableCell>
                 <TableCell align="right">
+                  <IconButton onClick={() => setSettingsNode(node)} title="Быстрые настройки"
+                    aria-label={`Быстрые настройки ${node.name}`} disabled={node.healthStatus === 'deleting'}>
+                    <Settings />
+                  </IconButton>
                   <IconButton onClick={() => openEdit(node)}>
                     <Edit />
                   </IconButton>
@@ -380,6 +387,8 @@ export default function NodesPage() {
           </TableBody>
         </Table>
       </Paper>
+
+      {settingsNode && <RoutingPresetsDialog key={settingsNode.id} node={settingsNode} onClose={() => setSettingsNode(null)} />}
 
       <Dialog open={open} onClose={() => setOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>{editing ? 'Редактировать ноду' : 'Новая нода'}</DialogTitle>

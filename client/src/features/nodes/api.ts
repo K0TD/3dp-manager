@@ -1,5 +1,5 @@
 import api from '../../api';
-import type { NodePayload, NodeRecord } from '../../types/node';
+import type { NodePayload, NodeRecord, RoutingPresetSelection, RoutingPresetView } from '../../types/node';
 
 interface NodeCheckResult {
   success: boolean;
@@ -10,6 +10,16 @@ interface NodeCheckResult {
 }
 
 export const nodesApi = {
+  async routingPresets(id: string) {
+    const { data } = await api.get<RoutingPresetView>(`/nodes/${id}/routing-presets`);
+    return data;
+  },
+
+  async updateRoutingPresets(id: string, payload: RoutingPresetSelection) {
+    const { data } = await api.put<RoutingPresetView>(`/nodes/${id}/routing-presets`, payload);
+    return data;
+  },
+
   async list() {
     const { data } = await api.get<NodeRecord[]>('/nodes');
     return data;

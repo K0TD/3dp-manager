@@ -21,6 +21,7 @@ export interface RoutingPresetState extends RoutingSelection {
   sniffing: Record<string, SniffingChange>;
   // Persisted before remote writes; a failed/unknown operation must not look applied.
   pending?: boolean;
+  pendingPrevious?: RoutingSelection;
 }
 export interface XrayTemplate {
   path: '/panel/api/xray' | '/panel/xray';
@@ -111,7 +112,7 @@ export function prepareSniffing(inbound: XuiInboundRaw, previous?: SniffingChang
   const change: SniffingChange = previous?.identity === inboundIdentity(inbound)
     ? structuredClone(previous) : { identity: inboundIdentity(inbound), fields: {} };
   for (const key of ['enabled', 'metadataOnly', 'routeOnly', 'destOverride']) {
-    if (change.fields[key] && !equal(original[key], change.fields[key].after)) {
+    if (change.fields[key] && !equal(original[key], change.fields[key].after) && !equal(original[key], change.fields[key].before)) {
       throw new ConflictException(`Sniffing inbound ${inbound.id} изменён вручную. Восстановите настройки в 3x-ui перед повторным применением.`);
     }
     if (!equal(original[key], next[key])) change.fields[key] ??= { before: original[key], after: next[key] };
@@ -126,7 +127,7 @@ export function buildRoutingPlan(nodeId: string, template: XrayTemplate, inbound
   const outbounds = objects(config.outbounds, 'outbounds');
   const tags = presetTags(nodeId);
   const ownedTags = [tags.russia, tags.ips, tags.checkers];
-  const oldRules = presetRules(nodeId, previous);
+  const oldRules = [...presetRules(nodeId, previous), ...(previous.pendingPrevious ? presetRules(nodeId, previous.pendingPrevious) : [])];
   for (const rule of rules.filter((r) => ownedTags.includes(String(r.ruleTag)))) {
     const expected = oldRules.find((r) => r.ruleTag === rule.ruleTag);
     // The panel can add its own UI-only enabled=true field.
@@ -136,7 +137,9 @@ export function buildRoutingPlan(nodeId: string, template: XrayTemplate, inbound
     }
   }
   const warnings: string[] = [];
-  const state: RoutingPresetState = { ...structuredClone(previous), ...selection, pending: false };
+  const state: RoutingPresetState = { ...structuredClone(previous), blockRussia: selection.blockRussia,
+    blockIpCheckers: selection.blockIpCheckers, pending: false };
+  delete state.pendingPrevious;
   const managed = presetRules(nodeId, selection);
   const others = rules.filter((r) => !ownedTags.includes(String(r.ruleTag)));
   const apiTag = asRecord(config.api)?.tag;
@@ -154,7 +157,7 @@ export function buildRoutingPlan(nodeId: string, template: XrayTemplate, inbound
   }
   if (config.outbounds !== undefined || outbounds.length) config.outbounds = outbounds;
   if (selection.blockRussia) {
-    if (previous.strategy && !equal(routing.domainStrategy, previous.strategy.after)) {
+    if (previous.strategy && !equal(routing.domainStrategy, previous.strategy.after) && !equal(routing.domainStrategy, previous.strategy.before)) {
       throw new ConflictException('Стратегия маршрутизации изменена вручную. Обновите настройки в 3x-ui.');
     }
     if (routing.domainStrategy !== 'IPOnDemand') {

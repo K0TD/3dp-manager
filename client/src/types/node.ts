@@ -1,4 +1,18 @@
 export type NodeAuthType = 'password' | 'token';
+
+export interface RoutingPresetSelection {
+  blockRussia: boolean;
+  blockIpCheckers: boolean;
+  revision: string;
+}
+
+export interface RoutingPresetView extends RoutingPresetSelection {
+  available: boolean;
+  needsApply: boolean;
+  warnings: string[];
+  result?: 'applied' | 'unchanged' | 'rolled_back' | 'rollback_failed' | 'unknown';
+  message?: string;
+}
 export type NodeProtocol = 'http' | 'https';
 export type NodeHealthStatus = 'unknown' | 'online' | 'degraded' | 'offline' | 'auth_error' | 'deleting';
 
