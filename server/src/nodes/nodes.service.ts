@@ -393,13 +393,13 @@ export class NodesService {
       node.consecutiveFailures = 0;
       node.lastError = undefined;
       if (status.version) node.version = status.version;
-      node.xrayVersion = status.xrayVersion;
+      if (status.xrayVersion) node.xrayVersion = status.xrayVersion;
       node.webCertificateFile = status.webCertificateFile;
       node.webKeyFile = status.webKeyFile;
       node.compatibilityCheckedAt = new Date();
       node.capabilities = buildNodeCapabilities({
-        panelVersion: status.version,
-        xrayVersion: status.xrayVersion,
+        panelVersion: node.version,
+        xrayVersion: node.xrayVersion,
         autoTlsCertificate: Boolean(
           status.webCertificateFile && status.webKeyFile,
         ),

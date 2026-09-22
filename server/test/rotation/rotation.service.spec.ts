@@ -48,6 +48,7 @@ describe('RotationService resilient generations', () => {
     getWebCertificateFiles: jest.fn(),
     addInbound: jest.fn(),
     deleteInbound: jest.fn(),
+    getLastInboundError: jest.fn(),
   };
   const inboundBuilder = {
     buildVlessRealityTcp: jest.fn(),
@@ -75,6 +76,10 @@ describe('RotationService resilient generations', () => {
     xuiService as unknown as XuiService,
     inboundBuilder as unknown as InboundBuilderService,
   );
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -499,13 +504,13 @@ describe('RotationService resilient generations', () => {
       inbounds: [],
     } as unknown as Subscription;
 
-    jest.spyOn(service as any, 'resolveNode').mockResolvedValue(defaultNode);
-    jest.spyOn(service as any, 'rotateNodeGroup').mockResolvedValue({
+    const resolveNodeSpy = jest.spyOn(service as any, 'resolveNode').mockResolvedValue(defaultNode);
+    const rotateNodeGroupSpy = jest.spyOn(service as any, 'rotateNodeGroup').mockResolvedValue({
       subscriptionId: 'sub-1',
       status: 'succeeded',
       created: 1,
     });
-    jest.spyOn(service as any, 'queueCleanup').mockResolvedValue(undefined);
+    const queueCleanupSpy = jest.spyOn(service as any, 'queueCleanup').mockResolvedValue(undefined);
 
     const results = await (service as any).rotateSubscription(
       sub,
@@ -518,6 +523,10 @@ describe('RotationService resilient generations', () => {
     expect(sub.inboundsConfig[0].nodeId).toBe('active-node-id');
     expect(subRepo.save).toHaveBeenCalledWith(sub);
     expect(results[0].status).toBe('succeeded');
+
+    resolveNodeSpy.mockRestore();
+    rotateNodeGroupSpy.mockRestore();
+    queueCleanupSpy.mockRestore();
   });
 
   it('returns descriptive failure when all configs are disabled and no nodes are available', async () => {
@@ -534,7 +543,7 @@ describe('RotationService resilient generations', () => {
       inbounds: [],
     } as unknown as Subscription;
 
-    jest.spyOn(service as any, 'resolveNode').mockResolvedValue(undefined);
+    const resolveNodeSpy = jest.spyOn(service as any, 'resolveNode').mockResolvedValue(undefined);
 
     const results = await (service as any).rotateSubscription(sub, [], null);
 
@@ -542,5 +551,126 @@ describe('RotationService resilient generations', () => {
     expect(results[0].message).toContain(
       'Все конфигурации инбаундов (1) отключены: Нода «france» удалена',
     );
+
+    resolveNodeSpy.mockRestore();
+  });
+
+  it('accumulates rejected inbounds, logs summary with reason, and succeeds with created ones', async () => {
+    const node = {
+      id: 'node-partial',
+      name: 'Partial node',
+      url: 'https://node-partial.example.com',
+      healthStatus: 'online',
+      consecutiveFailures: 0,
+    } as Node;
+    const subscription = {
+      id: 'sub-partial',
+      name: 'Partial Sub',
+      node,
+      inbounds: [],
+      inboundsConfig: [
+        { type: 'vless-ws', nodeId: node.id, port: 8080, sni: 'ya.ru' },
+        { type: 'vmess-tcp', nodeId: node.id, port: 8081 },
+      ],
+    } as unknown as Subscription;
+
+    nodeRepo.createQueryBuilder.mockReturnValue({
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockResolvedValue(node),
+    });
+
+    inboundBuilder.buildVlessWs.mockReturnValue({
+      remark: 'vless-ws',
+      protocol: 'vless',
+      settings: JSON.stringify({ clients: [{ id: 'u1' }] }),
+    });
+    inboundBuilder.buildVmessTcp.mockReturnValue({
+      remark: 'vmess-tcp',
+      protocol: 'vmess',
+      settings: JSON.stringify({ clients: [{ id: 'u2' }] }),
+    });
+    inboundBuilder.buildInboundLink.mockReturnValue('vless://mock');
+
+    // 1st inbound succeeds, 2nd fails
+    xuiService.addInbound
+      .mockResolvedValueOnce(201)
+      .mockResolvedValueOnce(null);
+    xuiService.getLastInboundError.mockReturnValue('Go struct unmarshal error');
+
+    const loggerWarnSpy = jest.spyOn((service as any).logger, 'warn');
+
+    const results = await (service as any).rotateSubscription(
+      subscription,
+      [{ name: 'ya.ru' }],
+      node,
+    );
+
+    expect(results[0]).toMatchObject({
+      status: 'succeeded',
+      created: 1,
+    });
+    expect(loggerWarnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Сводка отклонённых панелью инбаундов'),
+    );
+    expect(loggerWarnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Go struct unmarshal error'),
+    );
+  });
+
+  it('preserves existing generation when all inbounds in a group are rejected', async () => {
+    const node = {
+      id: 'node-all-fail',
+      name: 'Failing node',
+      url: 'https://node-fail.example.com',
+      healthStatus: 'online',
+      consecutiveFailures: 0,
+    } as Node;
+    const oldInbound = {
+      id: 55,
+      nodeId: node.id,
+      status: InboundStatus.Active,
+      protocol: 'vless',
+    } as Inbound;
+    const subscription = {
+      id: 'sub-all-fail',
+      name: 'All Fail Sub',
+      node,
+      inbounds: [oldInbound],
+      inboundsConfig: [
+        { type: 'vless-ws', nodeId: node.id, port: 8080, sni: 'ya.ru' },
+      ],
+    } as unknown as Subscription;
+
+    nodeRepo.createQueryBuilder.mockReturnValue({
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockResolvedValue(node),
+    });
+
+    inboundBuilder.buildVlessWs.mockReturnValue({
+      remark: 'vless-ws',
+      protocol: 'vless',
+      settings: JSON.stringify({ clients: [{ id: 'u1' }] }),
+    });
+    inboundBuilder.buildInboundLink.mockReturnValue('vless://mock');
+
+    xuiService.addInbound.mockResolvedValue(null);
+    xuiService.getLastInboundError.mockReturnValue('Port 8080 already in use');
+
+    const results = await (service as any).rotateSubscription(
+      subscription,
+      [{ name: 'ya.ru' }],
+      node,
+    );
+
+    expect(results[0]).toMatchObject({
+      status: 'preserved',
+      created: 0,
+      message: expect.stringContaining('Port 8080 already in use'),
+    });
+    expect(oldInbound.status).toBe(InboundStatus.Active);
   });
 });

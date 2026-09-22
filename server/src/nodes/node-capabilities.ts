@@ -30,6 +30,9 @@ export function buildNodeCapabilities(
   if (!input.panelVersion) {
     warnings.push('Версия 3x-ui не определена; новые протоколы отключены');
   }
+  if (!input.xrayVersion) {
+    warnings.push('Версия Xray не определена; Hysteria2 отключена');
+  }
   if (!input.autoTlsCertificate) {
     warnings.push(
       'Нода не предоставила пути TLS-сертификата; используйте свои пути',
@@ -85,7 +88,7 @@ function versionAtLeast(
 }
 
 function parseVersion(version?: string): [number, number, number] | null {
-  const match = version?.trim().match(/^v?(\d+)\.(\d+)\.(\d+)/i);
+  const match = version?.trim().match(/v?(\d+)\.(\d+)\.(\d+)/i);
   if (!match) return null;
   return [Number(match[1]), Number(match[2]), Number(match[3])];
 }

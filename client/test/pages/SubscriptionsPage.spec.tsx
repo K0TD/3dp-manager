@@ -423,6 +423,15 @@ describe('SubscriptionsPage', () => {
       await waitFor(() => {
         expect(mockPost).toHaveBeenCalledWith('/subscriptions', expect.objectContaining({
           name: 'New Sub',
+          inboundsConfig: expect.arrayContaining([
+            expect.objectContaining({
+              type: 'vless-tcp-tls',
+              certificateMode: 'node',
+              tlsServerName: 'node.test',
+              certificateFile: undefined,
+              keyFile: undefined,
+            }),
+          ]),
         }))
       })
     })

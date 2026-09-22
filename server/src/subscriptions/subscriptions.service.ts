@@ -18,6 +18,7 @@ import {
 } from './inbound-config.constants';
 import { supportsInboundType } from '../nodes/node-capabilities';
 import { isValidFakeTlsDomain } from '../inbounds/mtproto-faketls';
+import { isSafeAbsoluteRemotePath } from '../inbounds/tls-config';
 
 type InboundConfig = NonNullable<
   CreateSubscriptionDto['inboundsConfig']
@@ -25,11 +26,6 @@ type InboundConfig = NonNullable<
 
 const TLS_SERVER_NAME_PATTERN =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
-const hasInvalidRemotePathCharacter = (value: string) =>
-  Array.from(value).some((character) => {
-    const codePoint = character.codePointAt(0) || 0;
-    return codePoint < 32 || codePoint === 127;
-  });
 
 @Injectable()
 export class SubscriptionsService {
@@ -292,11 +288,7 @@ export class SubscriptionsService {
   }
 
   private validateRemotePath(remotePath: string, label: string) {
-    if (
-      !remotePath.startsWith('/') ||
-      remotePath.length > 2048 ||
-      hasInvalidRemotePathCharacter(remotePath)
-    ) {
+    if (!isSafeAbsoluteRemotePath(remotePath)) {
       throw new BadRequestException(`${label} path must be an absolute path`);
     }
   }

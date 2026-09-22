@@ -18,6 +18,7 @@ import { Tunnel } from '../tunnels/entities/tunnel.entity';
 import { XuiCertificateFiles, XuiService } from '../xui/xui.service';
 import { InboundBuilderService } from '../inbounds/inbound-builder.service';
 import { XuiInboundRaw } from '../inbounds/xui-inbound.types';
+import { isSafeAbsoluteRemotePath } from '../inbounds/tls-config';
 import {
   CERTIFICATE_INBOUND_TYPES,
   InboundType,
@@ -454,6 +455,12 @@ export class RotationService implements OnModuleInit {
         group.configs,
         group.node,
       );
+      const rejectedInbounds: Array<{
+        type: string;
+        name?: string;
+        reason: string;
+      }> = [];
+
       for (const positionedConfig of group.configs) {
         const { config } = positionedConfig;
         if (config.type?.includes('reality') && !realityKeys) {
@@ -481,11 +488,40 @@ export class RotationService implements OnModuleInit {
           nodeCertificate,
         });
         if (!inbound) {
-          throw new Error(
-            `3x-ui отклонил inbound «${config.name || config.type}»`,
-          );
+          const reason =
+            this.xuiService.getLastInboundError(group.node) ||
+            '3x-ui отклонил создание инбаунда';
+          rejectedInbounds.push({
+            type: config.type,
+            name: config.name,
+            reason,
+          });
+          continue;
         }
         created.push(inbound);
+      }
+
+      if (rejectedInbounds.length > 0) {
+        const summary = rejectedInbounds
+          .map(
+            (item) =>
+              `[${item.type}${item.name ? ` / ${item.name}` : ''}]: ${item.reason}`,
+          )
+          .join('; ');
+        this.logger.warn(
+          `[RotationService] Сводка отклонённых панелью инбаундов для подписки «${subscription.name}» на ноде «${nodeLabel}» (${rejectedInbounds.length}/${group.configs.length}): ${summary}`,
+        );
+      }
+
+      if (!created.length) {
+        const failureDetails = rejectedInbounds.length
+          ? rejectedInbounds
+              .map((item) => `${item.type} (${item.reason})`)
+              .join('; ')
+          : '3x-ui отклонил inbound';
+        throw new Error(
+          `3x-ui отклонил все инбаунды на ноде «${nodeLabel}»: ${failureDetails}`,
+        );
       }
 
       const old = (subscription.inbounds || []).filter((inbound) => {
@@ -623,8 +659,8 @@ export class RotationService implements OnModuleInit {
       !certificateFile ||
       !keyFile ||
       !serverName ||
-      !this.isSafeRemotePath(certificateFile) ||
-      !this.isSafeRemotePath(keyFile)
+      !isSafeAbsoluteRemotePath(certificateFile) ||
+      !isSafeAbsoluteRemotePath(keyFile)
     ) {
       throw new Error(
         'Для собственного TLS нужны корректные абсолютные пути и имя сервера',
@@ -644,17 +680,6 @@ export class RotationService implements OnModuleInit {
     }
     throw new Error(
       `Для TLS на ноде «${node.name}» укажите домен ноды или URL с hostname`,
-    );
-  }
-
-  private isSafeRemotePath(remotePath: string) {
-    return (
-      remotePath.startsWith('/') &&
-      remotePath.length <= 2048 &&
-      !Array.from(remotePath).some((character) => {
-        const codePoint = character.codePointAt(0) || 0;
-        return codePoint < 32 || codePoint === 127;
-      })
     );
   }
 
@@ -763,7 +788,12 @@ export class RotationService implements OnModuleInit {
       const built = this.inboundBuilder.buildAmneziaWgInbound({ port, uuid });
       if (config.name?.trim()) built.remark = config.name.trim();
       const xuiId = await this.xuiService.addInbound(built, node);
-      if (!xuiId) return null;
+      if (!xuiId) {
+        this.logger.error(
+          `[RotationService] 3x-ui отклонил добавление amneziawg инбаунда на ноде «${node.name}» (порт ${port})`,
+        );
+        return null;
+      }
       return this.saveStagedInbound({
         subscription,
         config,

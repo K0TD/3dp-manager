@@ -42,6 +42,7 @@ describe('XuiService', () => {
   };
 
   beforeEach(async () => {
+    mockAxiosInstance.defaults.headers.common = {};
     (axios.create as jest.Mock).mockReturnValue(mockAxiosInstance);
 
     const module: TestingModule = await Test.createTestingModule({
@@ -388,5 +389,79 @@ describe('XuiService', () => {
         'metaToken999',
       );
     });
+
+    it('передает CSRF токен в теле POST /login и заголовке X-CSRF-Token при предлогиновом токене (v3.6.0)', async () => {
+      mockSettingsRepo.find.mockResolvedValue([
+        { key: 'xui_url', value: 'http://localhost:3100' },
+        { key: 'xui_login', value: 'admin' },
+        { key: 'xui_password', value: 'password' },
+      ]);
+      // Предлогиновый GET /login возвращает cookie x-ui-csrf и HTML форму с _csrf
+      mockAxiosInstance.get.mockResolvedValueOnce({
+        headers: { 'set-cookie': ['x-ui-csrf=preLogin123; Path=/'] },
+        data: '<html><input name="_csrf" value="preLogin123"></html>',
+      });
+      mockAxiosInstance.post.mockResolvedValueOnce({
+        data: { success: true },
+        headers: { 'set-cookie': ['session=sessionCookie'] },
+      });
+
+      const result = await service.login();
+
+      expect(result).toBe(true);
+      expect(mockAxiosInstance.post).toHaveBeenCalledWith(
+        '/login',
+        expect.objectContaining({
+          username: 'admin',
+          password: 'password',
+          _csrf: 'preLogin123',
+          csrf_token: 'preLogin123',
+        }),
+      );
+      expect(mockAxiosInstance.defaults.headers.common['X-CSRF-Token']).toBe(
+        'preLogin123',
+      );
+    });
+
+    it('повторяет запрос addInbound при получении HTTP 403 (CSRF refresh)', async () => {
+      const node = {
+        id: 'node-csrf-retry',
+        name: 'csrf-retry-node',
+        url: 'https://node-csrf.example.com',
+        protocol: NodeProtocol.Https,
+        authType: NodeAuthType.Password,
+        login: 'admin',
+        password: 'password',
+      } as never;
+
+      // login: POST /login -> 200
+      mockAxiosInstance.post
+        .mockResolvedValueOnce({
+          data: { success: true },
+          headers: { 'set-cookie': ['session=s1'] },
+        })
+        // 1st addInbound: rejects with 403 (CSRF expired)
+        .mockRejectedValueOnce({
+          response: { status: 403, data: { msg: 'CSRF token mismatch' } },
+          message: 'Request failed with status code 403',
+        })
+        // 2nd addInbound (after refresh): succeeds with ID 77
+        .mockResolvedValueOnce({
+          data: { success: true, obj: { id: 77 } },
+        });
+
+      // GET for CSRF refresh
+      mockAxiosInstance.get.mockResolvedValue({
+        headers: { 'x-csrf-token': 'refreshed-token' },
+      });
+
+      const result = await service.addInbound({ port: 443 }, node);
+
+      expect(result).toBe(77);
+      expect(mockAxiosInstance.defaults.headers.common['X-CSRF-Token']).toBe(
+        'refreshed-token',
+      );
+    });
   });
 });
+

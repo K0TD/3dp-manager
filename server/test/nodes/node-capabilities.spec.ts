@@ -38,4 +38,14 @@ describe('MTProto node capabilities', () => {
       }).supportedInboundTypes,
     ).not.toContain('mtproto-faketls');
   });
+
+  it('parses versions with product-name prefixes', () => {
+    expect(
+      supportsInboundType('hysteria2-udp', {
+        panelVersion: '3x-ui v3.7.1',
+        xrayVersion: 'Xray 26.7.11',
+        autoTlsCertificate: true,
+      }),
+    ).toBe(true);
+  });
 });
