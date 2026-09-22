@@ -9,6 +9,7 @@ export const INBOUND_TYPES = [
   'vmess-tcp',
   'shadowsocks-tcp',
   'trojan-tcp-reality',
+  'amneziawg',
   'custom',
 ] as const;
 

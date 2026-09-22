@@ -244,7 +244,7 @@ describe('SubscriptionsPage', () => {
       fireEvent.click(createButton)
 
       await waitFor(() => {
-        expect(screen.getByText('Инбаунды (10/20)')).toBeInTheDocument()
+        expect(screen.getByText('Инбаунды (5/20)')).toBeInTheDocument()
       })
     })
 
@@ -255,8 +255,9 @@ describe('SubscriptionsPage', () => {
       fireEvent.click(await screen.findByText('Создать'))
       fireEvent.mouseDown((await screen.findAllByRole('combobox'))[0])
 
-      expect(await screen.findByText('vless-tcp-tls')).toBeInTheDocument()
+      expect((await screen.findAllByText('vless-tcp-tls')).length).toBeGreaterThan(1)
       expect(screen.getByText('vless-ws-tls')).toBeInTheDocument()
+      expect(screen.getByText('amneziawg')).toBeInTheDocument()
     })
 
     it('должен позволять вводить имя подписки', async () => {
@@ -299,7 +300,7 @@ describe('SubscriptionsPage', () => {
       fireEvent.click(createButton)
 
       await waitFor(() => {
-        expect(screen.getByText('Инбаунды (10/20)')).toBeInTheDocument()
+        expect(screen.getByText('Инбаунды (5/20)')).toBeInTheDocument()
       })
     })
 
@@ -327,7 +328,7 @@ describe('SubscriptionsPage', () => {
       fireEvent.click(addButton)
 
       await waitFor(() => {
-        expect(screen.getByText('Инбаунды (11/20)')).toBeInTheDocument()
+        expect(screen.getByText('Инбаунды (6/20)')).toBeInTheDocument()
       })
     })
 
@@ -353,7 +354,7 @@ describe('SubscriptionsPage', () => {
       const createButton = await screen.findByText('Создать')
       fireEvent.click(createButton)
 
-      for (let i = 0; i < 11; i++) {
+      for (let i = 0; i < 15; i++) {
         const addButton = screen.getByText('Добавить инбаунд')
         fireEvent.click(addButton)
       }

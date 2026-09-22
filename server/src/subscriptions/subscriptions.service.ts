@@ -200,6 +200,9 @@ export class SubscriptionsService {
       configId: config.configId || uuidv4(),
       certificateFile: config.certificateFile?.trim() || undefined,
       keyFile: config.keyFile?.trim() || undefined,
+      enabled: config.enabled !== false,
+      disabledReason:
+        config.enabled === false ? config.disabledReason : undefined,
     }));
   }
 

@@ -86,6 +86,8 @@ interface InboundConfigUI {
   name?: string;
   certificateFile?: string;
   keyFile?: string;
+  enabled?: boolean;
+  disabledReason?: string;
 }
 
 interface Domain {
@@ -110,6 +112,7 @@ const CONNECTION_OPTIONS = [
   'vmess-tcp',
   'shadowsocks-tcp',
   'trojan-tcp-reality',
+  'amneziawg',
   'custom',
 ];
 
@@ -228,6 +231,8 @@ export default function SubscriptionsPage() {
   const getRelayOptions = (nodeId?: string) =>
     tunnels.filter((tunnel) => tunnel.nodeId === (nodeId || getDefaultNodeId()));
 
+  const hasSni = (type: string) => type !== 'hysteria2-udp' && type !== 'amneziawg';
+
   const isValidPort = (value: string) =>
     value === 'random' || (/^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= 65535);
 
@@ -240,7 +245,7 @@ export default function SubscriptionsPage() {
       configId,
       type,
       port: 'random',
-      sni: type === 'hysteria2-udp' ? '' : 'random',
+      sni: hasSni(type) ? 'random' : '',
       link: '',
       nodeId,
       flag: getNodeFlag(nodeId),
@@ -264,14 +269,9 @@ export default function SubscriptionsPage() {
     setInbounds([
       createInbound('hysteria2-udp'),
       createInbound('vless-xhttp-reality'),
-      createInbound('vless-tcp-reality'),
-      createInbound('vless-tcp-reality'),
-      createInbound('vless-tcp-reality'),
+      createInbound('vless-tcp-tls'),
       createInbound('vless-tcp-reality'),
       createInbound('vless-grpc-reality'),
-      createInbound('vless-ws'),
-      createInbound('vmess-tcp'),
-      createInbound('shadowsocks-tcp'),
     ]);
     setPortErrors({});
     setOpen(true);
@@ -293,12 +293,14 @@ export default function SubscriptionsPage() {
           configId,
           type: item.type || 'vless-tcp-reality',
           port: item.port ? item.port.toString() : 'random',
-          sni: item.type === 'hysteria2-udp' ? '' : item.sni || 'random',
+          sni: hasSni(item.type || '') ? item.sni || 'random' : '',
           link: item.link || '',
           nodeId,
           relayServerId: item.relayServerId ? item.relayServerId.toString() : '',
           flag: item.flag || getNodeFlag(nodeId),
           name: item.name || '',
+          enabled: item.enabled,
+          disabledReason: item.disabledReason,
           certificateFile:
             CERTIFICATE_TYPES.has(item.type)
               ? item.certificateFile || certDefaults.certificateFile
@@ -342,6 +344,12 @@ export default function SubscriptionsPage() {
           const defaults = getHysteriaCertDefaults(next.nodeId);
           next.certificateFile = next.certificateFile || defaults.certificateFile;
           next.keyFile = next.keyFile || defaults.keyFile;
+        }
+
+        if (field === 'type' && value === 'amneziawg') {
+          next.sni = '';
+          next.certificateFile = '';
+          next.keyFile = '';
         }
 
         if (field === 'type' && value !== 'custom' && !next.nodeId) {
@@ -425,18 +433,20 @@ export default function SubscriptionsPage() {
               configId: inbound.configId,
               type: inbound.type,
               link: inbound.link,
+              enabled: true,
             }
           : {
               configId: inbound.configId,
               type: inbound.type,
               port: inbound.port === 'random' ? 'random' : parseInt(inbound.port, 10),
-              sni: inbound.type === 'hysteria2-udp' ? undefined : inbound.sni,
+              sni: hasSni(inbound.type) ? inbound.sni : undefined,
               nodeId: inbound.nodeId || undefined,
               relayServerId: inbound.relayServerId
                 ? parseInt(inbound.relayServerId, 10)
                 : undefined,
               flag: inbound.flag || getNodeFlag(inbound.nodeId) || undefined,
               name: inbound.name?.trim() || undefined,
+              enabled: true,
               certificateFile:
                 CERTIFICATE_TYPES.has(inbound.type)
                   ? inbound.certificateFile?.trim() || undefined
@@ -701,7 +711,21 @@ export default function SubscriptionsPage() {
               <TableRow key={sub.id}>
                 <TableCell sx={{ fontWeight: 700 }}>{sub.name}</TableCell>
                 <TableCell sx={{ fontFamily: 'monospace' }}>{sub.uuid}</TableCell>
-                <TableCell>{sub.inbounds?.length || 0}</TableCell>
+                <TableCell>
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <span>{sub.inbounds?.length || 0}</span>
+                    {sub.inboundsConfig?.some((c) => c.enabled === false) && (
+                      <Tooltip
+                        title={`Отключены конфигурации: ${sub.inboundsConfig
+                          .filter((c) => c.enabled === false)
+                          .map((c) => c.disabledReason || 'нода удалена')
+                          .join('; ')}`}
+                      >
+                        <Chip size="small" color="warning" label="Отключены" />
+                      </Tooltip>
+                    )}
+                  </Stack>
+                </TableCell>
                 <TableCell>
                   <Checkbox
                     checked={sub.isAutoRotationEnabled ?? true}
@@ -746,6 +770,11 @@ export default function SubscriptionsPage() {
         <DialogTitle variant="h5">{editingId ? 'Редактировать подписку' : 'Новая подписка'}</DialogTitle>
         <DialogContent dividers sx={{ maxHeight: '72vh' }}>
           <TextField autoFocus margin="dense" label="Имя подписки" fullWidth value={name} onChange={(e) => setName(e.target.value)} sx={{ mb: 2 }} />
+          {inbounds.some((i) => i.enabled === false || i.disabledReason) && (
+            <Alert severity="warning" sx={{ mb: 2 }}>
+              Внимание: некоторые конфигурации были отключены (удалена нода). При сохранении подписки они будут автоматически активированы на выбранных нодах.
+            </Alert>
+          )}
           <Typography variant="h6" sx={{ mb: 2 }}>Инбаунды ({inbounds.length}/20)</Typography>
           <Box sx={{ maxHeight: '52vh', overflow: 'auto', pr: 1 }}>
             {inbounds.map((inbound, index) => (
@@ -782,6 +811,16 @@ export default function SubscriptionsPage() {
                     </span>
                   </Tooltip>
                 </Stack>
+                {inbound.disabledReason && (
+                  <Tooltip title={inbound.disabledReason}>
+                    <Chip
+                      size="small"
+                      color="warning"
+                      label={inbound.disabledReason}
+                      sx={{ alignSelf: 'center', flexShrink: 0 }}
+                    />
+                  </Tooltip>
+                )}
                 <FormControl size="small" sx={{ width: 185, flexShrink: 0 }}>
                   <InputLabel>Тип</InputLabel>
                   <Select value={inbound.type} label="Тип" onChange={(e) => handleInboundChange(inbound.id, 'type', e.target.value)}>
@@ -851,7 +890,7 @@ export default function SubscriptionsPage() {
                         />
                       </>
                     )}
-                    {inbound.type !== 'hysteria2-udp' && (
+                    {hasSni(inbound.type) && (
                       <FormControl size="small" sx={{ width: 150, flexShrink: 0 }}>
                         <InputLabel>SNI</InputLabel>
                         <Select value={inbound.sni} label="SNI" onChange={(e) => handleInboundChange(inbound.id, 'sni', e.target.value)}>

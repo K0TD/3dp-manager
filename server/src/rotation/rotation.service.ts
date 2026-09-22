@@ -246,14 +246,25 @@ export class RotationService implements OnModuleInit {
         ...(await this.rotateSubscription(subscription, domains, defaultNode)),
       );
     }
-    const success =
+    const allSucceeded =
       results.length > 0 &&
       results.every((item) => item.status === 'succeeded');
+    const noneSucceeded =
+      results.length === 0 ||
+      results.every((item) => item.status === 'failed');
+
+    let message = 'Ротация успешно выполнена';
+    if (!allSucceeded) {
+      if (noneSucceeded) {
+        const firstError = results.find((r) => r.message)?.message;
+        message = firstError || 'Сбой выполнения ротации';
+      } else {
+        message = 'Ротация завершена частично';
+      }
+    }
     return {
-      success,
-      message: success
-        ? 'Ротация успешно выполнена'
-        : 'Ротация завершена частично',
+      success: allSucceeded,
+      message,
       results,
     };
   }
@@ -267,26 +278,92 @@ export class RotationService implements OnModuleInit {
     domains: Domain[],
     defaultNode: Node | null,
   ) {
+    const allConfigs = subscription.inboundsConfig || [];
     this.logger.log(
-      `[RotationService] Обработка подписки «${subscription.name}» (${subscription.id}), конфигураций инбаундов: ${subscription.inboundsConfig?.length || 0}`,
+      `[RotationService] Обработка подписки «${subscription.name}» (${subscription.id}), конфигураций инбаундов: ${allConfigs.length}`,
     );
+
+    if (allConfigs.length === 0) {
+      this.logger.warn(
+        `[RotationService] У подписки «${subscription.name}» (${subscription.id}) нет конфигураций инбаундов.`,
+      );
+      return [
+        {
+          subscriptionId: subscription.id,
+          subscriptionName: subscription.name,
+          nodeId: subscription.nodeId || 'none',
+          nodeName: subscription.node?.name || 'Без конфигураций',
+          status: 'preserved' as const,
+          created: 0,
+          pendingCleanup: 0,
+          message: 'У подписки нет конфигураций инбаундов',
+        },
+      ];
+    }
+
+    let configsChanged = false;
+    for (const config of allConfigs) {
+      if (config.enabled === false) {
+        const resolved =
+          config.type === 'custom'
+            ? undefined
+            : await this.resolveNode(config.nodeId, subscription, defaultNode);
+        if (resolved || config.type === 'custom') {
+          this.logger.log(
+            `[RotationService] Автоматически активирована ранее отключенная конфигурация «${config.name || config.type}» для подписки «${subscription.name}» на ноде «${resolved?.name || 'Локальные'}» (была отключена: ${config.disabledReason || 'неизвестно'})`,
+          );
+          config.enabled = true;
+          config.disabledReason = undefined;
+          if (resolved && !config.nodeId) {
+            config.nodeId = resolved.id;
+          }
+          configsChanged = true;
+        }
+      }
+    }
+
+    if (configsChanged) {
+      subscription.inboundsConfig = allConfigs;
+      await this.subRepo.save(subscription);
+    }
+
+    const enabledConfigs = allConfigs
+      .map((config, position) => ({ config, position }))
+      .filter(({ config }) => config.enabled !== false);
+
+    if (enabledConfigs.length === 0) {
+      const reasons = Array.from(
+        new Set(allConfigs.map((c) => c.disabledReason).filter(Boolean)),
+      ).join('; ');
+      const reasonText = reasons ? `: ${reasons}` : '';
+      const message = `Все конфигурации инбаундов (${allConfigs.length}) отключены${reasonText}. Нет доступных нод для выполнения ротации.`;
+      this.logger.warn(
+        `[RotationService] Подписка «${subscription.name}» (${subscription.id}): ${message}`,
+      );
+      return [
+        {
+          subscriptionId: subscription.id,
+          subscriptionName: subscription.name,
+          nodeId: subscription.nodeId || 'none',
+          nodeName: subscription.node?.name || 'Отключены',
+          status: 'failed' as const,
+          created: 0,
+          pendingCleanup: 0,
+          message,
+        },
+      ];
+    }
+
     const groups = new Map<
       string,
       { node?: Node; configs: PositionedInboundConfig[] }
     >();
-    const enabledConfigs = (subscription.inboundsConfig || [])
-      .map((config, position) => ({ config, position }))
-      .filter(({ config }) => config.enabled !== false);
     for (const positionedConfig of enabledConfigs) {
       const { config } = positionedConfig;
       const node =
         config.type === 'custom'
           ? undefined
-          : await this.resolveNode(
-              config.nodeId,
-              subscription.node,
-              defaultNode,
-            );
+          : await this.resolveNode(config.nodeId, subscription, defaultNode);
       const key =
         config.type === 'custom' ? '__custom' : node?.id || '__missing';
       const group = groups.get(key) || { node, configs: [] };
@@ -536,6 +613,31 @@ export class RotationService implements OnModuleInit {
           built,
           targetAddress,
           uuid,
+          flag,
+        ),
+      });
+    }
+
+    if (config.type === 'amneziawg') {
+      const built = this.inboundBuilder.buildAmneziaWgInbound({ port, uuid });
+      if (config.name?.trim()) built.remark = config.name.trim();
+      const xuiId = await this.xuiService.addInbound(built, node);
+      if (!xuiId) return null;
+      return this.saveStagedInbound({
+        subscription,
+        config,
+        position,
+        node,
+        relayServer,
+        generationId,
+        xuiId,
+        port,
+        protocol: built.protocol,
+        remark: built.remark,
+        link: this.inboundBuilder.buildInboundLink(
+          built,
+          targetAddress,
+          '',
           flag,
         ),
       });
@@ -926,9 +1028,18 @@ export class RotationService implements OnModuleInit {
 
   private async resolveNode(
     nodeId?: string,
-    subscriptionNode?: Node,
+    subscriptionOrNode?: Node | Pick<Subscription, 'node' | 'name'>,
     defaultNode?: Node | null,
   ): Promise<Node | undefined> {
+    const subscriptionNode =
+      subscriptionOrNode && 'node' in subscriptionOrNode
+        ? subscriptionOrNode.node
+        : (subscriptionOrNode as Node | undefined);
+    const subscriptionName =
+      subscriptionOrNode && 'name' in subscriptionOrNode
+        ? subscriptionOrNode.name
+        : undefined;
+
     const targetId = nodeId || subscriptionNode?.id;
     if (targetId) {
       const node = await this.nodeRepo
@@ -940,9 +1051,28 @@ export class RotationService implements OnModuleInit {
         .getOne();
       if (node) return node;
       this.logger.warn(
-        `[RotationService] Нода с ID "${targetId}" не найдена или была удалена. Выполняется откат на основную ноду.`,
+        `[RotationService] Нода с ID "${targetId}" не найдена или была удалена. Выполняется откат на резервную ноду.`,
       );
     }
+
+    if (subscriptionName) {
+      const matchingNode = await this.nodeRepo
+        .createQueryBuilder('node')
+        .addSelect('node.password')
+        .addSelect('node.token')
+        .where('LOWER(TRIM(node.name)) = LOWER(TRIM(:name))', {
+          name: subscriptionName,
+        })
+        .andWhere('node.deletedAt IS NULL')
+        .getOne();
+      if (matchingNode) {
+        this.logger.log(
+          `[RotationService] Для подписки «${subscriptionName}» найдена активная нода с совпадающим именем: «${matchingNode.name}» [${matchingNode.id}]`,
+        );
+        return matchingNode;
+      }
+    }
+
     return defaultNode ?? undefined;
   }
 

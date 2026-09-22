@@ -17,7 +17,7 @@ describe('RotationService resilient generations', () => {
       async (work: (value: typeof manager) => Promise<void>) => work(manager),
     ),
   };
-  const subRepo = { find: jest.fn() };
+  const subRepo = { find: jest.fn(), save: jest.fn(async (value) => value) };
   const inboundRepo = {
     create: jest.fn((value) => value),
     save: jest.fn(async (value) => ({ id: value.id || 500, ...value })),
@@ -297,5 +297,95 @@ describe('RotationService resilient generations', () => {
 
     const node = await (service as any).getDefaultNode();
     expect(node).toBe(fallbackNode);
+  });
+
+  it('matches active node by subscription name when nodeId is absent or deleted', async () => {
+    const franceNode = {
+      id: 'france-node-id',
+      name: 'France',
+      isMain: false,
+    } as Node;
+
+    nodeRepo.createQueryBuilder
+      .mockReturnValueOnce({
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(null),
+      })
+      .mockReturnValueOnce({
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(franceNode),
+      });
+
+    const resolved = await (service as any).resolveNode(
+      'deleted-node-id',
+      { name: 'France' } as Subscription,
+      null,
+    );
+    expect(resolved).toBe(franceNode);
+  });
+
+  it('auto-recovers disabled inbound config when an active node is resolved', async () => {
+    const defaultNode = {
+      id: 'active-node-id',
+      name: 'Active Node',
+    } as Node;
+    const sub = {
+      id: 'sub-1',
+      name: 'France',
+      inboundsConfig: [
+        {
+          type: 'vless-ws',
+          enabled: false,
+          disabledReason: 'Нода «france» удалена',
+        },
+      ],
+      inbounds: [],
+    } as unknown as Subscription;
+
+    jest.spyOn(service as any, 'resolveNode').mockResolvedValue(defaultNode);
+    jest.spyOn(service as any, 'rotateNodeGroup').mockResolvedValue({
+      subscriptionId: 'sub-1',
+      status: 'succeeded',
+      created: 1,
+    });
+    jest.spyOn(service as any, 'queueCleanup').mockResolvedValue(undefined);
+
+    const results = await (service as any).rotateSubscription(
+      sub,
+      [],
+      defaultNode,
+    );
+
+    expect(sub.inboundsConfig[0].enabled).toBe(true);
+    expect(sub.inboundsConfig[0].disabledReason).toBeUndefined();
+    expect(sub.inboundsConfig[0].nodeId).toBe('active-node-id');
+    expect(subRepo.save).toHaveBeenCalledWith(sub);
+    expect(results[0].status).toBe('succeeded');
+  });
+
+  it('returns descriptive failure when all configs are disabled and no nodes are available', async () => {
+    const sub = {
+      id: 'sub-1',
+      name: 'France',
+      inboundsConfig: [
+        {
+          type: 'vless-ws',
+          enabled: false,
+          disabledReason: 'Нода «france» удалена',
+        },
+      ],
+      inbounds: [],
+    } as unknown as Subscription;
+
+    jest.spyOn(service as any, 'resolveNode').mockResolvedValue(undefined);
+
+    const results = await (service as any).rotateSubscription(sub, [], null);
+
+    expect(results[0].status).toBe('failed');
+    expect(results[0].message).toContain('Все конфигурации инбаундов (1) отключены: Нода «france» удалена');
   });
 });

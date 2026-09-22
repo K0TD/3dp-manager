@@ -16,9 +16,156 @@ interface VlessTlsParams {
   keyFile?: string;
 }
 
+interface WireguardKeyPair {
+  privateKey: string;
+  publicKey: string;
+}
+
+interface AmneziaWgLinkSettings {
+  server: Record<string, unknown> & {
+    primaryDns?: string;
+    secondaryDns?: string;
+    mtu?: number;
+    publicKey?: string;
+    randomTrailers?: boolean;
+    disableCookies?: boolean;
+  };
+  clients: Array<
+    Record<string, unknown> & {
+      privateKey?: string;
+      publicKey?: string;
+      allowedIPs?: string[];
+      keepAlive?: number;
+      preSharedKey?: string;
+    }
+  >;
+}
+
 @Injectable()
 export class InboundBuilderService {
   private flag = process.env.COUNTRY_FLAG ?? '%F0%9F%92%AF';
+
+  private randomInt(min: number, max: number) {
+    return crypto.randomInt(min, max + 1);
+  }
+
+  private base64UrlToBase64(value: string) {
+    return (
+      value.replace(/-/g, '+').replace(/_/g, '/') +
+      '='.repeat((4 - (value.length % 4)) % 4)
+    );
+  }
+
+  private generateWireguardKeyPair(): WireguardKeyPair {
+    const pair = crypto.generateKeyPairSync('x25519');
+    const privateJwk = pair.privateKey.export({
+      format: 'jwk',
+    }) as JsonWebKey & { d?: string };
+    const publicJwk = pair.publicKey.export({ format: 'jwk' }) as JsonWebKey & {
+      x?: string;
+    };
+    if (!privateJwk.d || !publicJwk.x)
+      throw new Error('Не удалось сгенерировать ключи AmneziaWG');
+    return {
+      privateKey: this.base64UrlToBase64(privateJwk.d),
+      publicKey: this.base64UrlToBase64(publicJwk.x),
+    };
+  }
+
+  private generateAmneziaWgObfuscation() {
+    const jmin = this.randomInt(40, 89);
+    const s1 = this.randomInt(15, 150);
+    let s2 = this.randomInt(15, 150);
+    while (s1 + 56 === s2) s2 = this.randomInt(15, 150);
+    const hMax = 2_147_483_647;
+    const bandSize = Math.floor((hMax - 4) / 4);
+    const h = [0, 1, 2, 3].map((index) =>
+      String(this.randomInt(5 + index * bandSize, 4 + (index + 1) * bandSize)),
+    );
+    const cpLo = this.randomInt(8, 24);
+    const rekeyLo = this.randomInt(100, 120);
+    const rekeyHi = rekeyLo + this.randomInt(10, 40);
+    const rejectLo = rekeyHi + this.randomInt(30, 60);
+    const timeoutLo = this.randomInt(3, 6);
+    const keepaliveLo = this.randomInt(8, 12);
+    const attemptsLo = this.randomInt(15, 25);
+    return {
+      jc: this.randomInt(3, 6),
+      jmin,
+      jmax: jmin + this.randomInt(50, 250),
+      s1,
+      s2,
+      s3: this.randomInt(12, 55),
+      s4: this.randomInt(12, 27),
+      h1: h[0],
+      h2: h[1],
+      h3: h[2],
+      h4: h[3],
+      i1: `<r ${this.randomInt(32, 256)}>`,
+      i2: '',
+      i3: '',
+      i4: '',
+      i5: '',
+      headerProtectionKey: crypto.randomBytes(32).toString('base64'),
+      contentPaddingAddition: `${cpLo}-${cpLo + this.randomInt(8, 40)}`,
+      rekeyAfterTime: `${rekeyLo}-${rekeyHi}`,
+      rekeyTimeout: `${timeoutLo}-${timeoutLo + this.randomInt(1, 4)}`,
+      rejectAfterTime: `${rejectLo}-${rejectLo + this.randomInt(30, 90)}`,
+      keepaliveTimeout: `${keepaliveLo}-${keepaliveLo + this.randomInt(2, 8)}`,
+      maxHandshakeAttempts: `${attemptsLo}-${attemptsLo + this.randomInt(5, 25)}`,
+      randomTrailers: true,
+      disableCookies: true,
+    };
+  }
+
+  buildAmneziaWgInbound(params: { port: number; uuid: string }) {
+    const serverKeys = this.generateWireguardKeyPair();
+    const clientKeys = this.generateWireguardKeyPair();
+    const obfuscation = this.generateAmneziaWgObfuscation();
+    const mtu = Math.max(1280, 1420 - obfuscation.s4);
+    return {
+      enable: true,
+      listen: '0.0.0.0',
+      port: params.port,
+      protocol: 'amneziawg',
+      remark: 'amneziawg',
+      settings: JSON.stringify({
+        server: {
+          privateKey: serverKeys.privateKey,
+          publicKey: serverKeys.publicKey,
+          subnetIp: '10.8.1.0',
+          subnetCidr: 24,
+          mtu,
+          primaryDns: '8.8.8.8',
+          secondaryDns: '8.8.4.4',
+          externalInterface: '',
+          ipv6Enabled: false,
+          ipv6Subnet: '',
+          ipv6ExternalInterface: '',
+          routeThroughXray: false,
+          ...obfuscation,
+        },
+        clients: [
+          {
+            privateKey: clientKeys.privateKey,
+            publicKey: clientKeys.publicKey,
+            allowedIPs: ['10.8.1.2/32'],
+            keepAlive: 25,
+            email: params.uuid,
+            limitIp: 0,
+            totalGB: 0,
+            expiryTime: 0,
+            enable: true,
+            tgId: 0,
+            subId: '',
+            reset: 0,
+          },
+        ],
+      }),
+      streamSettings: '',
+      sniffing: JSON.stringify({ enabled: false }),
+    };
+  }
 
   buildVlessRealityTcp(params: {
     port: number;
@@ -646,9 +793,83 @@ export class InboundBuilderService {
       case 'hysteria2':
         link = this.buildHysteria2PanelLink(inbound, sni, idOrPass, flagEmoji);
         break;
+      case 'amneziawg':
+        link = this.buildAmneziaWgLink(inbound, sni, flagEmoji);
+        break;
     }
 
     return link;
+  }
+
+  private buildAmneziaWgLink(
+    inbound: XuiInboundRaw,
+    address: string,
+    flagEmoji: string,
+  ) {
+    let settings: AmneziaWgLinkSettings;
+    try {
+      settings = JSON.parse(inbound.settings) as AmneziaWgLinkSettings;
+    } catch {
+      return '';
+    }
+    const server = settings.server;
+    const client = settings.clients?.[0];
+    if (!server || !client) return '';
+    if (/\r|\n/.test(address)) return '';
+    const line = (key: string, value: unknown, fallback = '') =>
+      `${key} = ${typeof value === 'string' && value.trim() ? value : fallback}\n`;
+    let decodedFlag = flagEmoji || '';
+    try {
+      decodedFlag = decodeURIComponent(decodedFlag);
+    } catch {
+      // Keep the raw flag if an administrator supplied a malformed escape.
+    }
+    const remark = `${decodedFlag} ${inbound.remark || ''}`
+      .replace(/[\r\n]+/g, ' ')
+      .trim();
+    let config = '[Interface]\n';
+    config += line('PrivateKey', client.privateKey);
+    config += line(
+      'Address',
+      Array.isArray(client.allowedIPs) ? client.allowedIPs.join(', ') : '',
+    );
+    const dns = [server.primaryDns, server.secondaryDns].filter(
+      (value): value is string => typeof value === 'string' && value.length > 0,
+    );
+    config += line('DNS', dns.join(', '));
+    if (Number(server.mtu) > 0) config += line('MTU', server.mtu);
+    for (const key of ['jc', 'jmin', 'jmax', 's1', 's2', 's3', 's4'])
+      config += line(key[0].toUpperCase() + key.slice(1), server[key]);
+    for (const key of ['h1', 'h2', 'h3', 'h4', 'i1', 'i2', 'i3', 'i4', 'i5']) {
+      const fallback = key.startsWith('h') ? key.slice(1) : '';
+      if (key.startsWith('h') || server[key])
+        config += line(key.toUpperCase(), server[key], fallback);
+    }
+    for (const [key, label] of [
+      ['headerProtectionKey', 'HeaderProtectionKey'],
+      ['contentPaddingAddition', 'ContentPaddingAddition'],
+      ['rekeyAfterTime', 'RekeyAfterTime'],
+      ['rekeyTimeout', 'RekeyTimeout'],
+      ['rejectAfterTime', 'RejectAfterTime'],
+      ['keepaliveTimeout', 'KeepaliveTimeout'],
+      ['maxHandshakeAttempts', 'MaxHandshakeAttempts'],
+    ] as const)
+      if (server[key]) config += line(label, server[key]);
+    if (server.randomTrailers) config += 'RandomTrailers = on\n';
+    if (server.disableCookies) config += 'DisableCookies = on\n';
+    config += `\n# ${remark}\n[Peer]\n`;
+    config += line('PublicKey', server.publicKey);
+    if (client.preSharedKey)
+      config += line('PresharedKey', client.preSharedKey);
+    config += 'AllowedIPs = 0.0.0.0/0, ::/0\n';
+    const endpoint =
+      address.includes(':') && !address.startsWith('[')
+        ? `[${address}]`
+        : address;
+    config += `Endpoint = ${endpoint}:${inbound.port}`;
+    if (Number(client.keepAlive) > 0)
+      config += `\nPersistentKeepalive = ${String(client.keepAlive)}`;
+    return `vpn://${Buffer.from(config, 'utf8').toString('base64url')}`;
   }
 
   private buildVlessLink(inbound: XuiInboundRaw, sni: string, uuid: string) {

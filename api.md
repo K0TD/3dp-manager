@@ -722,7 +722,7 @@ GET /bus/abc-123-def/1
     configId: string;
     type: 'vless-tcp-reality' | 'vless-xhttp-reality' | 'vless-grpc-reality' |
       'vless-ws' | 'vless-tcp-tls' | 'vless-ws-tls' | 'hysteria2-udp' |
-      'vmess-tcp' | 'shadowsocks-tcp' | 'trojan-tcp-reality' | 'custom';
+      'vmess-tcp' | 'shadowsocks-tcp' | 'trojan-tcp-reality' | 'amneziawg' | 'custom';
     port?: number | 'random';
     sni?: string;
   }>;

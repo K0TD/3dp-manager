@@ -1,6 +1,7 @@
 export interface XuiInboundRaw {
   id?: number;
   enable?: boolean;
+  listen?: string;
   port: number;
   protocol: string;
   settings: string; // JSON string

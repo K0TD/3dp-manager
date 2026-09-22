@@ -9,7 +9,9 @@ import { InboundBuilderService } from 'src/inbounds/inbound-builder.service';
 
 // Mock crypto.randomBytes для детерминированных тестов
 jest.mock('crypto', () => ({
-  randomBytes: jest.fn().mockReturnValue(Buffer.from('abcd1234', 'hex')),
+  ...jest.requireActual('crypto'),
+  randomBytes: jest.fn((size: number) => size === 32 ? Buffer.alloc(32, 0xab) : Buffer.from('abcd1234', 'hex')),
+  randomInt: jest.fn((min: number, max: number) => min),
   randomFillSync: jest.fn((buffer: Buffer) => {
     for (let i = 0; i < buffer.length; i++) {
       buffer[i] = i;
@@ -72,6 +74,30 @@ describe('InboundBuilderService', () => {
 
       const streamSettings = JSON.parse(result.streamSettings);
       expect(streamSettings.realitySettings.shortIds).toHaveLength(2);
+    });
+  });
+
+  describe('buildAmneziaWgInbound', () => {
+    it('создаёт валидный inbound и официальный vpn-конфиг', () => {
+      const inbound = service.buildAmneziaWgInbound({ port: 51820, uuid: 'client@example' });
+      const settings = JSON.parse(inbound.settings);
+
+      expect(inbound.protocol).toBe('amneziawg');
+      expect(settings.server.privateKey).toMatch(/^[A-Za-z0-9+/]{43}=$/);
+      expect(settings.server.publicKey).toMatch(/^[A-Za-z0-9+/]{43}=$/);
+      expect(settings.clients[0].privateKey).toMatch(/^[A-Za-z0-9+/]{43}=$/);
+      expect(settings.clients[0].allowedIPs).toEqual(['10.8.1.2/32']);
+      expect(settings.server.randomTrailers).toBe(true);
+      expect(settings.server.disableCookies).toBe(true);
+      expect(settings.server.headerProtectionKey).toMatch(/^[A-Za-z0-9+/]{43}=$/);
+
+      const link = service.buildInboundLink(inbound, 'example.com', '', '%F0%9F%92%AF');
+      expect(link.startsWith('vpn://')).toBe(true);
+      const config = Buffer.from(link.slice('vpn://'.length), 'base64url').toString('utf8');
+      expect(config).toContain('[Interface]');
+      expect(config).toContain(`PrivateKey = ${settings.clients[0].privateKey}`);
+      expect(config).toContain(`PublicKey = ${settings.server.publicKey}`);
+      expect(config).toContain('Endpoint = example.com:51820');
     });
   });
 
