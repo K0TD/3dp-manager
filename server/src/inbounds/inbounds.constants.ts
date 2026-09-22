@@ -7,6 +7,7 @@ export const CONNECTION_TYPES = [
   'shadowsocks-tcp',
   'trojan-tcp-reality',
   'hysteria2-udp',
+  'mtproto-faketls',
   'amneziawg',
   'custom',
 ] as const;

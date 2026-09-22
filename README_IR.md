@@ -172,8 +172,8 @@ Web UI در آدرسی که نصب‌کننده نمایش داده قابل د�
 
 برای `hysteria2-udp` می‌توانید مسیرهای جداگانه گواهی و کلید را مشخص کنید:
 
-- `certificateFile`، برای مثال `/root/cert/example.com/fullchain.pem`;
-- `keyFile`، برای مثال `/root/cert/example.com/privkey.pem`.
+- حالت `node` مسیرهای گواهی پنل را از `getWebCertFiles` در 3x-ui دریافت می‌کند؛
+- حالت `custom` به TLS server name و مسیر صریح گواهی/کلید روی نود نیاز دارد.
 
 اگر پورت یا SNI برابر `random` باشد، مقدار هنگام روتیشن از بازه موجود یا whitelist دامنه‌ها انتخاب می‌شود.
 

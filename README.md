@@ -195,17 +195,24 @@ Web UI доступен по адресу, который показал уст�
 - SNI: конкретный домен или `random`;
 - готовую внешнюю ссылку для типа `custom`.
 
+Панель автоматически проверяет версии 3x-ui и Xray на каждой ноде и не даёт
+выбрать несовместимый тип подключения. Версии и доступность TLS-сертификата
+показываются в разделе **Ноды**.
+
 Доступны варианты VLESS с обычным TLS:
 
 - `vless-tcp-tls` — TCP + TLS с flow `xtls-rprx-vision`;
-- `vless-ws-tls` — WebSocket + TLS с путём `/` и Host, равным SNI.
+- `vless-ws-tls` — WebSocket + TLS с путём `/` и TLS-именем ноды.
 
-Для `hysteria2-udp`, `vless-tcp-tls` и `vless-ws-tls` можно указать отдельные пути к сертификату и ключу:
+Для `hysteria2-udp`, `vless-tcp-tls` и `vless-ws-tls` доступны два режима:
 
-- `certificateFile`, например `/root/cert/example.com/fullchain.pem`;
-- `keyFile`, например `/root/cert/example.com/privkey.pem`.
+- **Сертификат ноды** — пути запрашиваются у выбранной 3x-ui через
+  `getWebCertFiles`; если панель их не возвращает, inbound не создаётся и
+  действующее поколение сохраняется;
+- **Свой сертификат** — задаются TLS server name и оба абсолютных пути
+  `certificateFile`/`keyFile` на выбранной ноде.
 
-Если пути для VLESS TLS не заданы, используются `/root/cert/<SNI>/fullchain.pem` и `/root/cert/<SNI>/privkey.pem`.
+SNI Reality и домены маскировки не используются для построения путей к TLS-файлам.
 
 `amneziawg` доступен для ручного выбора при создании подписки и генерирует клиентскую ссылку `vpn://` с конфигурацией AmneziaWG 3.1. Для него требуется 3x-ui 3.7 или новее; в стандартный набор новой подписки он не входит.
 

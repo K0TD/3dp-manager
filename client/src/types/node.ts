@@ -2,6 +2,12 @@ export type NodeAuthType = 'password' | 'token';
 export type NodeProtocol = 'http' | 'https';
 export type NodeHealthStatus = 'unknown' | 'online' | 'degraded' | 'offline' | 'auth_error' | 'deleting';
 
+export interface NodeCapabilities {
+  supportedInboundTypes: string[];
+  autoTlsCertificate: boolean;
+  warnings: string[];
+}
+
 export interface NodeRecord {
   id: string;
   name: string;
@@ -16,6 +22,11 @@ export interface NodeRecord {
   login?: string;
   isMain: boolean;
   version?: string;
+  xrayVersion?: string;
+  capabilities?: NodeCapabilities;
+  compatibilityCheckedAt?: string;
+  webCertificateFile?: string;
+  webKeyFile?: string;
   healthStatus?: NodeHealthStatus;
   lastCheckedAt?: string;
   responseTimeMs?: number;
@@ -37,6 +48,5 @@ export interface NodePayload {
   password?: string;
   token?: string;
   isMain?: boolean;
-  version?: string;
   allowInvalidTls?: boolean;
 }

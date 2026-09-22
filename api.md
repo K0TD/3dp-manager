@@ -129,15 +129,17 @@
       "configId": "8d1f6bf3-47f0-4f56-9ed4-8f9d89e10616",
       "type": "vless-tcp-tls",
       "port": 443,
-      "sni": "example.com",
-      "certificateFile": "/root/cert/example.com/fullchain.pem",
-      "keyFile": "/root/cert/example.com/privkey.pem"
+      "certificateMode": "node",
+      "tlsServerName": "node.example.com"
     },
     {
       "configId": "ee34c44c-6735-49ae-92ab-38843f5c9276",
       "type": "vless-ws-tls",
       "port": 8443,
-      "sni": "example.com"
+      "certificateMode": "custom",
+      "tlsServerName": "edge.example.com",
+      "certificateFile": "/etc/letsencrypt/live/edge.example.com/fullchain.pem",
+      "keyFile": "/etc/letsencrypt/live/edge.example.com/privkey.pem"
     }
   ],
   "isAutoRotationEnabled": true

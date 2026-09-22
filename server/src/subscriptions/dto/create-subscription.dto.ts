@@ -15,7 +15,8 @@ import {
   MaxLength,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { INBOUND_TYPES } from '../inbound-config.constants';
+import { CERTIFICATE_MODES, INBOUND_TYPES } from '../inbound-config.constants';
+import type { CertificateMode } from '../inbound-config.constants';
 
 const PORT_OR_RANDOM = 'portOrRandom';
 
@@ -60,7 +61,18 @@ export class InboundConfigDto {
 
   @IsString()
   @IsOptional()
+  @MaxLength(253)
   sni?: string;
+
+  @IsString()
+  @IsOptional()
+  @IsIn(CERTIFICATE_MODES)
+  certificateMode?: CertificateMode;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(253)
+  tlsServerName?: string;
 
   @IsString()
   @IsOptional()

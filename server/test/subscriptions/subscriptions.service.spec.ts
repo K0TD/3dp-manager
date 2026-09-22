@@ -246,13 +246,48 @@ describe('SubscriptionsService', () => {
               type: 'vless-tcp-tls',
               port: 443,
               sni: 'example.com',
+              certificateMode: 'custom',
               certificateFile: '/cert/fullchain.pem',
             },
           ],
         }),
       ).rejects.toThrow(
-        'Certificate and private key must be provided together',
+        'Custom TLS mode requires certificate and private key paths',
       );
+    });
+
+    it('должен принимать корректный FakeTLS-домен для MTProto', async () => {
+      const dto: CreateSubscriptionDto = {
+        name: 'Telegram',
+        inboundsConfig: [
+          {
+            type: 'mtproto-faketls',
+            port: 8443,
+            sni: 'www.cloudflare.com',
+          },
+        ],
+      };
+      mockSubRepo.create.mockImplementation((value) => value);
+      mockSubRepo.save.mockImplementation((value) => Promise.resolve(value));
+
+      await expect(service.create(dto)).resolves.toEqual(
+        expect.objectContaining({ name: 'Telegram' }),
+      );
+    });
+
+    it('должен отклонять некорректный FakeTLS-домен для MTProto', async () => {
+      await expect(
+        service.create({
+          name: 'Invalid MTProto',
+          inboundsConfig: [
+            {
+              type: 'mtproto-faketls',
+              port: 8443,
+              sni: 'https://cloudflare.com/path',
+            },
+          ],
+        }),
+      ).rejects.toThrow('MTProto FakeTLS domain must be a valid hostname');
     });
   });
 

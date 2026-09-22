@@ -1,4 +1,9 @@
-import { Injectable, OnModuleInit, NotFoundException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  OnModuleInit,
+  NotFoundException,
+  Logger,
+} from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
@@ -10,9 +15,14 @@ import { Domain } from '../domains/entities/domain.entity';
 import { Setting } from '../settings/entities/setting.entity';
 import { Node, NodeHealthStatus } from '../nodes/entities/node.entity';
 import { Tunnel } from '../tunnels/entities/tunnel.entity';
-import { XuiService } from '../xui/xui.service';
+import { XuiCertificateFiles, XuiService } from '../xui/xui.service';
 import { InboundBuilderService } from '../inbounds/inbound-builder.service';
 import { XuiInboundRaw } from '../inbounds/xui-inbound.types';
+import {
+  CERTIFICATE_INBOUND_TYPES,
+  InboundType,
+} from '../subscriptions/inbound-config.constants';
+import { supportsInboundType } from '../nodes/node-capabilities';
 import {
   RotationNodeResult,
   RotationOperation,
@@ -34,6 +44,11 @@ interface CreateInboundRequest {
   usedPorts: Set<number>;
   generationId: string;
   realityKeys?: { privateKey: string; publicKey: string } | null;
+  nodeCertificate?: XuiCertificateFiles;
+}
+
+interface ResolvedTlsConfig extends XuiCertificateFiles {
+  serverName: string;
 }
 
 interface SaveStagedInboundRequest {
@@ -237,7 +252,9 @@ export class RotationService implements OnModuleInit {
         `[RotationService] Основная нода по умолчанию: «${defaultNode.name}» [${defaultNode.id}] (url: ${defaultNode.url || `${defaultNode.protocol}://${defaultNode.host}:${defaultNode.port}`})`,
       );
     } else {
-      this.logger.warn('[RotationService] В системе нет ни одной активной ноды!');
+      this.logger.warn(
+        '[RotationService] В системе нет ни одной активной ноды!',
+      );
     }
 
     const results: RotationNodeResult[] = [];
@@ -250,8 +267,7 @@ export class RotationService implements OnModuleInit {
       results.length > 0 &&
       results.every((item) => item.status === 'succeeded');
     const noneSucceeded =
-      results.length === 0 ||
-      results.every((item) => item.status === 'failed');
+      results.length === 0 || results.every((item) => item.status === 'failed');
 
     let message = 'Ротация успешно выполнена';
     if (!allSucceeded) {
@@ -434,6 +450,10 @@ export class RotationService implements OnModuleInit {
       ) {
         throw new Error(`Нода ${group.node.name} временно недоступна`);
       }
+      const nodeCertificate = await this.preflightNodeGroup(
+        group.configs,
+        group.node,
+      );
       for (const positionedConfig of group.configs) {
         const { config } = positionedConfig;
         if (config.type?.includes('reality') && !realityKeys) {
@@ -458,6 +478,7 @@ export class RotationService implements OnModuleInit {
           usedPorts,
           generationId,
           realityKeys,
+          nodeCertificate,
         });
         if (!inbound) {
           throw new Error(
@@ -523,6 +544,127 @@ export class RotationService implements OnModuleInit {
     }
   }
 
+  private async preflightNodeGroup(
+    positionedConfigs: PositionedInboundConfig[],
+    node?: Node,
+  ): Promise<XuiCertificateFiles | undefined> {
+    const configs = positionedConfigs.map(({ config }) => config);
+    for (const config of configs) this.assertNodeCompatibility(config, node);
+
+    const needsNodeCertificate = configs.some(
+      (config) =>
+        CERTIFICATE_INBOUND_TYPES.has(config.type as InboundType) &&
+        this.getCertificateMode(config) === 'node',
+    );
+    if (!needsNodeCertificate) return undefined;
+    if (!node) throw new Error('Для TLS-конфигурации не назначена нода');
+
+    const certificate = await this.xuiService.getWebCertificateFiles(node);
+    if (!certificate) {
+      throw new Error(
+        `Нода «${node.name}» не предоставила сертификат панели через getWebCertFiles`,
+      );
+    }
+    return certificate;
+  }
+
+  private assertNodeCompatibility(config: InboundConfig, node?: Node) {
+    if (config.type === 'custom') return;
+    if (!node) throw new Error('Для конфигурации не назначена нода');
+    const supported = supportsInboundType(config.type as InboundType, {
+      panelVersion: node.version,
+      xrayVersion: node.xrayVersion,
+      autoTlsCertificate: Boolean(node.webCertificateFile && node.webKeyFile),
+    });
+    if (!supported) {
+      throw new Error(
+        `Нода «${node.name}» не поддерживает ${config.type} ` +
+          `(3x-ui: ${node.version || 'не определена'}, Xray: ${node.xrayVersion || 'не определена'})`,
+      );
+    }
+  }
+
+  private getCertificateMode(config: InboundConfig) {
+    if (config.certificateMode === 'custom') return 'custom' as const;
+    if (config.certificateMode === 'node') return 'node' as const;
+    return config.certificateFile && config.keyFile
+      ? ('custom' as const)
+      : ('node' as const);
+  }
+
+  private resolveTlsConfig(
+    config: InboundConfig,
+    node: Node,
+    nodeCertificate?: XuiCertificateFiles,
+  ): ResolvedTlsConfig {
+    if (this.getCertificateMode(config) === 'custom') {
+      return this.resolveCustomTlsConfig(config, node);
+    }
+    if (!nodeCertificate) {
+      throw new Error(`TLS-сертификат ноды «${node.name}» не получен`);
+    }
+    return {
+      ...nodeCertificate,
+      serverName: this.getNodeTlsServerName(node),
+    };
+  }
+
+  private resolveCustomTlsConfig(
+    config: InboundConfig,
+    node: Node,
+  ): ResolvedTlsConfig {
+    const certificateFile = config.certificateFile?.trim();
+    const keyFile = config.keyFile?.trim();
+    const serverName =
+      config.tlsServerName?.trim() ||
+      (config.sni !== 'random' ? config.sni?.trim() : undefined) ||
+      (config.certificateMode ? undefined : this.getNodeTlsServerName(node));
+    if (
+      !certificateFile ||
+      !keyFile ||
+      !serverName ||
+      !this.isSafeRemotePath(certificateFile) ||
+      !this.isSafeRemotePath(keyFile)
+    ) {
+      throw new Error(
+        'Для собственного TLS нужны корректные абсолютные пути и имя сервера',
+      );
+    }
+    return { certificateFile, keyFile, serverName };
+  }
+
+  private getNodeTlsServerName(node: Node) {
+    const domain = node.domain?.trim();
+    if (domain) return domain;
+    try {
+      const hostname = new URL(node.url).hostname;
+      if (hostname) return hostname;
+    } catch {
+      // Ошибка ниже явно объясняет, какое поле требуется заполнить.
+    }
+    throw new Error(
+      `Для TLS на ноде «${node.name}» укажите домен ноды или URL с hostname`,
+    );
+  }
+
+  private isSafeRemotePath(remotePath: string) {
+    return (
+      remotePath.startsWith('/') &&
+      remotePath.length <= 2048 &&
+      !Array.from(remotePath).some((character) => {
+        const codePoint = character.codePointAt(0) || 0;
+        return codePoint < 32 || codePoint === 127;
+      })
+    );
+  }
+
+  private resolveInboundSni(config: InboundConfig, domains: Domain[]) {
+    if (CERTIFICATE_INBOUND_TYPES.has(config.type as InboundType)) return '';
+    return config.sni === 'random'
+      ? this.pickDomain(domains)
+      : config.sni || '';
+  }
+
   private async createInbound(request: CreateInboundRequest) {
     const {
       subscription,
@@ -532,6 +674,7 @@ export class RotationService implements OnModuleInit {
       usedPorts,
       generationId,
       realityKeys,
+      nodeCertificate,
     } = request;
     if (config.type === 'custom') {
       return this.inboundRepo.save(
@@ -576,16 +719,14 @@ export class RotationService implements OnModuleInit {
         : Number(config.port);
     usedPorts.add(port);
     const uuid = uuidv4();
-    const sni =
-      config.sni === 'random' ? this.pickDomain(domains) : config.sni || '';
+    const sni = this.resolveInboundSni(config, domains);
 
     if (config.type === 'hysteria2-udp') {
+      const tls = this.resolveTlsConfig(config, node, nodeCertificate);
       const built = this.inboundBuilder.buildHysteria2Inbound({
         port,
         uuid,
-        sni: this.getNodeAddress(node) || targetAddress,
-        certificateFile: config.certificateFile,
-        keyFile: config.keyFile,
+        ...tls,
       });
       if (config.name?.trim()) built.remark = config.name.trim();
       const xuiId = await this.xuiService.addInbound(built, node);
@@ -649,6 +790,9 @@ export class RotationService implements OnModuleInit {
       uuid,
       sni,
       realityKeys,
+      tls: CERTIFICATE_INBOUND_TYPES.has(config.type as InboundType)
+        ? this.resolveTlsConfig(config, node, nodeCertificate)
+        : undefined,
     });
     if (!built) throw new Error(`Неизвестный тип inbound: ${config.type}`);
     if (config.name?.trim()) built.remark = config.name.trim();
@@ -663,10 +807,13 @@ export class RotationService implements OnModuleInit {
       `[RotationService] Инбаунд «${built.remark}» (${built.protocol}) успешно создан с ID ${xuiId} на ноде «${node.name}» (порт ${port})`,
     );
     const settings = JSON.parse(built.settings) as {
-      clients?: Array<{ id?: string; password?: string }>;
+      clients?: Array<{ id?: string; password?: string; secret?: string }>;
     };
     const credential =
-      settings.clients?.[0]?.id || settings.clients?.[0]?.password || '';
+      settings.clients?.[0]?.id ||
+      settings.clients?.[0]?.password ||
+      settings.clients?.[0]?.secret ||
+      '';
     return this.saveStagedInbound({
       subscription,
       config,
@@ -693,8 +840,9 @@ export class RotationService implements OnModuleInit {
     uuid: string;
     sni: string;
     realityKeys?: { privateKey: string; publicKey: string } | null;
+    tls?: ResolvedTlsConfig;
   }): XuiInboundRaw | null {
-    const { config, port, uuid, sni, realityKeys } = request;
+    const { config, port, uuid, sni, realityKeys, tls } = request;
     const realityParams = realityKeys
       ? { port, uuid, sni, ...realityKeys }
       : null;
@@ -717,24 +865,22 @@ export class RotationService implements OnModuleInit {
           : null,
       'vless-ws': () => this.inboundBuilder.buildVlessWs({ port, uuid, sni }),
       'vless-tcp-tls': () =>
-        this.inboundBuilder.buildVlessTlsTcp({
-          port,
-          uuid,
-          sni,
-          certificateFile: config.certificateFile,
-          keyFile: config.keyFile,
-        }),
+        tls
+          ? this.inboundBuilder.buildVlessTlsTcp({ port, uuid, ...tls })
+          : null,
       'vless-ws-tls': () =>
-        this.inboundBuilder.buildVlessTlsWs({
-          port,
-          uuid,
-          sni,
-          certificateFile: config.certificateFile,
-          keyFile: config.keyFile,
-        }),
+        tls
+          ? this.inboundBuilder.buildVlessTlsWs({ port, uuid, ...tls })
+          : null,
       'vmess-tcp': () => this.inboundBuilder.buildVmessTcp({ port, uuid }),
       'shadowsocks-tcp': () =>
         this.inboundBuilder.buildShadowsocksTcp({ port, uuid }),
+      'mtproto-faketls': () =>
+        this.inboundBuilder.buildMtprotoInbound({
+          port,
+          uuid,
+          fakeTlsDomain: sni,
+        }),
     };
     return builders[config.type || '']?.() ?? null;
   }
@@ -1076,7 +1222,9 @@ export class RotationService implements OnModuleInit {
     return defaultNode ?? undefined;
   }
 
-  private async resolveInboundNode(inbound: Inbound): Promise<Node | undefined> {
+  private async resolveInboundNode(
+    inbound: Inbound,
+  ): Promise<Node | undefined> {
     const targetId = inbound.nodeId || inbound.node?.id;
     if (!targetId) return inbound.node;
     return (

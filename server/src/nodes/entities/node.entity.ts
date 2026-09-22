@@ -9,6 +9,7 @@ import {
 import { Inbound } from '../../inbounds/entities/inbound.entity';
 import { Subscription } from '../../subscriptions/entities/subscription.entity';
 import { Tunnel } from '../../tunnels/entities/tunnel.entity';
+import type { NodeCapabilities } from '../node-capabilities';
 
 export enum NodeAuthType {
   Password = 'password',
@@ -80,6 +81,21 @@ export class Node {
 
   @Column({ nullable: true })
   version?: string;
+
+  @Column({ nullable: true })
+  xrayVersion?: string;
+
+  @Column({ type: 'simple-json', nullable: true })
+  capabilities?: NodeCapabilities;
+
+  @Column({ type: 'timestamp', nullable: true })
+  compatibilityCheckedAt?: Date;
+
+  @Column({ type: 'text', nullable: true })
+  webCertificateFile?: string;
+
+  @Column({ type: 'text', nullable: true })
+  webKeyFile?: string;
 
   @Column({ type: 'varchar', default: NodeHealthStatus.Unknown })
   healthStatus: NodeHealthStatus;

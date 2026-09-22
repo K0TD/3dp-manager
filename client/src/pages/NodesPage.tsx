@@ -44,6 +44,7 @@ import { FlagIcon, FlagOptionLabel } from '../utils/flags';
 const emptyForm: NodePayload = {
   name: '',
   url: '',
+  domain: '',
   ip: '',
   flag: '',
   authType: 'token',
@@ -102,6 +103,7 @@ export default function NodesPage() {
     setForm({
       name: node.name,
       url: node.url || '',
+      domain: node.domain || '',
       ip: node.ip || '',
       flag: node.flag || '',
       authType: node.authType,
@@ -109,7 +111,6 @@ export default function NodesPage() {
       password: '',
       token: '',
       isMain: node.isMain,
-      version: node.version || '',
       allowInvalidTls: node.allowInvalidTls || false,
     });
     setFormErrors({});
@@ -177,6 +178,7 @@ export default function NodesPage() {
     const payload: NodePayload = {
       ...form,
       url: form.url.replace(/\/+$/, ''),
+      domain: form.domain?.trim() || undefined,
       ip: form.ip || undefined,
       flag: form.flag || undefined,
       login: form.authType === 'password' ? form.login : undefined,
@@ -223,7 +225,9 @@ export default function NodesPage() {
     setMessage({
       open: true,
       type: result.success ? 'success' : 'error',
-      text: result.success ? 'Подключение успешно' : 'Не удалось подключиться',
+      text: result.success
+        ? `Подключение успешно · 3x-ui ${result.version || '?'} · Xray ${result.xrayVersion || '?'}`
+        : result.message || 'Не удалось подключиться',
     });
   };
 
@@ -314,6 +318,16 @@ export default function NodesPage() {
                       }
                     />
                     {node.responseTimeMs !== undefined && <Chip size="small" label={`${node.responseTimeMs} ms`} />}
+                    <Chip size="small" variant="outlined" label={`3x-ui ${node.version || '?'}`} />
+                    <Chip size="small" variant="outlined" label={`Xray ${node.xrayVersion || '?'}`} />
+                    {node.capabilities && (
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        color={node.capabilities.autoTlsCertificate ? 'success' : 'warning'}
+                        label={node.capabilities.autoTlsCertificate ? 'TLS панели' : 'TLS вручную'}
+                      />
+                    )}
                   </Stack>
                 </TableCell>
                 <TableCell align="right">
@@ -358,6 +372,12 @@ export default function NodesPage() {
               onBlur={detectNodeLocation}
               error={!!formErrors.url}
               InputProps={{ endAdornment: detectingLocation ? <CircularProgress size={18} /> : undefined }}
+            />
+            <TextField
+              label="Домен ноды"
+              helperText="Имя из TLS-сертификата панели, например node.example.com"
+              value={form.domain || ''}
+              onChange={(e) => updateField('domain', e.target.value)}
             />
             <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
               <TextField

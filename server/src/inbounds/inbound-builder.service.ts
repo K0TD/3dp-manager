@@ -7,13 +7,17 @@ import {
   XuiInboundSettings,
   XuiStreamSettings,
 } from './xui-inbound.types';
+import {
+  isValidFakeTlsDomain,
+  normalizeFakeTlsDomain,
+} from './mtproto-faketls';
 
 interface VlessTlsParams {
   port: number;
   uuid: string;
-  sni: string;
-  certificateFile?: string;
-  keyFile?: string;
+  serverName: string;
+  certificateFile: string;
+  keyFile: string;
 }
 
 interface WireguardKeyPair {
@@ -167,6 +171,51 @@ export class InboundBuilderService {
     };
   }
 
+  buildMtprotoInbound(params: {
+    port: number;
+    uuid: string;
+    fakeTlsDomain: string;
+  }) {
+    const fakeTlsDomain = normalizeFakeTlsDomain(params.fakeTlsDomain);
+    if (!isValidFakeTlsDomain(fakeTlsDomain)) {
+      throw new Error('Некорректный FakeTLS-домен MTProto');
+    }
+    const secret = this.generateMtprotoSecret(fakeTlsDomain);
+
+    return {
+      enable: true,
+      listen: '0.0.0.0',
+      port: params.port,
+      protocol: 'mtproto',
+      remark: 'mtproto-faketls',
+      settings: JSON.stringify({
+        fakeTlsDomain,
+        clients: [
+          {
+            secret,
+            email: params.uuid,
+            limitIp: 0,
+            totalGB: 0,
+            expiryTime: 0,
+            enable: true,
+            tgId: 0,
+            subId: '',
+            comment: '',
+            reset: 0,
+          },
+        ],
+      }),
+      streamSettings: '',
+      sniffing: '',
+    };
+  }
+
+  private generateMtprotoSecret(fakeTlsDomain: string) {
+    const randomSecret = crypto.randomBytes(16).toString('hex');
+    const encodedDomain = Buffer.from(fakeTlsDomain, 'utf8').toString('hex');
+    return `ee${randomSecret}${encodedDomain}`;
+  }
+
   buildVlessRealityTcp(params: {
     port: number;
     uuid: string;
@@ -190,7 +239,7 @@ export class InboundBuilderService {
             limitIp: 0,
             totalGB: 0,
             expiryTime: 0,
-            tgId: '',
+            tgId: 0,
             subId: '',
             reset: 0,
           },
@@ -255,7 +304,7 @@ export class InboundBuilderService {
             limitIp: 0,
             totalGB: 0,
             expiryTime: 0,
-            tgId: '',
+            tgId: 0,
             subId: '',
             reset: 0,
           },
@@ -329,7 +378,7 @@ export class InboundBuilderService {
             limitIp: 0,
             totalGB: 0,
             expiryTime: 0,
-            tgId: '',
+            tgId: 0,
             subId: '',
             reset: 0,
           },
@@ -391,7 +440,7 @@ export class InboundBuilderService {
       transportSettings: {
         wsSettings: {
           path: '/',
-          headers: { Host: params.sni },
+          headers: { Host: params.serverName },
           acceptProxyProtocol: false,
           heartbeatPeriod: 0,
         },
@@ -408,9 +457,6 @@ export class InboundBuilderService {
       transportSettings: Record<string, unknown>;
     },
   ) {
-    const certificateFile =
-      params.certificateFile || `/root/cert/${params.sni}/fullchain.pem`;
-    const keyFile = params.keyFile || `/root/cert/${params.sni}/privkey.pem`;
     return {
       enable: true,
       port: params.port,
@@ -426,7 +472,7 @@ export class InboundBuilderService {
             limitIp: 0,
             totalGB: 0,
             expiryTime: 0,
-            tgId: '',
+            tgId: 0,
             subId: '',
             reset: 0,
           },
@@ -441,13 +487,13 @@ export class InboundBuilderService {
         externalProxy: [],
         ...transport.transportSettings,
         tlsSettings: {
-          serverName: params.sni,
+          serverName: params.serverName,
           alpn: ['h2', 'http/1.1'],
           certificates: [
             {
               buildChain: false,
-              certificateFile,
-              keyFile,
+              certificateFile: params.certificateFile,
+              keyFile: params.keyFile,
               oneTimeLoading: false,
               usage: 'encipherment',
             },
@@ -488,7 +534,7 @@ export class InboundBuilderService {
             limitIp: 0,
             totalGB: 0,
             expiryTime: 0,
-            tgId: '',
+            tgId: 0,
             subId: '',
             reset: 0,
           },
@@ -534,9 +580,9 @@ export class InboundBuilderService {
             limitIp: 0,
             totalGB: 0,
             expiryTime: 0,
-            tgId: '',
+            tgId: 0,
             subId: '0',
-            alterId: '0',
+            alterId: 0,
             reset: 0,
           },
         ],
@@ -576,7 +622,7 @@ export class InboundBuilderService {
             limitIp: 0,
             totalGB: 0,
             expiryTime: 0,
-            tgId: '',
+            tgId: 0,
             subId: '',
             reset: 0,
           },
@@ -627,7 +673,7 @@ export class InboundBuilderService {
             limitIp: 0,
             totalGB: 0,
             expiryTime: 0,
-            tgId: '',
+            tgId: 0,
             subId: '',
             reset: 0,
           },
@@ -679,14 +725,11 @@ export class InboundBuilderService {
   buildHysteria2Inbound(params: {
     port: number;
     uuid: string;
-    sni: string;
-    certificateFile?: string;
-    keyFile?: string;
+    serverName: string;
+    certificateFile: string;
+    keyFile: string;
   }) {
-    const { port, uuid, sni } = params;
-    const certificateFile =
-      params.certificateFile || `/root/cert/${sni}/fullchain.pem`;
-    const keyFile = params.keyFile || `/root/cert/${sni}/privkey.pem`;
+    const { port, uuid, serverName } = params;
     const obfsPassword = crypto.randomBytes(8).toString('hex');
     return {
       enable: true,
@@ -733,13 +776,13 @@ export class InboundBuilderService {
           version: 2,
         },
         tlsSettings: {
-          serverName: sni,
+          serverName,
           alpn: ['h3'],
           certificates: [
             {
               buildChain: false,
-              certificateFile,
-              keyFile,
+              certificateFile: params.certificateFile,
+              keyFile: params.keyFile,
               oneTimeLoading: false,
               usage: 'encipherment',
             },
@@ -796,9 +839,36 @@ export class InboundBuilderService {
       case 'amneziawg':
         link = this.buildAmneziaWgLink(inbound, sni, flagEmoji);
         break;
+      case 'mtproto':
+        link = this.buildMtprotoLink(inbound, sni, idOrPass);
+        break;
     }
 
     return link;
+  }
+
+  private buildMtprotoLink(
+    inbound: XuiInboundRaw,
+    address: string,
+    secret: string,
+  ) {
+    if (
+      !address ||
+      /[\r\n]/.test(address) ||
+      !/^ee[0-9a-f]{34,}$/i.test(secret) ||
+      secret.length % 2 !== 0 ||
+      !Number.isInteger(inbound.port) ||
+      inbound.port < 1 ||
+      inbound.port > 65535
+    ) {
+      return '';
+    }
+
+    const link = new URL('tg://proxy');
+    link.searchParams.set('server', address);
+    link.searchParams.set('port', String(inbound.port));
+    link.searchParams.set('secret', secret);
+    return link.toString();
   }
 
   private buildAmneziaWgLink(

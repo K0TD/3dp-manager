@@ -49,10 +49,6 @@ export class CreateNodeDto {
   @IsOptional()
   isMain?: boolean;
 
-  @IsString()
-  @IsOptional()
-  version?: string;
-
   @IsBoolean()
   @IsOptional()
   allowInvalidTls?: boolean;

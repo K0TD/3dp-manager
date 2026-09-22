@@ -172,8 +172,8 @@ For each inbound, you can configure:
 
 For `hysteria2-udp`, you can specify separate certificate and key paths:
 
-- `certificateFile`, for example `/root/cert/example.com/fullchain.pem`;
-- `keyFile`, for example `/root/cert/example.com/privkey.pem`.
+- `node` mode reads the panel certificate paths from 3x-ui `getWebCertFiles`;
+- `custom` mode requires a TLS server name and explicit certificate/key paths on the node.
 
 If port or SNI is set to `random`, the value will be selected during rotation from the available range or domain whitelist.
 

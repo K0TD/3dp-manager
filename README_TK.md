@@ -172,8 +172,8 @@ Her inbound üçin sazlap bolýar:
 
 `hysteria2-udp` üçin şahadatnama we açar ýollaryny aýratyn görkezmek bolýar:
 
-- `certificateFile`, mysal üçin `/root/cert/example.com/fullchain.pem`;
-- `keyFile`, mysal üçin `/root/cert/example.com/privkey.pem`.
+- `node` tertibi panel sertifikat ýollaryny 3x-ui `getWebCertFiles` arkaly alýar;
+- `custom` tertibi TLS server name hem-de nodedaky sertifikat/açar ýollaryny talap edýär.
 
 Port ýa-da SNI `random` bolsa, baha rotasiýa wagtynda elýeterli aralykdan ýa-da domen whitelist-den saýlanar.
 

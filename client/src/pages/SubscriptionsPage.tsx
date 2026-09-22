@@ -84,6 +84,8 @@ interface InboundConfigUI {
   relayServerId?: string;
   flag?: string;
   name?: string;
+  certificateMode?: 'node' | 'custom';
+  tlsServerName?: string;
   certificateFile?: string;
   keyFile?: string;
   enabled?: boolean;
@@ -112,9 +114,14 @@ const CONNECTION_OPTIONS = [
   'vmess-tcp',
   'shadowsocks-tcp',
   'trojan-tcp-reality',
+  'mtproto-faketls',
   'amneziawg',
   'custom',
 ];
+
+const DEFAULT_MTPROTO_FAKE_TLS_DOMAIN = 'www.cloudflare.com';
+const FAKE_TLS_DOMAIN_PATTERN =
+  /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
 
 const CERTIFICATE_TYPES = new Set([
   'hysteria2-udp',
@@ -217,21 +224,26 @@ export default function SubscriptionsPage() {
     }
   };
 
-  const getHysteriaCertDefaults = (nodeId?: string) => {
-    const address = getNodeAddress(nodeId);
-    return {
-      certificateFile: address ? `/root/cert/${address}/fullchain.pem` : '',
-      keyFile: address ? `/root/cert/${address}/privkey.pem` : '',
-    };
-  };
-
   const getNodeFlag = (nodeId?: string) =>
     nodes.find((node) => node.id === (nodeId || getDefaultNodeId()))?.flag || '';
 
   const getRelayOptions = (nodeId?: string) =>
     tunnels.filter((tunnel) => tunnel.nodeId === (nodeId || getDefaultNodeId()));
 
-  const hasSni = (type: string) => type !== 'hysteria2-udp' && type !== 'amneziawg';
+  const hasSni = (type: string) =>
+    !CERTIFICATE_TYPES.has(type) && type !== 'amneziawg';
+
+  const getSelectedNode = (nodeId?: string) =>
+    nodes.find((node) => node.id === (nodeId || getDefaultNodeId()));
+
+  const isInboundSupported = (type: string, nodeId?: string) => {
+    if (type === 'custom') return true;
+    const capabilities = getSelectedNode(nodeId)?.capabilities;
+    return !capabilities || capabilities.supportedInboundTypes.includes(type);
+  };
+
+  const getDefaultSni = (type: string) =>
+    type === 'mtproto-faketls' ? DEFAULT_MTPROTO_FAKE_TLS_DOMAIN : 'random';
 
   const isValidPort = (value: string) =>
     value === 'random' || (/^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= 65535);
@@ -239,18 +251,20 @@ export default function SubscriptionsPage() {
   const createInbound = (type = 'vless-tcp-reality'): InboundConfigUI => {
     const nodeId = getDefaultNodeId();
     const configId = crypto.randomUUID();
-    const certDefaults = type === 'hysteria2-udp' ? getHysteriaCertDefaults(nodeId) : {};
     return {
       id: configId,
       configId,
       type,
       port: 'random',
-      sni: hasSni(type) ? 'random' : '',
+      sni: hasSni(type) ? getDefaultSni(type) : '',
       link: '',
       nodeId,
       flag: getNodeFlag(nodeId),
       name: '',
-      ...certDefaults,
+      certificateMode: CERTIFICATE_TYPES.has(type) ? 'node' : undefined,
+      tlsServerName: CERTIFICATE_TYPES.has(type) ? getNodeAddress(nodeId) : undefined,
+      certificateFile: '',
+      keyFile: '',
     };
   };
 
@@ -283,17 +297,17 @@ export default function SubscriptionsPage() {
     setInbounds(
       (sub.inboundsConfig?.length ? sub.inboundsConfig : [createInbound()]).map((item) => {
         const nodeId = item.nodeId || getDefaultNodeId();
-        const certDefaults =
-          item.type === 'hysteria2-udp'
-            ? getHysteriaCertDefaults(nodeId)
-            : { certificateFile: '', keyFile: '' };
+        const certificateMode = item.certificateMode ||
+          (item.certificateFile && item.keyFile ? 'custom' : 'node');
         const configId = item.configId || crypto.randomUUID();
         return {
           id: configId,
           configId,
           type: item.type || 'vless-tcp-reality',
           port: item.port ? item.port.toString() : 'random',
-          sni: hasSni(item.type || '') ? item.sni || 'random' : '',
+          sni: hasSni(item.type || '')
+            ? item.sni || getDefaultSni(item.type || '')
+            : '',
           link: item.link || '',
           nodeId,
           relayServerId: item.relayServerId ? item.relayServerId.toString() : '',
@@ -301,13 +315,20 @@ export default function SubscriptionsPage() {
           name: item.name || '',
           enabled: item.enabled,
           disabledReason: item.disabledReason,
+          certificateMode: CERTIFICATE_TYPES.has(item.type)
+            ? certificateMode
+            : undefined,
+          tlsServerName: CERTIFICATE_TYPES.has(item.type)
+            ? item.tlsServerName ||
+              (item.sni && item.sni !== 'random' ? item.sni : getNodeAddress(nodeId))
+            : undefined,
           certificateFile:
             CERTIFICATE_TYPES.has(item.type)
-              ? item.certificateFile || certDefaults.certificateFile
+              ? item.certificateFile || ''
               : undefined,
           keyFile:
             CERTIFICATE_TYPES.has(item.type)
-              ? item.keyFile || certDefaults.keyFile
+              ? item.keyFile || ''
               : undefined,
         };
       }),
@@ -325,8 +346,8 @@ export default function SubscriptionsPage() {
         if (field === 'nodeId') {
           next.relayServerId = '';
           next.flag = getNodeFlag(value);
-          if (next.type === 'hysteria2-udp') {
-            Object.assign(next, getHysteriaCertDefaults(value));
+          if (CERTIFICATE_TYPES.has(next.type) && next.certificateMode === 'node') {
+            next.tlsServerName = getNodeAddress(value);
           }
         }
 
@@ -335,26 +356,55 @@ export default function SubscriptionsPage() {
           next.relayServerId = '';
           next.flag = '';
           next.name = '';
+          next.certificateMode = undefined;
+          next.tlsServerName = undefined;
           next.certificateFile = '';
           next.keyFile = '';
         }
 
-        if (field === 'type' && value === 'hysteria2-udp') {
+        if (field === 'type' && CERTIFICATE_TYPES.has(value)) {
           next.sni = '';
-          const defaults = getHysteriaCertDefaults(next.nodeId);
-          next.certificateFile = next.certificateFile || defaults.certificateFile;
-          next.keyFile = next.keyFile || defaults.keyFile;
+          next.certificateMode = 'node';
+          next.tlsServerName = getNodeAddress(next.nodeId);
+          next.certificateFile = '';
+          next.keyFile = '';
         }
 
         if (field === 'type' && value === 'amneziawg') {
           next.sni = '';
+          next.certificateMode = undefined;
+          next.tlsServerName = undefined;
           next.certificateFile = '';
           next.keyFile = '';
+        }
+
+        if (field === 'type' && value === 'mtproto-faketls') {
+          next.sni = DEFAULT_MTPROTO_FAKE_TLS_DOMAIN;
+          next.certificateMode = undefined;
+          next.tlsServerName = undefined;
+          next.certificateFile = '';
+          next.keyFile = '';
+        }
+
+        if (
+          field === 'type' &&
+          hasSni(value) &&
+          value !== 'mtproto-faketls' &&
+          !next.sni
+        ) {
+          next.sni = 'random';
         }
 
         if (field === 'type' && value !== 'custom' && !next.nodeId) {
           next.nodeId = getDefaultNodeId();
           next.flag = getNodeFlag(next.nodeId);
+        }
+
+        if (field === 'certificateMode') {
+          next.certificateFile = '';
+          next.keyFile = '';
+          next.tlsServerName =
+            value === 'node' ? getNodeAddress(next.nodeId) : next.tlsServerName;
         }
 
         return next;
@@ -424,6 +474,51 @@ export default function SubscriptionsPage() {
       setSnackbar({ open: true, type: 'error', message: 'Введите имя подписки' });
       return;
     }
+    if (
+      inbounds.some(
+        (inbound) =>
+          inbound.type === 'mtproto-faketls' &&
+          !FAKE_TLS_DOMAIN_PATTERN.test(inbound.sni.trim()),
+      )
+    ) {
+      setSnackbar({
+        open: true,
+        type: 'error',
+        message: 'Укажите корректный FakeTLS-домен для MTProto',
+      });
+      return;
+    }
+    const invalidTls = inbounds.find(
+      (inbound) =>
+        CERTIFICATE_TYPES.has(inbound.type) &&
+        (inbound.certificateMode === 'custom'
+          ? !inbound.tlsServerName?.trim() ||
+            !inbound.certificateFile?.trim() ||
+            !inbound.keyFile?.trim()
+          : getSelectedNode(inbound.nodeId)?.capabilities?.autoTlsCertificate === false),
+    );
+    if (invalidTls) {
+      setSnackbar({
+        open: true,
+        type: 'error',
+        message:
+          invalidTls.certificateMode === 'custom'
+            ? 'Для собственного TLS укажите имя сервера, сертификат и приватный ключ'
+            : 'Выбранная нода не предоставила пути сертификата панели; выберите собственный TLS',
+      });
+      return;
+    }
+    const incompatibleInbound = inbounds.find(
+      (inbound) => !isInboundSupported(inbound.type, inbound.nodeId),
+    );
+    if (incompatibleInbound) {
+      setSnackbar({
+        open: true,
+        type: 'error',
+        message: `${incompatibleInbound.type} не поддерживается выбранной нодой`,
+      });
+      return;
+    }
 
     const payload = {
       name,
@@ -447,12 +542,18 @@ export default function SubscriptionsPage() {
               flag: inbound.flag || getNodeFlag(inbound.nodeId) || undefined,
               name: inbound.name?.trim() || undefined,
               enabled: true,
+              certificateMode: CERTIFICATE_TYPES.has(inbound.type)
+                ? inbound.certificateMode || 'node'
+                : undefined,
+              tlsServerName: CERTIFICATE_TYPES.has(inbound.type)
+                ? inbound.tlsServerName?.trim() || undefined
+                : undefined,
               certificateFile:
-                CERTIFICATE_TYPES.has(inbound.type)
+                CERTIFICATE_TYPES.has(inbound.type) && inbound.certificateMode === 'custom'
                   ? inbound.certificateFile?.trim() || undefined
                   : undefined,
               keyFile:
-                CERTIFICATE_TYPES.has(inbound.type)
+                CERTIFICATE_TYPES.has(inbound.type) && inbound.certificateMode === 'custom'
                   ? inbound.keyFile?.trim() || undefined
                   : undefined,
             },
@@ -824,7 +925,14 @@ export default function SubscriptionsPage() {
                 <FormControl size="small" sx={{ width: 185, flexShrink: 0 }}>
                   <InputLabel>Тип</InputLabel>
                   <Select value={inbound.type} label="Тип" onChange={(e) => handleInboundChange(inbound.id, 'type', e.target.value)}>
-                    {CONNECTION_OPTIONS.map((option) => <MenuItem key={option} value={option}>{option}</MenuItem>)}
+                    {CONNECTION_OPTIONS.map((option) => {
+                      const supported = isInboundSupported(option, inbound.nodeId);
+                      return (
+                        <MenuItem key={option} value={option} disabled={!supported}>
+                          {option}{supported ? '' : ' · несовместимо'}
+                        </MenuItem>
+                      );
+                    })}
                   </Select>
                 </FormControl>
                 {inbound.type === 'custom' ? (
@@ -856,41 +964,103 @@ export default function SubscriptionsPage() {
                     <TextField size="small" label="Порт" placeholder="random или порт" value={inbound.port} onChange={(e) => handleInboundChange(inbound.id, 'port', e.target.value)} error={!!portErrors[inbound.id]} helperText={portErrors[inbound.id] || ''} sx={{ width: 150, flexShrink: 0 }} />
                     {CERTIFICATE_TYPES.has(inbound.type) && (
                       <>
+                        <FormControl size="small" sx={{ width: 190, flexShrink: 0 }}>
+                          <InputLabel>TLS-сертификат</InputLabel>
+                          <Select
+                            value={inbound.certificateMode || 'node'}
+                            label="TLS-сертификат"
+                            onChange={(e) =>
+                              handleInboundChange(
+                                inbound.id,
+                                'certificateMode',
+                                e.target.value,
+                              )
+                            }
+                          >
+                            <MenuItem value="node">Сертификат ноды</MenuItem>
+                            <MenuItem value="custom">Свой сертификат</MenuItem>
+                          </Select>
+                        </FormControl>
                         <TextField
                           size="small"
-                          label="Сертификат"
-                          value={inbound.certificateFile || ''}
-                          onChange={(e) => handleInboundChange(inbound.id, 'certificateFile', e.target.value)}
-                          sx={{ width: 360, flexShrink: 0 }}
-                          InputProps={{
-                            endAdornment: (
-                              <InputAdornment position="end">
-                                <Tooltip title="Путь к сертификату должен существовать на выбранной ноде. По умолчанию используется путь Let's Encrypt.">
-                                  <HelpOutline fontSize="small" color="action" />
-                                </Tooltip>
-                              </InputAdornment>
-                            ),
-                          }}
+                          label="TLS server name"
+                          value={
+                            inbound.certificateMode === 'custom'
+                              ? inbound.tlsServerName || ''
+                              : getNodeAddress(inbound.nodeId)
+                          }
+                          disabled={inbound.certificateMode !== 'custom'}
+                          onChange={(e) =>
+                            handleInboundChange(inbound.id, 'tlsServerName', e.target.value)
+                          }
+                          sx={{ width: 220, flexShrink: 0 }}
                         />
-                        <TextField
-                          size="small"
-                          label="Приватный ключ"
-                          value={inbound.keyFile || ''}
-                          onChange={(e) => handleInboundChange(inbound.id, 'keyFile', e.target.value)}
-                          sx={{ width: 360, flexShrink: 0 }}
-                          InputProps={{
-                            endAdornment: (
-                              <InputAdornment position="end">
-                                <Tooltip title="Путь к приватному ключу должен существовать на выбранной ноде. По умолчанию используется путь Let's Encrypt.">
-                                  <HelpOutline fontSize="small" color="action" />
-                                </Tooltip>
-                              </InputAdornment>
-                            ),
-                          }}
-                        />
+                        {inbound.certificateMode === 'custom' ? (
+                          <>
+                            <TextField
+                              size="small"
+                              label="Сертификат"
+                              value={inbound.certificateFile || ''}
+                              onChange={(e) => handleInboundChange(inbound.id, 'certificateFile', e.target.value)}
+                              sx={{ width: 320, flexShrink: 0 }}
+                            />
+                            <TextField
+                              size="small"
+                              label="Приватный ключ"
+                              value={inbound.keyFile || ''}
+                              onChange={(e) => handleInboundChange(inbound.id, 'keyFile', e.target.value)}
+                              sx={{ width: 320, flexShrink: 0 }}
+                            />
+                          </>
+                        ) : (
+                          <Tooltip
+                            title={
+                              getSelectedNode(inbound.nodeId)?.capabilities?.autoTlsCertificate
+                                ? `Пути получены из 3x-ui: ${getSelectedNode(inbound.nodeId)?.webCertificateFile || 'сертификат панели'}`
+                                : '3x-ui не вернул пути сертификата. Проверьте ноду или выберите свой сертификат.'
+                            }
+                          >
+                            <Chip
+                              size="small"
+                              variant="outlined"
+                              color={
+                                getSelectedNode(inbound.nodeId)?.capabilities?.autoTlsCertificate === false
+                                  ? 'warning'
+                                  : 'success'
+                              }
+                              label="TLS панели ноды"
+                              sx={{ alignSelf: 'center', flexShrink: 0 }}
+                            />
+                          </Tooltip>
+                        )}
                       </>
                     )}
-                    {hasSni(inbound.type) && (
+                    {inbound.type === 'mtproto-faketls' && (
+                      <TextField
+                        size="small"
+                        label="FakeTLS-домен"
+                        placeholder={DEFAULT_MTPROTO_FAKE_TLS_DOMAIN}
+                        value={inbound.sni}
+                        onChange={(e) =>
+                          handleInboundChange(inbound.id, 'sni', e.target.value)
+                        }
+                        error={
+                          inbound.sni.length > 0 &&
+                          !FAKE_TLS_DOMAIN_PATTERN.test(inbound.sni.trim())
+                        }
+                        sx={{ width: 220, flexShrink: 0 }}
+                        InputProps={{
+                          endAdornment: (
+                            <InputAdornment position="end">
+                              <Tooltip title="Домен маскировки FakeTLS. Сертификат и владение доменом не требуются.">
+                                <HelpOutline fontSize="small" color="action" />
+                              </Tooltip>
+                            </InputAdornment>
+                          ),
+                        }}
+                      />
+                    )}
+                    {hasSni(inbound.type) && inbound.type !== 'mtproto-faketls' && (
                       <FormControl size="small" sx={{ width: 150, flexShrink: 0 }}>
                         <InputLabel>SNI</InputLabel>
                         <Select value={inbound.sni} label="SNI" onChange={(e) => handleInboundChange(inbound.id, 'sni', e.target.value)}>

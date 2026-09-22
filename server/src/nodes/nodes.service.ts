@@ -21,6 +21,7 @@ import * as net from 'net';
 import { COUNTRIES } from '../settings/countries';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InboundStatus } from '../inbounds/entities/inbound.entity';
+import { buildNodeCapabilities } from './node-capabilities';
 
 type GeoResult = {
   ip: string;
@@ -99,7 +100,9 @@ export class NodesService {
       isMain: dto.isMain ?? false,
     });
 
-    if ((await this.nodesRepo.count({ where: { deletedAt: IsNull() } })) === 0) {
+    if (
+      (await this.nodesRepo.count({ where: { deletedAt: IsNull() } })) === 0
+    ) {
       node.isMain = true;
     }
 
@@ -107,7 +110,8 @@ export class NodesService {
       await this.clearMainNode();
     }
 
-    return this.nodesRepo.save(node);
+    const savedNode = await this.nodesRepo.save(node);
+    return this.refreshNodeProfile(savedNode);
   }
 
   async update(id: string, dto: UpdateNodeDto) {
@@ -154,7 +158,8 @@ export class NodesService {
       node.isMain = true;
     }
 
-    return this.nodesRepo.save(node);
+    const savedNode = await this.nodesRepo.save(node);
+    return this.refreshNodeProfile(savedNode);
   }
 
   async remove(id: string, mode: 'safe' | 'deferred' | 'force' = 'safe') {
@@ -175,18 +180,23 @@ export class NodesService {
     for (const subscription of subscriptions) {
       const inheritedDeletedNode = subscription.nodeId === node.id;
       let changed = inheritedDeletedNode;
-      subscription.inboundsConfig = (subscription.inboundsConfig || []).map((item) => {
-        if (item.nodeId !== node.id && !(inheritedDeletedNode && !item.nodeId)) {
-          return item;
-        }
-        changed = true;
-        const { nodeId: _nodeId, relayServerId: _relayId, ...rest } = item;
-        return {
-          ...rest,
-          enabled: false,
-          disabledReason: `Нода «${node.name}» удалена`,
-        };
-      });
+      subscription.inboundsConfig = (subscription.inboundsConfig || []).map(
+        (item) => {
+          if (
+            item.nodeId !== node.id &&
+            !(inheritedDeletedNode && !item.nodeId)
+          ) {
+            return item;
+          }
+          changed = true;
+          const { nodeId: _nodeId, relayServerId: _relayId, ...rest } = item;
+          return {
+            ...rest,
+            enabled: false,
+            disabledReason: `Нода «${node.name}» удалена`,
+          };
+        },
+      );
       if (inheritedDeletedNode) {
         subscription.nodeId = undefined;
         subscription.node = undefined;
@@ -215,7 +225,9 @@ export class NodesService {
     node.healthStatus = NodeHealthStatus.Deleting;
     node.isMain = false;
 
-    const inbounds = await this.inboundsRepo.find({ where: { nodeId: node.id } });
+    const inbounds = await this.inboundsRepo.find({
+      where: { nodeId: node.id },
+    });
     for (const inbound of inbounds) {
       inbound.status = InboundStatus.PendingCleanup;
       inbound.nextCleanupAt = now;
@@ -226,18 +238,23 @@ export class NodesService {
     for (const subscription of subscriptions) {
       const inheritedDeletedNode = subscription.nodeId === node.id;
       let changed = inheritedDeletedNode;
-      subscription.inboundsConfig = (subscription.inboundsConfig || []).map((item) => {
-        if (item.nodeId !== node.id && !(inheritedDeletedNode && !item.nodeId)) {
-          return item;
-        }
-        changed = true;
-        const { nodeId: _nodeId, relayServerId: _relayId, ...rest } = item;
-        return {
-          ...rest,
-          enabled: false,
-          disabledReason: `Нода «${node.name}» удалена`,
-        };
-      });
+      subscription.inboundsConfig = (subscription.inboundsConfig || []).map(
+        (item) => {
+          if (
+            item.nodeId !== node.id &&
+            !(inheritedDeletedNode && !item.nodeId)
+          ) {
+            return item;
+          }
+          changed = true;
+          const { nodeId: _nodeId, relayServerId: _relayId, ...rest } = item;
+          return {
+            ...rest,
+            enabled: false,
+            disabledReason: `Нода «${node.name}» удалена`,
+          };
+        },
+      );
       if (inheritedDeletedNode) {
         subscription.nodeId = undefined;
         subscription.node = undefined;
@@ -297,7 +314,11 @@ export class NodesService {
       const config = sub.inboundsConfig || [];
       const nextConfig = config.map((item) => {
         if (item.nodeId !== id) return item;
-        const { nodeId: _nodeId, relayServerId: _relayServerId, ...rest } = item;
+        const {
+          nodeId: _nodeId,
+          relayServerId: _relayServerId,
+          ...rest
+        } = item;
         return rest;
       });
 
@@ -339,7 +360,7 @@ export class NodesService {
     const node = await this.findOneWithSecrets(id);
     const status = await this.xuiService.checkNodeConnection(node);
     await this.applyHealthResult(node, status);
-    return { success: status.success, version: status.version };
+    return this.connectionSummary(status);
   }
 
   @Cron(CronExpression.EVERY_MINUTE)
@@ -372,6 +393,17 @@ export class NodesService {
       node.consecutiveFailures = 0;
       node.lastError = undefined;
       if (status.version) node.version = status.version;
+      node.xrayVersion = status.xrayVersion;
+      node.webCertificateFile = status.webCertificateFile;
+      node.webKeyFile = status.webKeyFile;
+      node.compatibilityCheckedAt = new Date();
+      node.capabilities = buildNodeCapabilities({
+        panelVersion: status.version,
+        xrayVersion: status.xrayVersion,
+        autoTlsCertificate: Boolean(
+          status.webCertificateFile && status.webKeyFile,
+        ),
+      });
     } else {
       node.consecutiveFailures = (node.consecutiveFailures || 0) + 1;
       node.healthStatus =
@@ -423,9 +455,7 @@ export class NodesService {
             domain: getDomainFromHost(item.host),
             port: item.port,
             ip: await this.resolveIp(item.host),
-            flag: (
-              await this.lookupGeo(await this.resolveIp(item.host))
-            )?.flag,
+            flag: (await this.lookupGeo(await this.resolveIp(item.host)))?.flag,
             protocol:
               item.protocol === 'http' ? NodeProtocol.Http : NodeProtocol.Https,
             authType: main.authType,
@@ -443,7 +473,10 @@ export class NodesService {
   }
 
   private assertCredentials(dto: CreateNodeDto) {
-    if (dto.authType === NodeAuthType.Password && (!dto.login || !dto.password)) {
+    if (
+      dto.authType === NodeAuthType.Password &&
+      (!dto.login || !dto.password)
+    ) {
       throw new BadRequestException('Login and password are required');
     }
 
@@ -473,7 +506,34 @@ export class NodesService {
       url: this.normalizeUrl(dto.url),
     });
     const status = await this.xuiService.checkNodeConnection(node);
-    return { success: status.success, version: status.version };
+    return this.connectionSummary(status);
+  }
+
+  private async refreshNodeProfile(node: Node) {
+    const status = await this.xuiService.checkNodeConnection(node);
+    await this.applyHealthResult(node, status);
+    return node;
+  }
+
+  private connectionSummary(
+    status: Awaited<ReturnType<XuiService['checkNodeConnection']>>,
+  ) {
+    const capabilities = status.success
+      ? buildNodeCapabilities({
+          panelVersion: status.version,
+          xrayVersion: status.xrayVersion,
+          autoTlsCertificate: Boolean(
+            status.webCertificateFile && status.webKeyFile,
+          ),
+        })
+      : undefined;
+    return {
+      success: status.success,
+      version: status.version,
+      xrayVersion: status.xrayVersion,
+      capabilities,
+      message: status.message,
+    };
   }
 
   async detectLocation(url: string) {
@@ -544,7 +604,12 @@ export class NodesService {
     const fromCode = (countryCode?: string, country?: string) => {
       const countryInfo = COUNTRIES.find((c) => c.code === countryCode);
       return countryInfo
-        ? { ip, country: countryInfo.name, countryCode, flag: countryInfo.emoji }
+        ? {
+            ip,
+            country: countryInfo.name,
+            countryCode,
+            flag: countryInfo.emoji,
+          }
         : { ip, country, countryCode };
     };
 

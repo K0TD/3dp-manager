@@ -172,8 +172,8 @@ Web UI 可通过安装脚本显示的地址访问，例如：
 
 对于 `hysteria2-udp`，可以单独指定证书和密钥路径：
 
-- `certificateFile`，例如 `/root/cert/example.com/fullchain.pem`；
-- `keyFile`，例如 `/root/cert/example.com/privkey.pem`。
+- `node` 模式通过 3x-ui `getWebCertFiles` 读取面板证书路径；
+- `custom` 模式需要 TLS server name 以及节点上的证书和私钥绝对路径。
 
 如果端口或 SNI 设置为 `random`，轮换时会从可用端口范围或域名白名单中选择值。
 

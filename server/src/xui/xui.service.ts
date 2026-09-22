@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import axios, { AxiosInstance, AxiosError } from 'axios';
+import axios, { AxiosInstance, AxiosError, AxiosResponse } from 'axios';
 import * as https from 'https';
 import * as http from 'http';
 import { Setting } from '../settings/entities/setting.entity';
@@ -25,9 +25,17 @@ export type XuiConnectionError = 'auth' | 'network' | 'api';
 export interface XuiConnectionStatus {
   success: boolean;
   version?: string;
+  xrayVersion?: string;
+  webCertificateFile?: string;
+  webKeyFile?: string;
   responseTimeMs?: number;
   errorType?: XuiConnectionError;
   message?: string;
+}
+
+export interface XuiCertificateFiles {
+  certificateFile: string;
+  keyFile: string;
 }
 
 @Injectable()
@@ -103,17 +111,16 @@ export class XuiService {
     return { httpAgent: new http.Agent() };
   }
 
-  private async createAuthenticatedApi(node?: Node): Promise<AxiosInstance | null> {
+  private async createAuthenticatedApi(
+    node?: Node,
+  ): Promise<AxiosInstance | null> {
     if (!node) {
       const success = await this.login();
       return success ? this.api : null;
     }
 
     const baseUrl = this.getNodeBaseUrl(node);
-    const api = this.createApi(
-      baseUrl,
-      node.allowInvalidTls === true,
-    );
+    const api = this.createApi(baseUrl, node.allowInvalidTls === true);
 
     if (node.authType === NodeAuthType.Token) {
       if (!node.token) {
@@ -158,7 +165,9 @@ export class XuiService {
     } catch (e) {
       const err = e as AxiosError;
       const status = err.response?.status;
-      const dataStr = err.response?.data ? JSON.stringify(err.response.data) : '';
+      const dataStr = err.response?.data
+        ? JSON.stringify(err.response.data)
+        : '';
       this.logger.error(
         `[XuiService] Ошибка подключения/авторизации к ноде «${node.name}» (${baseUrl}): ${err.message} ${status ? `(HTTP ${status}: ${dataStr})` : ''}`,
       );
@@ -180,11 +189,17 @@ export class XuiService {
       }
       const setCookie = initialHeaders['set-cookie'];
       if (Array.isArray(setCookie) || typeof setCookie === 'string') {
-        const cookiesStr = Array.isArray(setCookie) ? setCookie.join('; ') : setCookie;
-        const match = cookiesStr.match(/(?:x-ui-csrf|x_ui_csrf|csrf_token|csrfToken)=([^;]+)/i);
+        const cookiesStr = Array.isArray(setCookie)
+          ? setCookie.join('; ')
+          : setCookie;
+        const match = cookiesStr.match(
+          /(?:x-ui-csrf|x_ui_csrf|csrf_token|csrfToken)=([^;]+)/i,
+        );
         if (match && match[1]) {
           api.defaults.headers.common['X-CSRF-Token'] = match[1];
-          this.logger.debug(`Извлечен CSRF токен из Set-Cookie: ${match[1].slice(0, 8)}...`);
+          this.logger.debug(
+            `Извлечен CSRF токен из Set-Cookie: ${match[1].slice(0, 8)}...`,
+          );
           return;
         }
       }
@@ -193,7 +208,9 @@ export class XuiService {
     // 2. Пробуем запросить GET /csrf-token (поддерживается в некоторых версиях панели)
     try {
       const response = await api.get('/csrf-token');
-      const headerToken = response.headers?.['x-csrf-token'] as string | undefined;
+      const headerToken = response.headers?.['x-csrf-token'] as
+        | string
+        | undefined;
       if (headerToken) {
         api.defaults.headers.common['X-CSRF-Token'] = headerToken;
         return;
@@ -220,7 +237,9 @@ export class XuiService {
     // 3. Резервный поиск: извлечение из <meta name="csrf-token" content="..."> на корневой HTML странице
     try {
       const htmlRes = await api.get('/');
-      const headerToken = htmlRes.headers?.['x-csrf-token'] as string | undefined;
+      const headerToken = htmlRes.headers?.['x-csrf-token'] as
+        | string
+        | undefined;
       if (headerToken) {
         api.defaults.headers.common['X-CSRF-Token'] = headerToken;
         return;
@@ -231,7 +250,9 @@ export class XuiService {
         );
         if (metaMatch && metaMatch[1]) {
           api.defaults.headers.common['X-CSRF-Token'] = metaMatch[1];
-          this.logger.debug(`Извлечен CSRF токен из HTML meta: ${metaMatch[1].slice(0, 8)}...`);
+          this.logger.debug(
+            `Извлечен CSRF токен из HTML meta: ${metaMatch[1].slice(0, 8)}...`,
+          );
           return;
         }
       }
@@ -240,7 +261,10 @@ export class XuiService {
     }
   }
 
-  private parseVersion(headers: Record<string, unknown>, data: unknown): string | undefined {
+  private parseVersion(
+    headers: Record<string, unknown>,
+    data: unknown,
+  ): string | undefined {
     const headerVersion = headers['x-ui-version'] || headers['x-3x-ui-version'];
     if (typeof headerVersion === 'string') return headerVersion;
 
@@ -250,6 +274,110 @@ export class XuiService {
     }
 
     return undefined;
+  }
+
+  private parsePanelVersion(
+    response: AxiosResponse<unknown> | undefined,
+    fallbackResponse: AxiosResponse<unknown>,
+  ) {
+    const payload = this.responseObject(response?.data);
+    const currentVersion = payload?.currentVersion;
+    if (typeof currentVersion === 'string' && currentVersion.trim()) {
+      return currentVersion.trim();
+    }
+    return this.parseVersion(
+      (response?.headers || fallbackResponse.headers) as Record<
+        string,
+        unknown
+      >,
+      response?.data || fallbackResponse.data,
+    );
+  }
+
+  private parseXrayVersion(response?: AxiosResponse<unknown>) {
+    const payload = this.responseObject(response?.data);
+    const xray = payload?.xray;
+    if (xray && typeof xray === 'object') {
+      const version = (xray as Record<string, unknown>).version;
+      if (typeof version === 'string' && version.trim()) return version.trim();
+    }
+    const version = payload?.xrayVersion;
+    return typeof version === 'string' && version.trim()
+      ? version.trim()
+      : undefined;
+  }
+
+  private parseCertificateFiles(
+    response?: AxiosResponse<unknown>,
+  ): XuiCertificateFiles | undefined {
+    const payload = this.responseObject(response?.data);
+    const certificateFile = payload?.webCertFile;
+    const keyFile = payload?.webKeyFile;
+    if (
+      typeof certificateFile !== 'string' ||
+      typeof keyFile !== 'string' ||
+      !this.isSafeRemotePath(certificateFile) ||
+      !this.isSafeRemotePath(keyFile)
+    ) {
+      return undefined;
+    }
+    return { certificateFile, keyFile };
+  }
+
+  private responseObject(data: unknown): Record<string, unknown> | undefined {
+    if (!data || typeof data !== 'object') return undefined;
+    const response = data as Record<string, unknown>;
+    const payload = response.obj;
+    return payload && typeof payload === 'object'
+      ? (payload as Record<string, unknown>)
+      : response;
+  }
+
+  private isSafeRemotePath(filePath: string) {
+    return (
+      filePath.startsWith('/') &&
+      filePath.length <= 2048 &&
+      !Array.from(filePath).some((character) => {
+        const codePoint = character.codePointAt(0) || 0;
+        return codePoint < 32 || codePoint === 127;
+      })
+    );
+  }
+
+  private async optionalGet(
+    api: AxiosInstance,
+    path: string,
+    nodeName: string,
+  ): Promise<AxiosResponse<unknown> | undefined> {
+    try {
+      return await api.get(path);
+    } catch (error) {
+      const status = (error as AxiosError).response?.status;
+      this.logger.debug(
+        `[XuiService] Опциональный endpoint ${path} недоступен на ноде «${nodeName}»${status ? ` (HTTP ${status})` : ''}`,
+      );
+      return undefined;
+    }
+  }
+
+  private async inspectAuthenticatedNode(
+    api: AxiosInstance,
+    nodeName: string,
+    listResponse: AxiosResponse<unknown>,
+  ) {
+    const [statusResponse, updateResponse, certificateResponse] =
+      await Promise.all([
+        this.optionalGet(api, '/panel/api/server/status', nodeName),
+        this.optionalGet(api, '/panel/api/server/getPanelUpdateInfo', nodeName),
+        this.optionalGet(api, '/panel/api/server/getWebCertFiles', nodeName),
+      ]);
+    const certificateFiles = this.parseCertificateFiles(certificateResponse);
+    return {
+      version: this.parsePanelVersion(updateResponse, listResponse),
+      xrayVersion: this.parseXrayVersion(statusResponse),
+      webCertificateFile: certificateFiles?.certificateFile,
+      webKeyFile: certificateFiles?.keyFile,
+    };
   }
 
   async login() {
@@ -277,7 +405,10 @@ export class XuiService {
 
       if (res.headers['set-cookie']) {
         this.sessionService.setFromHeaders(res.headers['set-cookie']);
-        await this.attachCsrfToken(this.api, res.headers as Record<string, unknown>);
+        await this.attachCsrfToken(
+          this.api,
+          res.headers as Record<string, unknown>,
+        );
         this.logger.log('3x-ui login successful');
         return true;
       } else {
@@ -298,8 +429,14 @@ export class XuiService {
     const maxAttempts = 3;
 
     const nodeName = node?.name || 'main';
+    const protocol =
+      typeof inboundConfig.protocol === 'string'
+        ? inboundConfig.protocol
+        : 'unknown';
+    const remark =
+      typeof inboundConfig.remark === 'string' ? inboundConfig.remark : '';
     this.logger.log(
-      `[XuiService] Создание инбаунда на ноде «${nodeName}» (протокол: ${inboundConfig.protocol}, порт: ${inboundConfig.port}, remark: «${inboundConfig.remark || ''}»)`,
+      `[XuiService] Создание инбаунда на ноде «${nodeName}» (протокол: ${protocol}, порт: ${inboundConfig.port}, remark: «${remark}»)`,
     );
 
     while (attempts < maxAttempts) {
@@ -481,9 +618,7 @@ export class XuiService {
     return false;
   }
 
-  async checkNodeConnection(
-    node: Node,
-  ): Promise<XuiConnectionStatus> {
+  async checkNodeConnection(node: Node): Promise<XuiConnectionStatus> {
     const startedAt = Date.now();
     try {
       const api = await this.createAuthenticatedApi(node);
@@ -497,9 +632,10 @@ export class XuiService {
       }
 
       const res = await api.get('/panel/api/inbounds/list');
+      const profile = await this.inspectAuthenticatedNode(api, node.name, res);
       return {
         success: true,
-        version: this.parseVersion(res.headers as Record<string, unknown>, res.data),
+        ...profile,
         responseTimeMs: Date.now() - startedAt,
       };
     } catch (error) {
@@ -511,10 +647,29 @@ export class XuiService {
       return {
         success: false,
         responseTimeMs: Date.now() - startedAt,
-        errorType: status === 401 || status === 403 ? 'auth' : status ? 'api' : 'network',
+        errorType:
+          status === 401 || status === 403
+            ? 'auth'
+            : status
+              ? 'api'
+              : 'network',
         message: this.safeErrorMessage(axiosError),
       };
     }
+  }
+
+  async getWebCertificateFiles(
+    node: Node,
+  ): Promise<XuiCertificateFiles | null> {
+    const api = await this.createAuthenticatedApi(node);
+    if (!api) return null;
+
+    const response = await this.optionalGet(
+      api,
+      '/panel/api/server/getWebCertFiles',
+      node.name,
+    );
+    return this.parseCertificateFiles(response) || null;
   }
 
   private safeErrorMessage(error: AxiosError) {

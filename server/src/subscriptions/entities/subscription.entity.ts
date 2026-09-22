@@ -34,6 +34,8 @@ export class Subscription {
     type?: string;
     port?: number | string;
     sni?: string;
+    certificateMode?: 'node' | 'custom';
+    tlsServerName?: string;
     link?: string;
     nodeId?: string;
     relayServerId?: number;

@@ -10,7 +10,11 @@ import { InboundBuilderService } from 'src/inbounds/inbound-builder.service';
 // Mock crypto.randomBytes для детерминированных тестов
 jest.mock('crypto', () => ({
   ...jest.requireActual('crypto'),
-  randomBytes: jest.fn((size: number) => size === 32 ? Buffer.alloc(32, 0xab) : Buffer.from('abcd1234', 'hex')),
+  randomBytes: jest.fn((size: number) => {
+    if (size === 32) return Buffer.alloc(32, 0xab);
+    if (size === 16) return Buffer.alloc(16, 0xcd);
+    return Buffer.from('abcd1234', 'hex');
+  }),
   randomInt: jest.fn((min: number, max: number) => min),
   randomFillSync: jest.fn((buffer: Buffer) => {
     for (let i = 0; i < buffer.length; i++) {
@@ -79,7 +83,10 @@ describe('InboundBuilderService', () => {
 
   describe('buildAmneziaWgInbound', () => {
     it('создаёт валидный inbound и официальный vpn-конфиг', () => {
-      const inbound = service.buildAmneziaWgInbound({ port: 51820, uuid: 'client@example' });
+      const inbound = service.buildAmneziaWgInbound({
+        port: 51820,
+        uuid: 'client@example',
+      });
       const settings = JSON.parse(inbound.settings);
 
       expect(inbound.protocol).toBe('amneziawg');
@@ -89,15 +96,94 @@ describe('InboundBuilderService', () => {
       expect(settings.clients[0].allowedIPs).toEqual(['10.8.1.2/32']);
       expect(settings.server.randomTrailers).toBe(true);
       expect(settings.server.disableCookies).toBe(true);
-      expect(settings.server.headerProtectionKey).toMatch(/^[A-Za-z0-9+/]{43}=$/);
+      expect(settings.server.headerProtectionKey).toMatch(
+        /^[A-Za-z0-9+/]{43}=$/,
+      );
 
-      const link = service.buildInboundLink(inbound, 'example.com', '', '%F0%9F%92%AF');
+      const link = service.buildInboundLink(
+        inbound,
+        'example.com',
+        '',
+        '%F0%9F%92%AF',
+      );
       expect(link.startsWith('vpn://')).toBe(true);
-      const config = Buffer.from(link.slice('vpn://'.length), 'base64url').toString('utf8');
+      const config = Buffer.from(
+        link.slice('vpn://'.length),
+        'base64url',
+      ).toString('utf8');
       expect(config).toContain('[Interface]');
-      expect(config).toContain(`PrivateKey = ${settings.clients[0].privateKey}`);
+      expect(config).toContain(
+        `PrivateKey = ${settings.clients[0].privateKey}`,
+      );
       expect(config).toContain(`PublicKey = ${settings.server.publicKey}`);
       expect(config).toContain('Endpoint = example.com:51820');
+    });
+  });
+
+  describe('buildMtprotoInbound', () => {
+    it('создаёт multi-client FakeTLS inbound и ссылку Telegram', () => {
+      const inbound = service.buildMtprotoInbound({
+        port: 8443,
+        uuid: 'client@example',
+        fakeTlsDomain: 'WWW.Cloudflare.COM',
+      });
+      const settings = JSON.parse(inbound.settings);
+      const secret = settings.clients[0].secret as string;
+
+      expect(inbound).toMatchObject({
+        enable: true,
+        listen: '0.0.0.0',
+        port: 8443,
+        protocol: 'mtproto',
+        remark: 'mtproto-faketls',
+        streamSettings: '',
+      });
+      expect(settings.fakeTlsDomain).toBe('www.cloudflare.com');
+      expect(settings.clients[0]).toMatchObject({
+        email: 'client@example',
+        enable: true,
+        totalGB: 0,
+        expiryTime: 0,
+      });
+      expect(secret).toMatch(/^ee[0-9a-f]{32}[0-9a-f]+$/);
+      expect(
+        secret.endsWith(
+          Buffer.from('www.cloudflare.com', 'utf8').toString('hex'),
+        ),
+      ).toBe(true);
+
+      const link = service.buildInboundLink(
+        inbound,
+        '203.0.113.10',
+        secret,
+        '%F0%9F%92%AF',
+      );
+      expect(link).toBe(
+        `tg://proxy?server=203.0.113.10&port=8443&secret=${secret}`,
+      );
+      expect(link).not.toContain('#');
+    });
+
+    it('не формирует ссылку с некорректным секретом', () => {
+      const inbound = service.buildMtprotoInbound({
+        port: 8443,
+        uuid: 'client@example',
+        fakeTlsDomain: 'www.cloudflare.com',
+      });
+
+      expect(
+        service.buildInboundLink(inbound, '203.0.113.10', 'invalid-secret', ''),
+      ).toBe('');
+    });
+
+    it('отклоняет некорректный FakeTLS-домен', () => {
+      expect(() =>
+        service.buildMtprotoInbound({
+          port: 8443,
+          uuid: 'client@example',
+          fakeTlsDomain: 'https://example.com/path',
+        }),
+      ).toThrow('Некорректный FakeTLS-домен MTProto');
     });
   });
 
@@ -192,10 +278,12 @@ describe('InboundBuilderService', () => {
     const params = {
       port: 443,
       uuid: 'test-uuid-tls',
-      sni: 'tls.example.com',
+      serverName: 'tls.example.com',
+      certificateFile: '/panel/cert/fullchain.pem',
+      keyFile: '/panel/cert/privkey.pem',
     };
 
-    it('должен создать TCP TLS inbound с сертификатом по умолчанию', () => {
+    it('должен создать TCP TLS inbound с переданным сертификатом ноды', () => {
       const inbound = service.buildVlessTlsTcp(params);
       const settings = JSON.parse(inbound.settings);
       const streamSettings = JSON.parse(inbound.streamSettings);
@@ -209,8 +297,8 @@ describe('InboundBuilderService', () => {
           serverName: 'tls.example.com',
           certificates: [
             {
-              certificateFile: '/root/cert/tls.example.com/fullchain.pem',
-              keyFile: '/root/cert/tls.example.com/privkey.pem',
+              certificateFile: '/panel/cert/fullchain.pem',
+              keyFile: '/panel/cert/privkey.pem',
             },
           ],
         },
@@ -220,8 +308,8 @@ describe('InboundBuilderService', () => {
     it('должен создать WebSocket TLS inbound и ссылку', () => {
       const inbound = service.buildVlessTlsWs({
         ...params,
-        certificateFile: '/cert/fullchain.pem',
-        keyFile: '/cert/privkey.pem',
+        certificateFile: '/custom/fullchain.pem',
+        keyFile: '/custom/privkey.pem',
       });
       const streamSettings = JSON.parse(inbound.streamSettings);
       const link = service.buildInboundLink(
@@ -260,6 +348,10 @@ describe('InboundBuilderService', () => {
 
       const settings = JSON.parse(result.settings);
       expect(settings.clients[0].id).toBe('test-uuid-vmess');
+      expect(settings.clients[0].tgId).toBe(0);
+      expect(typeof settings.clients[0].tgId).toBe('number');
+      expect(settings.clients[0].alterId).toBe(0);
+      expect(typeof settings.clients[0].alterId).toBe('number');
     });
   });
 
@@ -355,7 +447,9 @@ describe('InboundBuilderService', () => {
       const result = service.buildHysteria2Inbound({
         port: 34443,
         uuid: 'test-auth',
-        sni: 'oil.3dp-manager.com',
+        serverName: 'oil.3dp-manager.com',
+        certificateFile: '/panel/cert/fullchain.pem',
+        keyFile: '/panel/cert/privkey.pem',
       });
 
       expect(result).toMatchObject({
@@ -375,10 +469,10 @@ describe('InboundBuilderService', () => {
       expect(streamSettings.hysteriaSettings.version).toBe(2);
       expect(streamSettings.finalmask.udp[0].type).toBe('salamander');
       expect(streamSettings.tlsSettings.certificates[0].certificateFile).toBe(
-        '/root/cert/oil.3dp-manager.com/fullchain.pem',
+        '/panel/cert/fullchain.pem',
       );
       expect(streamSettings.tlsSettings.certificates[0].keyFile).toBe(
-        '/root/cert/oil.3dp-manager.com/privkey.pem',
+        '/panel/cert/privkey.pem',
       );
 
       const link = service.buildInboundLink(
@@ -664,6 +758,60 @@ describe('InboundBuilderService', () => {
       expect(uuid).toMatch(
         /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
       );
+    });
+  });
+
+  describe('Совместимость с Go struct 3x-ui (десериализация int64 tgId и int alterId)', () => {
+    const commonParams = {
+      port: 443,
+      uuid: '11111111-2222-3333-4444-555555555555',
+      sni: 'example.com',
+      privateKey: 'priv-key',
+      publicKey: 'pub-key',
+      serverName: 'example.com',
+      certificateFile: '/panel/cert/fullchain.pem',
+      keyFile: '/panel/cert/privkey.pem',
+    };
+
+    it('должен генерировать tgId: 0 (число) для всех поддерживаемых протоколов', () => {
+      const inbounds = [
+        service.buildVlessRealityTcp(commonParams),
+        service.buildVlessRealityXhttp(commonParams),
+        service.buildVlessRealityGrpc(commonParams),
+        service.buildVlessWs(commonParams),
+        service.buildVlessTlsTcp(commonParams),
+        service.buildVlessTlsWs(commonParams),
+        service.buildVmessTcp({ port: 443, uuid: commonParams.uuid }),
+        service.buildShadowsocksTcp({ port: 443, uuid: commonParams.uuid }),
+        service.buildTrojanRealityTcp(commonParams),
+        service.buildMtprotoInbound({
+          port: 443,
+          uuid: commonParams.uuid,
+          fakeTlsDomain: 'example.com',
+        }),
+        service.buildAmneziaWgInbound({ port: 51820, uuid: commonParams.uuid }),
+      ];
+
+      for (const inbound of inbounds) {
+        const settings = JSON.parse(inbound.settings);
+        expect(settings.clients).toBeDefined();
+        expect(Array.isArray(settings.clients)).toBe(true);
+        expect(settings.clients.length).toBeGreaterThan(0);
+        for (const client of settings.clients) {
+          expect(client.tgId).toBe(0);
+          expect(typeof client.tgId).toBe('number');
+        }
+      }
+    });
+
+    it('должен генерировать alterId как число 0 для vmess', () => {
+      const vmess = service.buildVmessTcp({
+        port: 443,
+        uuid: commonParams.uuid,
+      });
+      const settings = JSON.parse(vmess.settings);
+      expect(settings.clients[0].alterId).toBe(0);
+      expect(typeof settings.clients[0].alterId).toBe('number');
     });
   });
 });

@@ -9,6 +9,7 @@ export const INBOUND_TYPES = [
   'vmess-tcp',
   'shadowsocks-tcp',
   'trojan-tcp-reality',
+  'mtproto-faketls',
   'amneziawg',
   'custom',
 ] as const;
@@ -19,3 +20,11 @@ export const VLESS_TLS_TYPES = new Set<InboundType>([
   'vless-tcp-tls',
   'vless-ws-tls',
 ]);
+
+export const CERTIFICATE_INBOUND_TYPES = new Set<InboundType>([
+  ...VLESS_TLS_TYPES,
+  'hysteria2-udp',
+]);
+
+export const CERTIFICATE_MODES = ['node', 'custom'] as const;
+export type CertificateMode = (typeof CERTIFICATE_MODES)[number];

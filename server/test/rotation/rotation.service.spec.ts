@@ -45,6 +45,7 @@ describe('RotationService resilient generations', () => {
   };
   const xuiService = {
     getNewX25519Cert: jest.fn(),
+    getWebCertificateFiles: jest.fn(),
     addInbound: jest.fn(),
     deleteInbound: jest.fn(),
   };
@@ -59,6 +60,7 @@ describe('RotationService resilient generations', () => {
     buildShadowsocksTcp: jest.fn(),
     buildTrojanRealityTcp: jest.fn(),
     buildHysteria2Inbound: jest.fn(),
+    buildMtprotoInbound: jest.fn(),
     buildInboundLink: jest.fn(),
   };
 
@@ -78,6 +80,10 @@ describe('RotationService resilient generations', () => {
     jest.clearAllMocks();
     settingRepo.findOne.mockResolvedValue(null);
     inboundRepo.findOne.mockResolvedValue(null);
+    xuiService.getWebCertificateFiles.mockResolvedValue({
+      certificateFile: '/panel/cert/fullchain.pem',
+      keyFile: '/panel/cert/privkey.pem',
+    });
   });
 
   it('keeps the active generation when an unavailable node cannot create keys', async () => {
@@ -207,9 +213,151 @@ describe('RotationService resilient generations', () => {
       created: 1,
     });
     expect(xuiService.getNewX25519Cert).not.toHaveBeenCalled();
+    expect(xuiService.getWebCertificateFiles).toHaveBeenCalledWith(node);
+    expect(inboundBuilder.buildVlessTlsTcp).toHaveBeenCalledWith({
+      port: 443,
+      uuid: expect.any(String),
+      serverName: 'node',
+      certificateFile: '/panel/cert/fullchain.pem',
+      keyFile: '/panel/cert/privkey.pem',
+    });
     expect(inboundRepo.create).toHaveBeenCalledWith(
       expect.objectContaining({
         configId: '11111111-1111-4111-8111-111111111111',
+        position: 0,
+      }),
+    );
+  });
+
+  it('preserves active TLS generation when the node certificate is unavailable', async () => {
+    const node = {
+      id: 'node-without-cert',
+      name: 'TLS node',
+      url: 'https://node.example.com',
+      healthStatus: 'online',
+      consecutiveFailures: 0,
+    } as Node;
+    const old = {
+      id: 12,
+      nodeId: node.id,
+      status: InboundStatus.Active,
+      protocol: 'vless',
+    } as Inbound;
+    const subscription = {
+      id: 'sub-without-cert',
+      name: 'TLS without certificate',
+      node,
+      inbounds: [old],
+      inboundsConfig: [
+        {
+          type: 'vless-tcp-tls',
+          nodeId: node.id,
+          port: 443,
+          certificateMode: 'node',
+          sni: 'ok.ru',
+        },
+      ],
+    } as Subscription;
+    nodeRepo.createQueryBuilder.mockReturnValue({
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockResolvedValue(node),
+    });
+    xuiService.getWebCertificateFiles.mockResolvedValue(null);
+
+    const rotationResults = await (service as any).rotateSubscription(
+      subscription,
+      [{ name: 'ok.ru' }],
+      node,
+    );
+
+    expect(rotationResults[0]).toMatchObject({
+      status: 'preserved',
+      created: 0,
+      message: expect.stringContaining('getWebCertFiles'),
+    });
+    expect(xuiService.addInbound).not.toHaveBeenCalled();
+    expect(inboundBuilder.buildVlessTlsTcp).not.toHaveBeenCalled();
+    expect(manager.update).not.toHaveBeenCalled();
+    expect(old.status).toBe(InboundStatus.Active);
+  });
+
+  it('generates MTProto FakeTLS without Reality keys', async () => {
+    const node = {
+      id: 'node-mtproto',
+      name: 'MTProto node',
+      url: 'https://node',
+      ip: '203.0.113.10',
+      version: 'v3.5.0',
+      healthStatus: 'online',
+      consecutiveFailures: 0,
+    } as Node;
+    const secret =
+      'ee0123456789abcdef0123456789abcdef7777772e636c6f7564666c6172652e636f6d';
+    const builtInbound = {
+      port: 8443,
+      protocol: 'mtproto',
+      remark: 'mtproto-faketls',
+      settings: JSON.stringify({
+        fakeTlsDomain: 'www.cloudflare.com',
+        clients: [{ email: 'client', secret }],
+      }),
+      streamSettings: '',
+    };
+    const subscription = {
+      id: 'sub-mtproto',
+      name: 'Telegram',
+      node,
+      inbounds: [],
+      inboundsConfig: [
+        {
+          configId: '22222222-2222-4222-8222-222222222222',
+          type: 'mtproto-faketls',
+          nodeId: node.id,
+          port: 8443,
+          sni: 'www.cloudflare.com',
+        },
+      ],
+    } as Subscription;
+    nodeRepo.createQueryBuilder.mockReturnValue({
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockResolvedValue(node),
+    });
+    xuiService.addInbound.mockResolvedValue(202);
+    inboundBuilder.buildMtprotoInbound.mockReturnValue(builtInbound);
+    inboundBuilder.buildInboundLink.mockReturnValue(
+      `tg://proxy?server=203.0.113.10&port=8443&secret=${secret}`,
+    );
+
+    const rotationResults = await (service as any).rotateSubscription(
+      subscription,
+      [],
+      node,
+    );
+
+    expect(rotationResults[0]).toMatchObject({
+      status: 'succeeded',
+      created: 1,
+    });
+    expect(xuiService.getNewX25519Cert).not.toHaveBeenCalled();
+    expect(inboundBuilder.buildMtprotoInbound).toHaveBeenCalledWith({
+      port: 8443,
+      uuid: expect.any(String),
+      fakeTlsDomain: 'www.cloudflare.com',
+    });
+    expect(inboundBuilder.buildInboundLink).toHaveBeenCalledWith(
+      builtInbound,
+      '203.0.113.10',
+      secret,
+      expect.any(String),
+    );
+    expect(inboundRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        protocol: 'mtproto',
+        configId: '22222222-2222-4222-8222-222222222222',
         position: 0,
       }),
     );
@@ -241,7 +389,12 @@ describe('RotationService resilient generations', () => {
       where: jest.fn().mockReturnThis(),
       getMany: jest.fn().mockResolvedValue([
         { id: 101, cleanupAttempts: 2, status: InboundStatus.PendingCleanup },
-        { id: 102, cleanupAttempts: 0, status: InboundStatus.PendingCleanup, node: { healthStatus: 'offline' } },
+        {
+          id: 102,
+          cleanupAttempts: 0,
+          status: InboundStatus.PendingCleanup,
+          node: { healthStatus: 'offline' },
+        },
       ]),
     });
     inboundRepo.delete.mockResolvedValue({ affected: 1 });
@@ -386,6 +539,8 @@ describe('RotationService resilient generations', () => {
     const results = await (service as any).rotateSubscription(sub, [], null);
 
     expect(results[0].status).toBe('failed');
-    expect(results[0].message).toContain('Все конфигурации инбаундов (1) отключены: Нода «france» удалена');
+    expect(results[0].message).toContain(
+      'Все конфигурации инбаундов (1) отключены: Нода «france» удалена',
+    );
   });
 });

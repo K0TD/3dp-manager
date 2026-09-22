@@ -13,13 +13,14 @@ export interface XuiInboundSettings {
   clients?: Array<{
     id?: string;
     password?: string;
+    secret?: string;
     email?: string;
     flow?: string;
     enable?: boolean;
     limitIp?: number;
     totalGB?: number;
     expiryTime?: number;
-    tgId?: string;
+    tgId?: number;
     subId?: string;
     reset?: number;
   }>;

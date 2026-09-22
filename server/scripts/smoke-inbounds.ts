@@ -19,7 +19,8 @@ type SmokeResult = {
   error?: string;
 };
 
-const randomPort = () => Math.floor(Math.random() * (60000 - 20000 + 1)) + 20000;
+const randomPort = () =>
+  Math.floor(Math.random() * (60000 - 20000 + 1)) + 20000;
 
 async function main() {
   console.log('Starting inbound smoke test...');
@@ -50,21 +51,31 @@ async function main() {
   }
   console.log('Reality keys received.');
 
+  const certificate = await xuiService.getWebCertificateFiles(node);
+  if (!certificate) {
+    throw new Error(
+      'Could not get panel TLS certificate paths from the main node',
+    );
+  }
+
   const buildCases: Array<{
     type: string;
     build: (port: number, uuid: string) => XuiInboundRaw;
   }> = [
     {
       type: 'vless-tcp-reality',
-      build: (port, uuid) => builder.buildVlessRealityTcp({ port, uuid, sni: SNI, ...keys }),
+      build: (port, uuid) =>
+        builder.buildVlessRealityTcp({ port, uuid, sni: SNI, ...keys }),
     },
     {
       type: 'vless-xhttp-reality',
-      build: (port, uuid) => builder.buildVlessRealityXhttp({ port, uuid, sni: SNI, ...keys }),
+      build: (port, uuid) =>
+        builder.buildVlessRealityXhttp({ port, uuid, sni: SNI, ...keys }),
     },
     {
       type: 'vless-grpc-reality',
-      build: (port, uuid) => builder.buildVlessRealityGrpc({ port, uuid, sni: SNI, ...keys }),
+      build: (port, uuid) =>
+        builder.buildVlessRealityGrpc({ port, uuid, sni: SNI, ...keys }),
     },
     {
       type: 'vless-ws',
@@ -80,11 +91,27 @@ async function main() {
     },
     {
       type: 'trojan-tcp-reality',
-      build: (port, uuid) => builder.buildTrojanRealityTcp({ port, uuid, sni: SNI, ...keys }),
+      build: (port, uuid) =>
+        builder.buildTrojanRealityTcp({ port, uuid, sni: SNI, ...keys }),
     },
     {
       type: 'hysteria2-udp',
-      build: (port, uuid) => builder.buildHysteria2Inbound({ port, uuid, sni: SNI }),
+      build: (port, uuid) =>
+        builder.buildHysteria2Inbound({
+          port,
+          uuid,
+          serverName: node.domain || new URL(node.url).hostname,
+          ...certificate,
+        }),
+    },
+    {
+      type: 'mtproto-faketls',
+      build: (port, uuid) =>
+        builder.buildMtprotoInbound({
+          port,
+          uuid,
+          fakeTlsDomain: SNI,
+        }),
     },
   ];
 
@@ -102,7 +129,9 @@ async function main() {
       xuiId = await xuiService.addInbound(config, node);
 
       if (xuiId) {
-        console.log(`${testCase.type}: created with xuiId=${xuiId}; deleting...`);
+        console.log(
+          `${testCase.type}: created with xuiId=${xuiId}; deleting...`,
+        );
         await xuiService.deleteInbound(xuiId, node);
       }
 

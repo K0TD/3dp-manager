@@ -5,7 +5,11 @@ import { XuiService } from 'src/xui/xui.service';
 import { Setting } from 'src/settings/entities/setting.entity';
 import { SessionService } from 'src/session/session.service';
 import axios from 'axios';
-import { NodeAuthType, NodeProtocol } from 'src/nodes/entities/node.entity';
+import {
+  Node,
+  NodeAuthType,
+  NodeProtocol,
+} from 'src/nodes/entities/node.entity';
 
 jest.mock('axios');
 
@@ -27,7 +31,10 @@ describe('XuiService', () => {
   const mockAxiosInstance = {
     get: jest.fn(),
     post: jest.fn(),
-    defaults: { baseURL: '', headers: { common: {} as Record<string, string> } },
+    defaults: {
+      baseURL: '',
+      headers: { common: {} as Record<string, string> },
+    },
     interceptors: {
       request: { use: jest.fn() },
       response: { use: jest.fn() },
@@ -136,6 +143,66 @@ describe('XuiService', () => {
     });
   });
 
+  describe('node compatibility profile', () => {
+    const tokenNode = {
+      id: 'node-profile',
+      name: 'profile-node',
+      url: 'https://node.example.com',
+      authType: NodeAuthType.Token,
+      token: 'secret-token',
+    } as Node;
+
+    it('reads panel, Xray and web certificate data from 3x-ui', async () => {
+      mockAxiosInstance.get
+        .mockResolvedValueOnce({
+          data: { success: true, obj: [] },
+          headers: {},
+        })
+        .mockResolvedValueOnce({
+          data: { success: true, obj: { xray: { version: '26.7.11' } } },
+        })
+        .mockResolvedValueOnce({
+          data: { success: true, obj: { currentVersion: 'v3.7.1' } },
+          headers: {},
+        })
+        .mockResolvedValueOnce({
+          data: {
+            success: true,
+            obj: {
+              webCertFile: '/etc/ssl/node/fullchain.pem',
+              webKeyFile: '/etc/ssl/node/privkey.pem',
+            },
+          },
+        });
+
+      await expect(
+        service.checkNodeConnection(tokenNode),
+      ).resolves.toMatchObject({
+        success: true,
+        version: 'v3.7.1',
+        xrayVersion: '26.7.11',
+        webCertificateFile: '/etc/ssl/node/fullchain.pem',
+        webKeyFile: '/etc/ssl/node/privkey.pem',
+      });
+    });
+
+    it('rejects relative certificate paths returned by a node', async () => {
+      mockAxiosInstance.get.mockResolvedValueOnce({
+        data: {
+          success: true,
+          obj: {
+            webCertFile: 'cert/fullchain.pem',
+            webKeyFile: '/etc/ssl/node/privkey.pem',
+          },
+        },
+      });
+
+      await expect(
+        service.getWebCertificateFiles(tokenNode),
+      ).resolves.toBeNull();
+    });
+  });
+
   describe('addInbound', () => {
     it('должен вернуть null при ошибке', async () => {
       mockAxiosInstance.post.mockRejectedValue(new Error('API error'));
@@ -159,16 +226,25 @@ describe('XuiService', () => {
         allowInvalidTls: false,
       } as never;
       mockAxiosInstance.post
-        .mockResolvedValueOnce({ data: { success: true }, headers: { 'set-cookie': ['session=abc'] } })
+        .mockResolvedValueOnce({
+          data: { success: true },
+          headers: { 'set-cookie': ['session=abc'] },
+        })
         .mockResolvedValueOnce({ data: { success: true, obj: { id: 42 } } });
-      mockAxiosInstance.get.mockResolvedValueOnce({ data: { success: true, obj: 'csrf-value' } });
+      mockAxiosInstance.get.mockResolvedValueOnce({
+        data: { success: true, obj: 'csrf-value' },
+      });
 
       const result = await service.addInbound({ port: 443 }, node);
 
       expect(result).toBe(42);
       expect(mockAxiosInstance.get).toHaveBeenCalledWith('/csrf-token');
-      expect(mockAxiosInstance.defaults.headers.common.Cookie).toBe('session=abc');
-      expect(mockAxiosInstance.defaults.headers.common['X-CSRF-Token']).toBe('csrf-value');
+      expect(mockAxiosInstance.defaults.headers.common.Cookie).toBe(
+        'session=abc',
+      );
+      expect(mockAxiosInstance.defaults.headers.common['X-CSRF-Token']).toBe(
+        'csrf-value',
+      );
     });
   });
 
@@ -218,8 +294,13 @@ describe('XuiService', () => {
         { key: 'xui_password', value: 'password' },
       ]);
       mockAxiosInstance.post
-        .mockResolvedValueOnce({ headers: { 'set-cookie': ['session=abc123'] } })
-        .mockRejectedValueOnce({ response: { status: 404 }, message: 'Not found' });
+        .mockResolvedValueOnce({
+          headers: { 'set-cookie': ['session=abc123'] },
+        })
+        .mockRejectedValueOnce({
+          response: { status: 404 },
+          message: 'Not found',
+        });
 
       await expect(service.deleteInbound(999)).resolves.toBe(true);
     });
@@ -277,7 +358,9 @@ describe('XuiService', () => {
 
       await service.login();
 
-      expect(mockAxiosInstance.defaults.headers.common['X-CSRF-Token']).toBe('token123');
+      expect(mockAxiosInstance.defaults.headers.common['X-CSRF-Token']).toBe(
+        'token123',
+      );
     });
 
     it('извлекает CSRF токен из HTML meta если cookie отсутствует', async () => {
@@ -301,7 +384,9 @@ describe('XuiService', () => {
 
       await service.login();
 
-      expect(mockAxiosInstance.defaults.headers.common['X-CSRF-Token']).toBe('metaToken999');
+      expect(mockAxiosInstance.defaults.headers.common['X-CSRF-Token']).toBe(
+        'metaToken999',
+      );
     });
   });
 });

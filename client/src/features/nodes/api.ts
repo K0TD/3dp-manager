@@ -1,6 +1,14 @@
 import api from '../../api';
 import type { NodePayload, NodeRecord } from '../../types/node';
 
+interface NodeCheckResult {
+  success: boolean;
+  version?: string;
+  xrayVersion?: string;
+  capabilities?: NodeRecord['capabilities'];
+  message?: string;
+}
+
 export const nodesApi = {
   async list() {
     const { data } = await api.get<NodeRecord[]>('/nodes');
@@ -32,14 +40,14 @@ export const nodesApi = {
   },
 
   async check(id: string) {
-    const { data } = await api.post<{ success: boolean; version?: string }>(
+    const { data } = await api.post<NodeCheckResult>(
       `/nodes/${id}/check`,
     );
     return data;
   },
 
   async checkPayload(payload: NodePayload) {
-    const { data } = await api.post<{ success: boolean; version?: string }>(
+    const { data } = await api.post<NodeCheckResult>(
       '/nodes/check',
       payload,
     );
