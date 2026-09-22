@@ -13,6 +13,7 @@ import { Subscription } from 'src/subscriptions/entities/subscription.entity';
 import { Tunnel } from 'src/tunnels/entities/tunnel.entity';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import * as QRCode from 'qrcode';
+import { generateSubscriptionHtmlWithQr } from 'src/client/templates/subscription.template';
 
 jest.mock('qrcode', () => ({
   toDataURL: jest.fn(),
@@ -202,6 +203,80 @@ describe('ClientController', () => {
         'vless://first\nvless://second',
       );
     });
+
+    it('отделяет AmneziaWG и TGProxy от обычной подписки для превью', async () => {
+      mockRequest.headers['user-agent'] = 'Mozilla/5.0 Chrome/120.0';
+      mockSubRepo.findOne.mockResolvedValue({
+        ...mockSubscription,
+        inbounds: [
+          {
+            position: 0,
+            status: 'active',
+            protocol: 'vless',
+            link: 'vless://regular',
+          },
+          {
+            position: 1,
+            status: 'active',
+            protocol: 'amneziawg',
+            link: 'vpn://amnezia-config',
+          },
+          {
+            position: 2,
+            status: 'active',
+            protocol: 'mtproto',
+            link: 'tg://proxy?server=example.com&port=443&secret=eeaa',
+          },
+        ],
+      });
+      mockCacheManager.get.mockResolvedValue('data:image/png;base64,cached');
+
+      await controller.getSubscription('test-uuid', mockRequest, mockResponse);
+
+      expect(generateSubscriptionHtmlWithQr).toHaveBeenCalledWith(
+        expect.objectContaining({
+          subscriptionLinks: ['vless://regular'],
+          amneziaLinks: ['vpn://amnezia-config'],
+          telegramProxyLinks: [
+            'tg://proxy?server=example.com&port=443&secret=eeaa',
+          ],
+        }),
+      );
+    });
+
+    it('не добавляет AmneziaWG и TGProxy в Base64-подписку', async () => {
+      mockRequest.headers['user-agent'] = 'curl/8.0';
+      mockSubRepo.findOne.mockResolvedValue({
+        ...mockSubscription,
+        inbounds: [
+          {
+            position: 0,
+            status: 'active',
+            protocol: 'vless',
+            link: 'vless://regular',
+          },
+          {
+            position: 1,
+            status: 'active',
+            protocol: 'amneziawg',
+            link: 'vpn://amnezia-config',
+          },
+          {
+            position: 2,
+            status: 'active',
+            protocol: 'mtproto',
+            link: 'tg://proxy?server=example.com&port=443&secret=eeaa',
+          },
+        ],
+      });
+
+      await controller.getSubscription('test-uuid', mockRequest, mockResponse);
+
+      const encodedSubscription = mockResponse.send.mock.calls[0][0] as string;
+      expect(Buffer.from(encodedSubscription, 'base64').toString('utf8')).toBe(
+        'vless://regular',
+      );
+    });
   });
 
   describe('getRelaySubscription', () => {
@@ -383,6 +458,30 @@ describe('ClientController', () => {
       );
 
       expect(result).toBe(invalidVmssLink);
+    });
+
+    it('должен обновить хост в ссылке Telegram Proxy', () => {
+      const link = 'tg://proxy?server=old.example.com&port=443&secret=eeaa';
+
+      const result = (controller as any).patchLink(link, 'relay.example.com');
+
+      expect(result).toBe(
+        'tg://proxy?server=relay.example.com&port=443&secret=eeaa',
+      );
+    });
+
+    it('должен обновить Endpoint в конфигурации AmneziaWG', () => {
+      const config =
+        '[Interface]\nPrivateKey = key\n\n[Peer]\nEndpoint = old.example.com:51820';
+      const link = `vpn://${Buffer.from(config).toString('base64url')}`;
+
+      const result = (controller as any).patchLink(link, 'relay.example.com');
+      const patchedConfig = Buffer.from(
+        result.slice('vpn://'.length),
+        'base64url',
+      ).toString('utf8');
+
+      expect(patchedConfig).toContain('Endpoint = relay.example.com:51820');
     });
   });
 });

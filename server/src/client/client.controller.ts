@@ -20,7 +20,10 @@ import type { Cache } from 'cache-manager';
 import { Subscription } from '../subscriptions/entities/subscription.entity';
 import { Public } from '../auth/public.decorator';
 import { Tunnel } from 'src/tunnels/entities/tunnel.entity';
-import { generateSubscriptionHtmlWithQr } from './templates/subscription.template';
+import {
+  generateSubscriptionHtmlWithQr,
+  type SubscriptionPreviewData,
+} from './templates/subscription.template';
 import { InboundStatus } from '../inbounds/entities/inbound.entity';
 import { sortInboundsByPosition } from '../inbounds/inbound-order';
 
@@ -53,12 +56,15 @@ export class ClientController {
       throw new HttpException('Subscription not found', HttpStatus.NOT_FOUND);
     }
 
-    const links = sortInboundsByPosition(sub.inbounds || [])
-      .filter((inbound) => inbound.status === InboundStatus.Active)
-      .map((inbound) => inbound.link)
-      .filter((link) => link && link.length > 0);
-
-    const plainTextList = links.join('\n');
+    const previewData = this.buildPreviewData(
+      sortInboundsByPosition(sub.inbounds || [])
+        .filter((inbound) => inbound.status === InboundStatus.Active)
+        .map((inbound) => ({
+          protocol: inbound.protocol,
+          link: inbound.link,
+        })),
+    );
+    const plainTextList = previewData.subscriptionLinks.join('\n');
     const base64Config = Buffer.from(plainTextList).toString('base64');
 
     const userAgent = req.headers['user-agent'] || '';
@@ -85,12 +91,12 @@ export class ClientController {
         this.logger.debug(`QR loaded from cache for ${uuid}`);
       }
 
-      const html = generateSubscriptionHtmlWithQr(
+      const html = generateSubscriptionHtmlWithQr({
+        ...previewData,
         currentUrl,
         qrDataUrl,
-        base64Config,
-        sub.name,
-      );
+        subscriptionName: sub.name,
+      });
 
       res.setHeader('Content-Type', 'text/html');
       res.send(html);
@@ -123,19 +129,23 @@ export class ClientController {
       throw new HttpException('Subscription not found', HttpStatus.NOT_FOUND);
     }
 
-    const links = sortInboundsByPosition(sub.inbounds || [])
-      .filter(
-        (inbound) =>
-          inbound.status === InboundStatus.Active &&
-          inbound.link &&
-          inbound.link.length > 0,
-      )
-      .map((inbound) => {
-        if (inbound.protocol === 'custom') return inbound.link;
-        return this.patchLink(inbound.link, relayHost);
-      });
-
-    const plainTextList = links.join('\n');
+    const previewData = this.buildPreviewData(
+      sortInboundsByPosition(sub.inbounds || [])
+        .filter(
+          (inbound) =>
+            inbound.status === InboundStatus.Active &&
+            inbound.link &&
+            inbound.link.length > 0,
+        )
+        .map((inbound) => ({
+          protocol: inbound.protocol,
+          link:
+            inbound.protocol === 'custom'
+              ? inbound.link
+              : this.patchLink(inbound.link, relayHost),
+        })),
+    );
+    const plainTextList = previewData.subscriptionLinks.join('\n');
     const base64Config = Buffer.from(plainTextList).toString('base64');
 
     const userAgent = req.headers['user-agent'] || '';
@@ -162,46 +172,116 @@ export class ClientController {
         this.logger.debug(`QR loaded from cache for ${uuid}`);
       }
 
-      const html = generateSubscriptionHtmlWithQr(
+      const html = generateSubscriptionHtmlWithQr({
+        ...previewData,
         currentUrl,
         qrDataUrl,
-        base64Config,
-        sub.name,
-      );
+        subscriptionName: sub.name,
+      });
 
       res.setHeader('Content-Type', 'text/html');
       res.send(html);
     }
   }
 
+  /** Relay rewriting preserves generated links that cannot be parsed safely. */
   private patchLink(link: string, newHost: string): string {
     if (link.startsWith('vmess://')) {
-      try {
-        const base64Part = link.substring(8);
-        const jsonStr = Buffer.from(base64Part, 'base64').toString('utf-8');
-        const config = JSON.parse(jsonStr) as { add: string };
-
-        config.add = newHost;
-
-        const newJsonStr = JSON.stringify(config);
-        const newBase64 = Buffer.from(newJsonStr).toString('base64');
-        return `vmess://${newBase64}`;
-      } catch {
-        return link;
-      }
-    } else if (
+      return this.tryPatchVmessLink(link, newHost);
+    }
+    if (
       link.startsWith('vless://') ||
       link.startsWith('trojan://') ||
       link.startsWith('hy2://')
     ) {
       return link.replace(/@.*?:/, `@${newHost}:`);
-    } else if (link.startsWith('ss://')) {
-      if (link.includes('@')) {
-        return link.replace(/@.*?:/, `@${newHost}:`);
-      }
-      return link;
     }
+    if (link.startsWith('ss://'))
+      return link.includes('@') ? link.replace(/@.*?:/, `@${newHost}:`) : link;
+    if (link.startsWith('tg://proxy?'))
+      return this.tryPatchTelegramProxyLink(link, newHost);
+    if (link.startsWith('vpn://'))
+      return this.tryPatchAmneziaWgLink(link, newHost);
 
     return link;
+  }
+
+  private tryPatchVmessLink(link: string, newHost: string): string {
+    try {
+      const encodedConfig = link.substring(8);
+      const vmessConfig = JSON.parse(
+        Buffer.from(encodedConfig, 'base64').toString('utf-8'),
+      ) as { add: string };
+      vmessConfig.add = newHost;
+      return `vmess://${Buffer.from(JSON.stringify(vmessConfig)).toString('base64')}`;
+    } catch {
+      return link;
+    }
+  }
+
+  private tryPatchTelegramProxyLink(link: string, newHost: string): string {
+    try {
+      const proxyUrl = new URL(link);
+      proxyUrl.searchParams.set('server', newHost);
+      return proxyUrl.toString();
+    } catch {
+      return link;
+    }
+  }
+
+  private tryPatchAmneziaWgLink(link: string, newHost: string): string {
+    try {
+      const vpnConfig = Buffer.from(
+        link.slice('vpn://'.length),
+        'base64url',
+      ).toString('utf8');
+      const relayEndpoint = newHost.includes(':') ? `[${newHost}]` : newHost;
+      const patchedConfig = vpnConfig.replace(
+        /^(Endpoint\s*=\s*)(?:\[[^\]]+\]|[^:\r\n]+):(\d+)\s*$/m,
+        `$1${relayEndpoint}:$2`,
+      );
+      if (patchedConfig === vpnConfig) return link;
+      return `vpn://${Buffer.from(patchedConfig, 'utf8').toString('base64url')}`;
+    } catch {
+      return link;
+    }
+  }
+
+  private buildPreviewData(
+    inbounds: Array<{ protocol?: string; link?: string | null }>,
+  ): Pick<
+    SubscriptionPreviewData,
+    'subscriptionLinks' | 'amneziaLinks' | 'telegramProxyLinks'
+  > {
+    const groupedLinks = {
+      subscriptionLinks: [] as string[],
+      amneziaLinks: [] as string[],
+      telegramProxyLinks: [] as string[],
+    };
+
+    for (const inbound of inbounds) {
+      const link = inbound.link?.trim();
+      if (!link) continue;
+
+      if (
+        inbound.protocol === 'amneziawg' &&
+        link.toLowerCase().startsWith('vpn://')
+      ) {
+        groupedLinks.amneziaLinks.push(link);
+        continue;
+      }
+
+      if (
+        inbound.protocol === 'mtproto' &&
+        link.toLowerCase().startsWith('tg://proxy?')
+      ) {
+        groupedLinks.telegramProxyLinks.push(link);
+        continue;
+      }
+
+      groupedLinks.subscriptionLinks.push(link);
+    }
+
+    return groupedLinks;
   }
 }

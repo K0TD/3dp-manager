@@ -1,505 +1,320 @@
-/**
- * Генерирует HTML-страницу для отображения подписки с QR-кодом
- * @param currentUrl URL текущей подписки
- * @param qrDataUrl Data URL QR-кода
- * @param base64Config Base64-кодированная конфигурация подписки
- * @param subscriptionName Название подписки
- * @returns HTML-строка
- */
-export function generateSubscriptionHtmlWithQr(
-  currentUrl: string,
-  qrDataUrl: string,
-  base64Config: string,
-  subscriptionName: string = 'Ваша подписка',
-): string {
-  return `
-    <!DOCTYPE html>
-    <html lang="ru">
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>${subscriptionName} | 3DP-MANAGER</title>
-      <style>
-        :root {
-          --bg-default: #f3f4f6;
-          --bg-paper: #ffffff;
-          --text-primary: #111827;
-          --text-secondary: #6b7280;
-          --border-color: #e5e7eb;
-          --card-shadow: 0 4px 20px rgba(0,0,0,0.1);
-          --qr-box-bg: #fff;
-          --qr-box-border: #eee;
-          --link-box-bg: #f5f5f5;
-          --link-box-border: #e0e0e0;
-          --button-bg: #1976d2;
-          --button-hover: #1565c0;
-          --button-success: #2e7d32;
-          --error-color: #ef4444;
-        }
-
-        [data-theme="dark"] {
-          --bg-default: #0B0F19;
-          --bg-paper: #111827;
-          --text-primary: #f9fafb;
-          --text-secondary: #9ca3af;
-          --border-color: #374151;
-          --card-shadow: 0 4px 20px rgba(0,0,0,0.4);
-          --qr-box-bg: #1f2937;
-          --qr-box-border: #374151;
-          --link-box-bg: #1f2937;
-          --link-box-border: #4b5563;
-          --button-bg: #1976d2;
-          --button-hover: #2563eb;
-          --button-success: #2e7d32;
-          --error-color: #f87171;
-        }
-
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-
-        body {
-          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-          background-color: var(--bg-default);
-          color: var(--text-primary);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          height: 100vh;
-          transition: background-color 0.3s ease, color 0.3s ease;
-        }
-
-        .card {
-          background: var(--bg-paper);
-          padding: 2rem;
-          border-radius: 16px;
-          box-shadow: var(--card-shadow);
-          text-align: center;
-          max-width: 400px;
-          width: 90%;
-          border: 1px solid var(--border-color);
-          transition: background-color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
-        }
-
-        h2 { margin-top: 0; color: var(--text-primary); }
-
-        .qr-box {
-          background: var(--qr-box-bg);
-          padding: 10px;
-          border: 1px solid var(--qr-box-border);
-          border-radius: 8px;
-          display: inline-block;
-          margin: 20px 0;
-          transition: background-color 0.3s ease, border-color 0.3s ease;
-        }
-
-        .link-box {
-          background: var(--link-box-bg);
-          padding: 10px;
-          border-radius: 6px;
-          font-family: monospace;
-          word-break: break-all;
-          font-size: 12px;
-          color: var(--text-secondary);
-          margin-bottom: 20px;
-          border: 1px solid var(--link-box-border);
-          transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease;
-        }
-
-        .action-btn {
-          background-color: var(--button-bg);
-          color: white;
-          border: none;
-          padding: 12px 24px;
-          border-radius: 8px;
-          font-size: 16px;
-          cursor: pointer;
-          transition: background-color 0.2s;
-          width: 100%;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 8px;
-        }
-
-        .action-btn:hover { background-color: var(--button-hover); }
-        .action-btn:active { transform: scale(0.98); }
-
-        .theme-toggle {
-          position: fixed;
-          top: 20px;
-          right: 20px;
-          background-color: var(--bg-paper);
-          color: var(--text-primary);
-          border: 1px solid var(--border-color);
-          width: 44px;
-          height: 44px;
-          border-radius: 50%;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          cursor: pointer;
-          box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-          transition: background-color 0.3s, color 0.3s, border-color 0.3s;
-          padding: 0;
-          z-index: 1000;
-        }
-        
-        .theme-toggle:hover {
-          background-color: var(--link-box-bg);
-        }
-
-        .theme-toggle svg {
-          width: 24px;
-          height: 24px;
-        }
-
-        .note {
-          margin-top: 20px;
-          font-size: 12px;
-          color: var(--text-secondary);
-          transition: color 0.3s ease;
-        }
-
-        .header-icon {
-          width: 64px;
-          height: 64px;
-          margin: 0 auto 20px;
-          color: var(--button-bg);
-        }
-
-        #subscription-links { display: none; }
-      </style>
-    </head>
-    <body>
-      <!-- Кнопка смены темы -->
-      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Переключить тему">
-        <svg id="icon-sun" style="display: none;" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
-        </svg>
-        <svg id="icon-moon" style="display: none;" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-        </svg>
-      </button>
-
-      <div class="card">
-        <svg class="header-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0" />
-        </svg>
-        <h2>${subscriptionName}</h2>
-        <p style="color: var(--text-secondary); line-height: 1.5; margin-bottom: 12px;">
-          Отсканируйте QR-код в приложениях<br>Happ, v2RayTun или Streisand
-        </p>
-
-        <div class="qr-box">
-          <img src="${qrDataUrl}" alt="QR Code" />
-        </div>
-
-        <div class="link-box" id="link-text">${currentUrl}</div>
-
-        <button class="action-btn" onclick="copyLink()">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z"/></svg>
-          Копировать ссылку
-        </button>
-
-        <div class="note">Для автоматического обновления конфигов<br>используйте эту ссылку</div>
-      </div>
-      <textarea id="subscription-links">${base64Config}</textarea>
-
-      <script>
-        // Функция применения темы
-        function applyTheme() {
-          let themeMode = localStorage.getItem('themeMode');
-          
-          // ТЁМНАЯ ТЕМА ПО УМОЛЧАНИЮ, если значение не задано
-          if (!themeMode) {
-            themeMode = 'dark';
-            localStorage.setItem('themeMode', 'dark');
-          }
-
-          const systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-          const isDark = themeMode === 'dark' || (themeMode === 'system' && systemDark);
-          
-          if (isDark) {
-            document.documentElement.setAttribute('data-theme', 'dark');
-            document.getElementById('icon-sun').style.display = 'block';
-            document.getElementById('icon-moon').style.display = 'none';
-          } else {
-            document.documentElement.setAttribute('data-theme', 'light');
-            document.getElementById('icon-sun').style.display = 'none';
-            document.getElementById('icon-moon').style.display = 'block';
-          }
-        }
-
-        // Глобальная функция переключения темы по кнопке
-        function toggleTheme() {
-          const currentTheme = document.documentElement.getAttribute('data-theme');
-          const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-          localStorage.setItem('themeMode', newTheme);
-          applyTheme();
-        }
-
-        // Инициализация при загрузке
-        (function() {
-          applyTheme();
-
-          // Слушаем изменения темы из других вкладок
-          window.addEventListener('storage', (e) => {
-            if (e.key === 'themeMode') {
-              applyTheme();
-            }
-          });
-
-          // Слушаем системные настройки (если выбрана системная тема)
-          window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-            const themeMode = localStorage.getItem('themeMode');
-            if (themeMode === 'system') {
-              applyTheme();
-            }
-          });
-        })();
-
-        function copyLink() {
-          const link = document.getElementById('link-text').innerText;
-          let copied = false;
-          if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(link).then(() => { copied = true; });
-          }
-          if (!copied) {
-            const ta = document.createElement('textarea');
-            ta.value = link;
-            ta.style.position = 'fixed';
-            ta.style.left = '-9999px';
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            document.body.removeChild(ta);
-          }
-          const btn = document.querySelector('.action-btn');
-          const originalText = btn.innerHTML;
-          btn.innerHTML = 'Скопировано!';
-          btn.style.backgroundColor = 'var(--button-success)';
-          setTimeout(() => {
-            btn.innerHTML = originalText;
-            btn.style.backgroundColor = 'var(--button-bg)';
-          }, 2000);
-        }
-      </script>
-    </body>
-    </html>
-  `;
+export interface SubscriptionPreviewData {
+  currentUrl: string;
+  qrDataUrl: string;
+  subscriptionName: string;
+  subscriptionLinks: string[];
+  amneziaLinks: string[];
+  telegramProxyLinks: string[];
 }
 
-/**
- * Генерирует HTML-страницу с ошибкой
- * @param title Заголовок ошибки
- * @param message Сообщение об ошибке
- * @returns HTML-строка
- */
-export function generateErrorHtml(
-  title: string = 'Ошибка',
-  message: string = 'Произошла ошибка',
+function escapeHtml(rawText: string): string {
+  return rawText
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function connectionWord(count: number): string {
+  const lastTwoDigits = count % 100;
+  const lastDigit = count % 10;
+  if (lastTwoDigits >= 11 && lastTwoDigits <= 14) return 'подключений';
+  if (lastDigit === 1) return 'подключение';
+  if (lastDigit >= 2 && lastDigit <= 4) return 'подключения';
+  return 'подключений';
+}
+
+function renderConnectionActions(
+  links: string[],
+  openLabel: string,
+  copyLabel: string,
 ): string {
+  return links
+    .map((link, index) => {
+      const safeLink = escapeHtml(link);
+      const suffix = links.length > 1 ? ` ${index + 1}` : '';
+      return `
+        <div class="connection-action">
+          <span class="connection-index" aria-hidden="true">${String(index + 1).padStart(2, '0')}</span>
+          <a class="button button--primary" href="${safeLink}">${openLabel}${suffix}</a>
+          <button class="button button--ghost copy-special" type="button" data-copy="${safeLink}">${copyLabel}</button>
+        </div>`;
+    })
+    .join('');
+}
+
+function renderAmneziaActions(links: string[]): string {
+  return links
+    .map((link, index) => {
+      const safeLink = escapeHtml(link);
+      const vpnConfig = Buffer.from(
+        link.slice('vpn://'.length),
+        'base64url',
+      ).toString('utf8');
+      const configDownload =
+        vpnConfig.startsWith('[Interface]') && vpnConfig.includes('[Peer]')
+          ? `data:text/plain;charset=utf-8,${encodeURIComponent(vpnConfig)}`
+          : '';
+      const suffix = links.length > 1 ? ` ${index + 1}` : '';
+
+      return `
+        <div class="connection-action">
+          <span class="connection-index" aria-hidden="true">${String(index + 1).padStart(2, '0')}</span>
+          <a class="button button--primary" href="${safeLink}">Открыть в AmneziaVPN${suffix}</a>
+          ${configDownload ? `<a class="button button--ghost" href="${escapeHtml(configDownload)}" download="amneziawg-${index + 1}.conf">Скачать .conf для AmneziaWG</a>` : ''}
+          <button class="button button--ghost copy-special" type="button" data-copy="${safeLink}">Копировать ключ</button>
+        </div>`;
+    })
+    .join('');
+}
+
+function renderAmneziaGuide(links: string[]): string {
+  if (links.length === 0) return '';
   return `
-    <!DOCTYPE html>
-    <html lang="ru">
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>${title} | 3DP-MANAGER</title>
-      <style>
-        :root {
-          --bg-default: #f3f4f6;
-          --bg-paper: #ffffff;
-          --text-primary: #111827;
-          --text-secondary: #6b7280;
-          --border-color: #e5e7eb;
-          --card-shadow: 0 4px 20px rgba(0,0,0,0.1);
-          --error-color: #ef4444;
-          --error-bg: #fee2e2;
-        }
+    <article class="guide guide--amnezia">
+      <header class="guide-header">
+        <div><p class="eyebrow">Отдельный импорт</p><h2>AmneziaWG</h2></div>
+        <span class="count-badge">${links.length} ${connectionWord(links.length)}</span>
+      </header>
+      <p class="guide-lead">Этот тип не добавляется через обычную ссылку подписки. Выберите приложение, которым пользуетесь.</p>
+      <ol class="steps">
+        <li><span>1</span><p>Для <strong>AmneziaVPN</strong> нажмите кнопку открытия или скопируйте ключ и добавьте его через «＋».</p></li>
+        <li><span>2</span><p>Для отдельного приложения <strong>AmneziaWG</strong> скачайте файл <code>.conf</code>.</p></li>
+        <li><span>3</span><p>В AmneziaWG выберите <strong>«Импорт туннелей из файла»</strong> и укажите скачанный файл.</p></li>
+      </ol>
+      <div class="connection-list">${renderAmneziaActions(links)}</div>
+    </article>`;
+}
 
-        [data-theme="dark"] {
-          --bg-default: #0B0F19;
-          --bg-paper: #111827;
-          --text-primary: #f9fafb;
-          --text-secondary: #9ca3af;
-          --border-color: #374151;
-          --card-shadow: 0 4px 20px rgba(0,0,0,0.4);
-          --error-color: #f87171;
-          --error-bg: #7f1d1d;
-        }
+function renderTelegramGuide(links: string[]): string {
+  if (links.length === 0) return '';
+  return `
+    <article class="guide guide--telegram">
+      <header class="guide-header">
+        <div><p class="eyebrow">Отдельное подключение</p><h2>Telegram Proxy</h2></div>
+        <span class="count-badge">${links.length} ${connectionWord(links.length)}</span>
+      </header>
+      <p class="guide-lead">TGProxy подключается внутри Telegram и не импортируется VPN-клиентами из общей подписки.</p>
+      <ol class="steps">
+        <li><span>1</span><p>Убедитесь, что Telegram установлен на этом устройстве.</p></li>
+        <li><span>2</span><p>Нажмите <strong>«Добавить в Telegram»</strong> и подтвердите открытие приложения.</p></li>
+        <li><span>3</span><p>В Telegram проверьте адрес и включите предложенный прокси.</p></li>
+      </ol>
+      <div class="connection-list">${renderConnectionActions(links, 'Добавить в Telegram', 'Копировать ссылку')}</div>
+    </article>`;
+}
 
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+/** Генерирует публичное превью подписки и инструкции для специальных подключений. */
+export function generateSubscriptionHtmlWithQr(
+  preview: SubscriptionPreviewData,
+): string {
+  const safeName = escapeHtml(preview.subscriptionName || 'Ваша подписка');
+  const safeUrl = escapeHtml(preview.currentUrl);
+  const safeQrDataUrl = escapeHtml(preview.qrDataUrl);
+  const regularCount = preview.subscriptionLinks.length;
+  const specialCount =
+    preview.amneziaLinks.length + preview.telegramProxyLinks.length;
+  const hasRegularConnections = regularCount > 0;
+  const heroMessage = hasRegularConnections
+    ? specialCount > 0
+      ? 'Добавьте основные подключения одной ссылкой. AmneziaWG и Telegram Proxy подключаются отдельно — инструкции уже ниже.'
+      : 'Отсканируйте QR-код в VPN-клиенте или скопируйте обновляемую ссылку подписки.'
+    : specialCount > 0
+      ? 'В этой подписке есть специальные подключения. Откройте её на нужном устройстве и следуйте инструкциям ниже.'
+      : 'Активных подключений пока нет. Вернитесь к этой странице после генерации подписки.';
 
-        body {
-          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-          background-color: var(--bg-default);
-          color: var(--text-primary);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          height: 100vh;
-          transition: background-color 0.3s ease, color 0.3s ease;
-        }
-
-        .card {
-          background: var(--bg-paper);
-          padding: 2rem;
-          border-radius: 16px;
-          box-shadow: var(--card-shadow);
-          text-align: center;
-          max-width: 400px;
-          width: 90%;
-          border: 1px solid var(--border-color);
-          transition: background-color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
-        }
-
-        h2 {
-          margin-top: 0;
-          color: var(--text-primary);
-        }
-
-        .error-icon {
-          width: 64px;
-          height: 64px;
-          margin: 0 auto 20px;
-          color: var(--error-color);
-        }
-
-        .error-message {
-          background: var(--error-bg);
-          color: var(--error-color);
-          padding: 1rem;
-          border-radius: 8px;
-          margin: 20px 0;
-          font-size: 14px;
-        }
-
-        .home-link {
-          display: inline-block;
-          margin-top: 20px;
-          padding: 12px 24px;
-          background-color: var(--error-color);
-          color: white;
-          text-decoration: none;
-          border-radius: 8px;
-          font-size: 16px;
-          transition: opacity 0.2s;
-        }
-
-        .home-link:hover {
-          opacity: 0.9;
-        }
-
-        .theme-toggle {
-          position: fixed;
-          top: 20px;
-          right: 20px;
-          background-color: var(--bg-paper);
-          color: var(--text-primary);
-          border: 1px solid var(--border-color);
-          width: 44px;
-          height: 44px;
-          border-radius: 50%;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          cursor: pointer;
-          box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-          transition: background-color 0.3s, color 0.3s, border-color 0.3s;
-          padding: 0;
-          z-index: 1000;
-        }
-        
-        .theme-toggle:hover {
-          background-color: var(--error-bg);
-        }
-
-        .theme-toggle svg {
-          width: 24px;
-          height: 24px;
-        }
-
-        .note {
-          margin-top: 20px;
-          font-size: 12px;
-          color: var(--text-secondary);
-          transition: color 0.3s ease;
-        }
-      </style>
-    </head>
-    <body>
-      <!-- Кнопка смены темы -->
-      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Переключить тему">
-        <svg id="icon-sun" style="display: none;" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
-        </svg>
-        <svg id="icon-moon" style="display: none;" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-        </svg>
+  return `<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark light">
+  <title>${safeName} · 3DP Manager</title>
+  <style>
+    :root {
+      --bg: #e9f0f2; --paper: #f8fbfc; --raised: #fff; --ink: #10252d; --muted: #58717a;
+      --line: #c9d7db; --cyan: #006f91; --cyan-soft: #d7edf3; --green: #167b50;
+      --amber: #9b5c00; --shadow: 0 24px 70px rgba(23,54,64,.12); --radius: 18px;
+    }
+    [data-theme="dark"] {
+      --bg: #071014; --paper: #0d191e; --raised: #122229; --ink: #edf8fa; --muted: #9bb0b7;
+      --line: #294049; --cyan: #53d8ff; --cyan-soft: #12333e; --green: #56d69a;
+      --amber: #ffc45e; --shadow: 0 28px 80px rgba(0,0,0,.34);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0; min-width: 320px; min-height: 100vh; color: var(--ink);
+      background: radial-gradient(circle at 88% 2%, color-mix(in srgb,var(--cyan) 13%,transparent), transparent 32rem),
+        linear-gradient(120deg,transparent 0 49.8%,color-mix(in srgb,var(--line) 45%,transparent) 50%,transparent 50.2%), var(--bg);
+      font-family: "IBM Plex Sans", "Aptos", sans-serif; transition: color .2s ease, background-color .2s ease;
+    }
+    button, a { font: inherit; }
+    button:focus-visible, a:focus-visible { outline: 3px solid color-mix(in srgb,var(--cyan) 55%,transparent); outline-offset: 3px; }
+    .shell { width: min(1120px,calc(100% - 32px)); margin: 0 auto; padding: 28px 0 72px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px; }
+    .brand { display: flex; align-items: center; gap: 12px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .brand-mark { width: 30px; height: 30px; display: grid; place-items: center; color: var(--cyan); border: 1px solid var(--cyan); border-radius: 8px 2px; }
+    .theme-toggle { width: 42px; height: 42px; display: grid; place-items: center; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
+    .theme-toggle:hover { border-color: var(--cyan); }
+    .theme-toggle svg { width: 20px; height: 20px; }
+    .hero { position: relative; display: grid; grid-template-columns: minmax(0,1.25fr) minmax(270px,.75fr); overflow: hidden; background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+    .hero::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 5px; background: var(--cyan); }
+    .hero-copy { padding: clamp(28px,5vw,58px); align-self: center; }
+    .eyebrow { margin: 0 0 10px; color: var(--cyan); font-size: .72rem; font-weight: 800; letter-spacing: .15em; text-transform: uppercase; }
+    h1, h2 { font-family: "Unbounded", "IBM Plex Sans", sans-serif; }
+    h1 { max-width: 720px; margin: 0; font-size: clamp(2rem,5vw,4.8rem); line-height: 1.02; letter-spacing: -.055em; overflow-wrap: anywhere; }
+    h2 { margin: 0; font-size: clamp(1.25rem,2.6vw,2rem); letter-spacing: -.035em; }
+    .hero-lead { max-width: 600px; margin: 22px 0 0; color: var(--muted); font-size: clamp(1rem,1.8vw,1.15rem); line-height: 1.65; }
+    .stats { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
+    .stat { padding: 7px 11px; color: var(--muted); background: var(--raised); border: 1px solid var(--line); border-radius: 999px; font-size: .82rem; }
+    .stat strong { color: var(--ink); }
+    .qr-panel { position: relative; display: grid; place-items: center; padding: 40px 32px; background: var(--cyan-soft); border-left: 1px solid var(--line); text-align: center; }
+    .qr-panel::after { content: "SCAN / OPEN"; position: absolute; right: -33px; top: 74px; color: var(--cyan); font-size: .64rem; font-weight: 800; letter-spacing: .2em; transform: rotate(90deg); }
+    .qr-frame { width: min(230px,74vw); aspect-ratio: 1; padding: 13px; background: #fff; border: 1px solid rgba(0,0,0,.12); border-radius: 13px; box-shadow: 0 14px 35px rgba(0,0,0,.12); }
+    .qr-frame img { display: block; width: 100%; height: 100%; }
+    .qr-title { margin: 20px 0 5px; font-weight: 800; }
+    .qr-note { max-width: 250px; margin: 0; color: var(--muted); font-size: .86rem; line-height: 1.45; }
+    .subscription-box { margin-top: 18px; padding: 16px; background: var(--raised); border: 1px solid var(--line); border-radius: 12px; }
+    .url { overflow: hidden; margin: 0 0 12px; color: var(--muted); font-family: "IBM Plex Mono", monospace; font-size: .78rem; text-overflow: ellipsis; white-space: nowrap; }
+    .button-row { display: flex; flex-wrap: wrap; gap: 10px; }
+    .button { min-height: 42px; display: inline-flex; align-items: center; justify-content: center; padding: 10px 15px; border: 1px solid transparent; border-radius: 8px; font-weight: 800; text-decoration: none; cursor: pointer; transition: transform .15s ease,border-color .15s ease; }
+    .button:hover { transform: translateY(-1px); }
+    .button--primary { color: #041216; background: var(--cyan); }
+    [data-theme="light"] .button--primary { color: #fff; }
+    .button--ghost { color: var(--ink); background: transparent; border-color: var(--line); }
+    .button--ghost:hover { border-color: var(--cyan); }
+    .guides { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 20px; margin-top: 20px; }
+    .guide { --guide-accent: var(--cyan); position: relative; overflow: hidden; padding: clamp(24px,4vw,38px); background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 18px 48px rgba(23,54,64,.08); }
+    .guide::before { content: ""; position: absolute; inset: 0 0 auto; height: 4px; background: var(--guide-accent); }
+    .guide--amnezia { --guide-accent: var(--amber); }
+    .guide-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+    .count-badge { flex: 0 0 auto; padding: 6px 9px; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; font-size: .75rem; font-weight: 700; }
+    .guide-lead { margin: 18px 0 26px; color: var(--muted); line-height: 1.6; }
+    .steps { display: grid; gap: 16px; margin: 0; padding: 0; list-style: none; }
+    .steps li { display: grid; grid-template-columns: 30px 1fr; gap: 12px; align-items: start; }
+    .steps li > span { width: 30px; height: 30px; display: grid; place-items: center; color: var(--guide-accent); border: 1px solid var(--guide-accent); border-radius: 50%; font: 800 .74rem "IBM Plex Mono",monospace; }
+    .steps p { margin: 3px 0 0; color: var(--muted); line-height: 1.5; }
+    .steps strong { color: var(--ink); }
+    .connection-list { display: grid; gap: 10px; margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--line); }
+    .connection-action { display: grid; grid-template-columns: 34px minmax(0,1fr); gap: 8px; }
+    .connection-action .button--ghost { grid-column: 2; }
+    .connection-index { grid-row: 1 / span 2; display: flex; align-items: center; justify-content: center; color: var(--muted); font: .7rem "IBM Plex Mono",monospace; border-right: 1px solid var(--line); }
+    .empty-note { margin: 20px 0 0; padding: 14px 16px; color: var(--muted); background: var(--raised); border-left: 3px solid var(--amber); line-height: 1.5; }
+    .footer { display: flex; justify-content: space-between; gap: 20px; margin-top: 28px; color: var(--muted); font-size: .78rem; }
+    .toast { position: fixed; left: 50%; bottom: 24px; z-index: 10; padding: 11px 16px; color: #041216; background: var(--green); border-radius: 8px; font-weight: 800; transform: translate(-50%,20px); opacity: 0; pointer-events: none; transition: .2s ease; }
+    .toast.is-visible { transform: translate(-50%,0); opacity: 1; }
+    @media (max-width: 780px) {
+      .shell { width: min(100% - 20px,620px); padding-top: 16px; }
+      .hero, .guides { grid-template-columns: 1fr; }
+      .hero-copy { padding: 34px 25px 30px; }
+      .qr-panel { border-top: 1px solid var(--line); border-left: 0; }
+      .qr-panel::after { display: none; }
+      .guide { padding: 26px 22px; }
+      .footer { flex-direction: column; }
+    }
+    @media (prefers-reduced-motion: reduce) { *,*::before,*::after { scroll-behavior: auto !important; transition-duration: .01ms !important; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <nav class="topbar" aria-label="Панель страницы">
+      <div class="brand"><span class="brand-mark">3D</span><span>3DP Manager</span></div>
+      <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Переключить тему">
+        <svg aria-hidden="true" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M12 3v2m0 14v2M3 12h2m14 0h2m-3.34-6.66-1.42 1.42M7.76 16.24l-1.42 1.42m0-12.32 1.42 1.42m8.48 9.48 1.42 1.42M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z"/></svg>
       </button>
-
-      <div class="card">
-        <svg class="error-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v8m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-        </svg>
-        <h2>${title}</h2>
-        <div class="error-message">${message}</div>
-        <p class="note">Подписка не найдена или отключена</p>
-        <a href="/" class="home-link">На главную</a>
+    </nav>
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Маршрут готов</p>
+        <h1>${safeName}</h1>
+        <p class="hero-lead">${heroMessage}</p>
+        <div class="stats"><span class="stat"><strong>${regularCount}</strong> в общей подписке</span><span class="stat"><strong>${specialCount}</strong> отдельных</span></div>
+        ${
+          hasRegularConnections
+            ? `<div class="subscription-box">
+          <p class="url" title="${safeUrl}">${safeUrl}</p>
+          <div class="button-row">
+            <button class="button button--primary copy-special" type="button" data-copy="${safeUrl}">Копировать ссылку</button>
+          </div>
+        </div>`
+            : '<p class="empty-note">Обычных VPN-конфигураций нет: общую ссылку импортировать в VPN-клиент не нужно.</p>'
+        }
       </div>
+      <aside class="qr-panel"><div>
+        <div class="qr-frame"><img src="${safeQrDataUrl}" width="204" height="204" alt="QR-код страницы подписки"></div>
+        <p class="qr-title">${hasRegularConnections ? 'Сканируйте в VPN-клиенте' : 'Откройте на телефоне'}</p>
+        <p class="qr-note">${hasRegularConnections ? 'QR содержит обновляемую ссылку подписки.' : 'QR откроет эту страницу с кнопками подключения.'}</p>
+      </div></aside>
+    </section>
+    <section class="guides" aria-label="Инструкции по специальным подключениям">
+      ${renderAmneziaGuide(preview.amneziaLinks)}
+      ${renderTelegramGuide(preview.telegramProxyLinks)}
+    </section>
+    <footer class="footer"><span>Ссылки обновляются автоматически вместе с подпиской.</span><span>Не передавайте эту страницу посторонним.</span></footer>
+  </main>
+  <div class="toast" id="toast" role="status" aria-live="polite">Скопировано</div>
+  <script>
+    (function () {
+      var root = document.documentElement;
+      var toggle = document.getElementById('theme-toggle');
+      var toast = document.getElementById('toast');
+      var toastTimer;
+      function preferredTheme() {
+        var stored = localStorage.getItem('themeMode');
+        if (stored === 'light' || stored === 'dark') return stored;
+        return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      }
+      function applyTheme(theme) { root.setAttribute('data-theme', theme); }
+      function showToast(message) {
+        toast.textContent = message; toast.classList.add('is-visible'); window.clearTimeout(toastTimer);
+        toastTimer = window.setTimeout(function () { toast.classList.remove('is-visible'); }, 1800);
+      }
+      function fallbackCopy(textToCopy) {
+        var textarea = document.createElement('textarea'); textarea.value = textToCopy; textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed'; textarea.style.opacity = '0'; document.body.appendChild(textarea); textarea.select();
+        var copied = document.execCommand('copy'); textarea.remove(); return copied;
+      }
+      function copy(textToCopy, button) {
+        var promise = navigator.clipboard && window.isSecureContext ? navigator.clipboard.writeText(textToCopy).then(function () { return true; }) : Promise.resolve(fallbackCopy(textToCopy));
+        promise.then(function (copied) {
+          if (!copied) throw new Error('copy failed');
+          var original = button.textContent; button.textContent = 'Скопировано'; showToast('Ссылка скопирована');
+          window.setTimeout(function () { button.textContent = original; }, 1600);
+        }).catch(function () { showToast('Не удалось скопировать'); });
+      }
+      applyTheme(preferredTheme());
+      toggle.addEventListener('click', function () {
+        var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+        localStorage.setItem('themeMode', next); applyTheme(next);
+      });
+      document.addEventListener('click', function (event) {
+        var button = event.target.closest('.copy-special'); if (!button) return;
+        copy(button.dataset.copy || '', button);
+      });
+    })();
+  </script>
+</body>
+</html>`;
+}
 
-      <script>
-        // Функция применения темы
-        function applyTheme() {
-          let themeMode = localStorage.getItem('themeMode');
-          
-          // ТЁМНАЯ ТЕМА ПО УМОЛЧАНИЮ
-          if (!themeMode) {
-            themeMode = 'dark';
-            localStorage.setItem('themeMode', 'dark');
-          }
-
-          const systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-          const isDark = themeMode === 'dark' || (themeMode === 'system' && systemDark);
-          
-          if (isDark) {
-            document.documentElement.setAttribute('data-theme', 'dark');
-            document.getElementById('icon-sun').style.display = 'block';
-            document.getElementById('icon-moon').style.display = 'none';
-          } else {
-            document.documentElement.setAttribute('data-theme', 'light');
-            document.getElementById('icon-sun').style.display = 'none';
-            document.getElementById('icon-moon').style.display = 'block';
-          }
-        }
-
-        // Глобальная функция переключения темы по кнопке
-        function toggleTheme() {
-          const currentTheme = document.documentElement.getAttribute('data-theme');
-          const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-          localStorage.setItem('themeMode', newTheme);
-          applyTheme();
-        }
-
-        // Инициализация при загрузке
-        (function() {
-          applyTheme();
-
-          window.addEventListener('storage', (e) => {
-            if (e.key === 'themeMode') {
-              applyTheme();
-            }
-          });
-
-          window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-            const themeMode = localStorage.getItem('themeMode');
-            if (themeMode === 'system') {
-              applyTheme();
-            }
-          });
-        })();
-      </script>
-    </body>
-    </html>
-  `;
+/** Генерирует HTML-страницу с безопасно экранированной ошибкой. */
+export function generateErrorHtml(
+  title = 'Ошибка',
+  message = 'Произошла ошибка',
+): string {
+  const safeTitle = escapeHtml(title);
+  const safeMessage = escapeHtml(message);
+  return `<!DOCTYPE html>
+<html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>${safeTitle} · 3DP Manager</title><style>
+  :root { color-scheme: dark; --bg:#071014; --paper:#0d191e; --ink:#edf8fa; --muted:#9bb0b7; --line:#294049; --red:#ff7b7b; }
+  * { box-sizing:border-box; } body { min-height:100vh; display:grid; place-items:center; margin:0; padding:20px; color:var(--ink); background:radial-gradient(circle at 75% 5%,#26171a,transparent 36rem),var(--bg); font-family:"IBM Plex Sans","Aptos",sans-serif; }
+  .card { width:min(480px,100%); padding:38px; background:var(--paper); border:1px solid var(--line); border-top:4px solid var(--red); border-radius:16px; box-shadow:0 25px 70px rgba(0,0,0,.35); }
+  .code { color:var(--red); font:800 .74rem "IBM Plex Mono",monospace; letter-spacing:.14em; text-transform:uppercase; }
+  h1 { margin:10px 0 14px; font:700 clamp(1.7rem,7vw,2.7rem)/1.08 "Unbounded",sans-serif; letter-spacing:-.04em; overflow-wrap:anywhere; }
+  p { margin:0; color:var(--muted); line-height:1.6; } a { display:inline-flex; margin-top:26px; padding:11px 16px; color:#071014; background:var(--red); border-radius:8px; font-weight:800; text-decoration:none; }
+  a:focus-visible { outline:3px solid rgba(255,123,123,.45); outline-offset:3px; }
+</style></head><body><main class="card"><div class="code">Subscription unavailable</div><h1>${safeTitle}</h1><p>${safeMessage}</p><a href="/">Вернуться в панель</a></main></body></html>`;
 }
