@@ -21,15 +21,7 @@ export interface XuiInbound {
   listen: string;
 }
 
-export interface XuiInboundRaw {
-  id?: number;
-  enable?: boolean;
-  port: number;
-  protocol: string;
-  settings: string;
-  streamSettings: string;
-  remark?: string;
-}
+export type { XuiInboundRaw } from '../inbounds/xui-inbound.types';
 
 export interface XuiInboundClient {
   id?: string;
@@ -70,4 +62,5 @@ export interface XuiDiscoveredNode {
   port: number;
   protocol: 'http' | 'https';
   version?: string;
+  basePath?: string;
 }

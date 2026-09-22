@@ -1,171 +1,348 @@
-import { NestFactory } from '@nestjs/core';
-import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { v4 as uuidv4 } from 'uuid';
-import { AppModule } from '../src/app.module';
+/**
+ * Explicit live check, without booting Nest or its rotation/cleanup jobs.
+ * XUI_CHECK_CONFIG: path to a mode-0600 JSON file {url,token}.
+ * XRAY_BINARY: client binary matching the target panel's Xray.
+ * Optional: SMOKE_TYPES (comma-separated), SMOKE_SNI, SMOKE_ADDRESS,
+ * SMOKE_TARGET (HTTPS URL), SMOKE_ARTIFACT_DIR (private directory).
+ */
+import 'reflect-metadata';
+import {
+  readFileSync,
+  mkdtempSync,
+  writeFileSync,
+  rmSync,
+  mkdirSync,
+} from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { randomInt, randomUUID } from 'crypto';
+import { spawn, execFile } from 'child_process';
+import { promisify } from 'util';
+import { createServer } from 'net';
+import { once } from 'events';
 import { InboundBuilderService } from '../src/inbounds/inbound-builder.service';
 import { XuiInboundRaw } from '../src/inbounds/xui-inbound.types';
-import { Node } from '../src/nodes/entities/node.entity';
 import { XuiService } from '../src/xui/xui.service';
+import { Node, NodeAuthType } from '../src/nodes/entities/node.entity';
+import { SessionService } from '../src/session/session.service';
+import { Logger } from '@nestjs/common';
+import { safePanelMessage } from '../src/xui/xui-contract';
 
-const SNI = process.env.SMOKE_SNI || 'www.cloudflare.com';
+const runFile = promisify(execFile);
 
-type SmokeResult = {
-  type: string;
-  port: number;
-  success: boolean;
-  xuiId?: number | null;
-  deleted?: boolean;
-  error?: string;
-};
-
-const randomPort = () =>
-  Math.floor(Math.random() * (60000 - 20000 + 1)) + 20000;
-
-async function main() {
-  console.log('Starting inbound smoke test...');
-  const app = await NestFactory.createApplicationContext(AppModule, {
-    logger: ['error', 'warn', 'log'],
-  });
-  console.log('Application context is ready.');
-
-  const nodeRepo = app.get<Repository<Node>>(getRepositoryToken(Node));
-  const xuiService = app.get(XuiService);
-  const builder = app.get(InboundBuilderService);
-
-  const node = await nodeRepo
-    .createQueryBuilder('node')
-    .addSelect('node.password')
-    .addSelect('node.token')
-    .where('node.isMain = :isMain', { isMain: true })
-    .getOne();
-
-  if (!node) {
-    throw new Error('Main node not found');
+// Parse the published link, rather than copying credentials from the inbound:
+// this makes the traffic check detect broken links as well as bad server JSON.
+export function outboundFromLink(link: string): Record<string, any> {
+  if (link.startsWith('vmess://')) {
+    const v = JSON.parse(Buffer.from(link.slice(8), 'base64').toString());
+    return {
+      protocol: 'vmess',
+      settings: {
+        vnext: [
+          {
+            address: v.add,
+            port: Number(v.port),
+            users: [{ id: v.id, security: 'auto' }],
+          },
+        ],
+      },
+      streamSettings: { network: v.net, security: v.tls || 'none' },
+    };
   }
-  console.log(`Main node loaded: ${node.name}`);
-
-  const keys = await xuiService.getNewX25519Cert(node);
-  if (!keys) {
-    throw new Error('Could not get Reality keys from the main node');
+  const url = new URL(link);
+  const p = url.searchParams;
+  const address = url.hostname.replace(/^\[|\]$/g, '');
+  const port = Number(url.port);
+  const credential = decodeURIComponent(url.username);
+  if (url.protocol === 'ss:') {
+    const [method, ...password] = Buffer.from(credential, 'base64url')
+      .toString()
+      .split(':');
+    return {
+      protocol: 'shadowsocks',
+      settings: {
+        servers: [{ address, port, method, password: password.join(':') }],
+      },
+    };
   }
-  console.log('Reality keys received.');
-
-  const certificate = await xuiService.getWebCertificateFiles(node);
-  if (!certificate) {
-    throw new Error(
-      'Could not get panel TLS certificate paths from the main node',
-    );
+  const stream: Record<string, any> = {
+    network: p.get('type') || 'tcp',
+    security: p.get('security') || 'none',
+  };
+  if (stream.security === 'reality')
+    stream.realitySettings = {
+      serverName: p.get('sni'),
+      fingerprint: p.get('fp'),
+      publicKey: p.get('pbk'),
+      shortId: p.get('sid'),
+      spiderX: p.get('spx'),
+    };
+  if (stream.security === 'tls')
+    stream.tlsSettings = {
+      serverName: p.get('sni'),
+      fingerprint: p.get('fp') || 'chrome',
+      ...(p.has('alpn') ? { alpn: p.get('alpn')!.split(',') } : {}),
+    };
+  if (stream.network === 'ws')
+    stream.wsSettings = {
+      path: p.get('path') || '/',
+      host: p.get('host') || '',
+    };
+  if (stream.network === 'grpc')
+    stream.grpcSettings = {
+      serviceName: p.get('serviceName'),
+      authority: p.get('authority'),
+      multiMode: p.get('mode') === 'multi',
+    };
+  if (stream.network === 'xhttp')
+    stream.xhttpSettings = {
+      path: p.get('path'),
+      host: p.get('host'),
+      mode: p.get('mode') || 'auto',
+    };
+  if (url.protocol === 'hy2:') {
+    stream.network = 'hysteria';
+    stream.hysteriaSettings = { version: 2, auth: credential };
+    if (p.has('fm')) stream.finalmask = JSON.parse(p.get('fm')!);
+    return {
+      protocol: 'hysteria',
+      settings: { version: 2, address, port },
+      streamSettings: stream,
+    };
   }
-
-  const buildCases: Array<{
-    type: string;
-    build: (port: number, uuid: string) => XuiInboundRaw;
-  }> = [
-    {
-      type: 'vless-tcp-reality',
-      build: (port, uuid) =>
-        builder.buildVlessRealityTcp({ port, uuid, sni: SNI, ...keys }),
-    },
-    {
-      type: 'vless-xhttp-reality',
-      build: (port, uuid) =>
-        builder.buildVlessRealityXhttp({ port, uuid, sni: SNI, ...keys }),
-    },
-    {
-      type: 'vless-grpc-reality',
-      build: (port, uuid) =>
-        builder.buildVlessRealityGrpc({ port, uuid, sni: SNI, ...keys }),
-    },
-    {
-      type: 'vless-ws',
-      build: (port, uuid) => builder.buildVlessWs({ port, uuid, sni: SNI }),
-    },
-    {
-      type: 'vmess-tcp',
-      build: (port, uuid) => builder.buildVmessTcp({ port, uuid }),
-    },
-    {
-      type: 'shadowsocks-tcp',
-      build: (port, uuid) => builder.buildShadowsocksTcp({ port, uuid }),
-    },
-    {
-      type: 'trojan-tcp-reality',
-      build: (port, uuid) =>
-        builder.buildTrojanRealityTcp({ port, uuid, sni: SNI, ...keys }),
-    },
-    {
-      type: 'hysteria2-udp',
-      build: (port, uuid) =>
-        builder.buildHysteria2Inbound({
-          port,
-          uuid,
-          serverName: node.domain || new URL(node.url).hostname,
-          ...certificate,
-        }),
-    },
-    {
-      type: 'mtproto-faketls',
-      build: (port, uuid) =>
-        builder.buildMtprotoInbound({
-          port,
-          uuid,
-          fakeTlsDomain: SNI,
-        }),
-    },
-  ];
-
-  const results: SmokeResult[] = [];
-
-  for (const testCase of buildCases) {
-    const port = randomPort();
-    const uuid = uuidv4();
-    let xuiId: number | null = null;
-
-    try {
-      console.log(`Testing ${testCase.type} on port ${port}...`);
-      const config = testCase.build(port, uuid);
-      config.remark = `smoke-${testCase.type}-${Date.now()}`;
-      xuiId = await xuiService.addInbound(config, node);
-
-      if (xuiId) {
-        console.log(
-          `${testCase.type}: created with xuiId=${xuiId}; deleting...`,
-        );
-        await xuiService.deleteInbound(xuiId, node);
-      }
-
-      results.push({
-        type: testCase.type,
-        port,
-        success: Boolean(xuiId),
-        xuiId,
-        deleted: Boolean(xuiId),
-      });
-      console.log(`${testCase.type}: ${xuiId ? 'ok' : 'failed'}`);
-    } catch (error) {
-      if (xuiId) {
-        await xuiService.deleteInbound(xuiId, node);
-      }
-      results.push({
-        type: testCase.type,
-        port,
-        success: false,
-        xuiId,
-        deleted: Boolean(xuiId),
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
-  }
-
-  console.table(results);
-  await app.close();
-
-  const failed = results.filter((result) => !result.success);
-  process.exitCode = failed.length > 0 ? 1 : 0;
+  if (url.protocol === 'trojan:')
+    return {
+      protocol: 'trojan',
+      settings: { servers: [{ address, port, password: credential }] },
+      streamSettings: stream,
+    };
+  if (url.protocol === 'vless:')
+    return {
+      protocol: 'vless',
+      settings: {
+        vnext: [
+          {
+            address,
+            port,
+            users: [
+              { id: credential, encryption: 'none', flow: p.get('flow') || '' },
+            ],
+          },
+        ],
+      },
+      streamSettings: stream,
+    };
+  throw new Error(`No traffic adapter for ${url.protocol}`);
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exitCode = 1;
-});
+async function localPort(): Promise<number> {
+  const server = createServer();
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const port = (server.address() as { port: number }).port;
+  await new Promise<void>((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  );
+  return port;
+}
+
+export async function checkTraffic(
+  link: string,
+  binary: string,
+  target: string,
+): Promise<void> {
+  const directory = mkdtempSync(join(tmpdir(), '3dp-xray-smoke-'));
+  const port = await localPort();
+  const path = join(directory, 'client.json');
+  writeFileSync(
+    path,
+    JSON.stringify({
+      log: { loglevel: 'warning' },
+      inbounds: [
+        {
+          listen: '127.0.0.1',
+          port,
+          protocol: 'socks',
+          settings: { auth: 'noauth', udp: true },
+        },
+      ],
+      outbounds: [outboundFromLink(link)],
+    }),
+    { mode: 0o600 },
+  );
+  const client = spawn(binary, ['run', '-c', path], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let startupError = false;
+  client.on('error', () => {
+    startupError = true;
+  });
+  let diagnostics = '';
+  const collect = (chunk: Buffer) => {
+    diagnostics = (diagnostics + chunk.toString()).slice(-1500);
+  };
+  client.stdout?.on('data', collect);
+  client.stderr?.on('data', collect);
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    if (startupError || client.exitCode !== null)
+      throw new Error(
+        `Xray client failed to start: ${safePanelMessage(diagnostics)}`,
+      );
+    await runFile(
+      'curl',
+      [
+        '--silent',
+        '--show-error',
+        '--fail',
+        '--max-time',
+        '15',
+        '--noproxy',
+        '',
+        '--proxy',
+        `socks5h://127.0.0.1:${port}`,
+        target,
+        '-o',
+        '/dev/null',
+      ],
+      { timeout: 18000 },
+    );
+  } catch (error) {
+    // execFile errors include arguments; only surface the exit code.
+    if ((error as any).code)
+      throw new Error(`Proxy HTTPS failed (exit ${(error as any).code})`);
+    throw error;
+  } finally {
+    if (!startupError && client.exitCode === null) {
+      const exited = once(client, 'exit');
+      client.kill('SIGTERM');
+      const killTimer = setTimeout(() => client.kill('SIGKILL'), 2000);
+      await exited;
+      clearTimeout(killTimer);
+    }
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+async function main() {
+  Logger.overrideLogger(['error', 'warn']);
+  const configPath = process.env.XUI_CHECK_CONFIG;
+  const binary = process.env.XRAY_BINARY;
+  if (!configPath || !binary)
+    throw new Error('Set XUI_CHECK_CONFIG and XRAY_BINARY');
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  const node = {
+    id: 'smoke',
+    name: 'smoke',
+    url: config.url,
+    token: config.token,
+    authType: NodeAuthType.Token,
+    allowInvalidTls: config.allowInvalidTls === true,
+  } as Node;
+  const api = new XuiService(
+    { find: async () => [] } as any,
+    new SessionService(),
+  );
+  const builder = new InboundBuilderService();
+  const profile = await api.checkNodeConnection(node);
+  if (!profile.success) throw new Error(profile.message);
+  console.log(
+    JSON.stringify({
+      panelVersion: profile.version,
+      xrayVersion: profile.xrayVersion,
+      xrayState: profile.xrayState,
+    }),
+  );
+  const keys = await api.getNewX25519Cert(node);
+  const cert = await api.getWebCertificateFiles(node);
+  if (!keys || !cert)
+    throw new Error('Reality keys or panel certificate unavailable');
+  const address = process.env.SMOKE_ADDRESS || new URL(config.url).hostname;
+  const serverName = new URL(config.url).hostname;
+  const sni = process.env.SMOKE_SNI || 'www.cloudflare.com';
+  const cases: Record<string, (port: number, uuid: string) => XuiInboundRaw> = {
+    'vless-tcp-reality': (port, uuid) =>
+      builder.buildVlessRealityTcp({ port, uuid, sni, ...keys }),
+    'vless-grpc-reality': (port, uuid) =>
+      builder.buildVlessRealityGrpc({ port, uuid, sni, ...keys }),
+    'vless-xhttp-reality': (port, uuid) =>
+      builder.buildVlessRealityXhttp({ port, uuid, sni, ...keys }),
+    'vless-ws': (port, uuid) => builder.buildVlessWs({ port, uuid, sni }),
+    'vless-tcp-tls': (port, uuid) =>
+      builder.buildVlessTlsTcp({ port, uuid, serverName, ...cert }),
+    'vless-ws-tls': (port, uuid) =>
+      builder.buildVlessTlsWs({ port, uuid, serverName, ...cert }),
+    'vmess-tcp': (port, uuid) => builder.buildVmessTcp({ port, uuid }),
+    'shadowsocks-tcp': (port, uuid) =>
+      builder.buildShadowsocksTcp({ port, uuid }),
+    'trojan-tcp-reality': (port, uuid) =>
+      builder.buildTrojanRealityTcp({ port, uuid, sni, ...keys }),
+    'hysteria2-udp': (port, uuid) =>
+      builder.buildHysteria2Inbound({ port, uuid, serverName, ...cert }),
+  };
+  const selected =
+    process.env.SMOKE_TYPES?.split(',') ||
+    Object.keys(cases).filter((type) => type !== 'vless-ws');
+  const results: Record<string, unknown>[] = [];
+  for (const type of selected) {
+    if (!cases[type]) throw new Error(`Unknown smoke type: ${type}`);
+    const config = cases[type](randomInt(20000, 60000), randomUUID());
+    config.remark = `3dp-smoke-${type}-${Date.now()}`;
+    let remoteId: number | undefined;
+    const result: Record<string, unknown> = {
+      type,
+      created: false,
+      traffic: false,
+      deleted: false,
+    };
+    try {
+      const created = await api.addInbound(config, node);
+      if (!created) throw new Error(api.getLastInboundError(node));
+      remoteId = created.id;
+      result.created = true;
+      result.port = created.inbound.port;
+      if (created.verificationError) throw new Error(created.verificationError);
+      await api.waitForXray(node);
+      const link = builder.buildInboundLink(created.inbound, address, '', '');
+      if (process.env.SMOKE_ARTIFACT_DIR) {
+        mkdirSync(process.env.SMOKE_ARTIFACT_DIR, {
+          recursive: true,
+          mode: 0o700,
+        });
+        writeFileSync(
+          join(process.env.SMOKE_ARTIFACT_DIR, `${type}.json`),
+          JSON.stringify({ inbound: created.inbound, link }),
+          { mode: 0o600 },
+        );
+      }
+      await checkTraffic(
+        link,
+        binary,
+        process.env.SMOKE_TARGET || 'https://www.cloudflare.com/cdn-cgi/trace',
+      );
+      result.traffic = true;
+    } catch (error) {
+      result.error =
+        error instanceof Error ? error.message : 'Smoke check failed';
+    } finally {
+      if (remoteId) result.deleted = await api.deleteInbound(remoteId, node);
+    }
+    results.push(result);
+    console.log(JSON.stringify(result));
+    if (remoteId && !result.deleted) {
+      console.error(
+        `Cleanup failed for temporary inbound ID ${remoteId}; stopping.`,
+      );
+      break;
+    }
+  }
+  process.exitCode = results.some((r) => !r.traffic || !r.deleted) ? 1 : 0;
+}
+
+if (require.main === module)
+  main().catch((error) => {
+    console.error(
+      error instanceof Error ? error.message : 'Smoke check failed',
+    );
+    process.exitCode = 1;
+  });

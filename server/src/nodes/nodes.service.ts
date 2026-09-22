@@ -389,9 +389,17 @@ export class NodesService {
     node.lastCheckedAt = new Date();
     node.responseTimeMs = status.responseTimeMs;
     if (status.success) {
-      node.healthStatus = NodeHealthStatus.Online;
+      const xrayFailed = Boolean(
+        status.xrayError ||
+        (status.xrayState && status.xrayState !== 'running'),
+      );
+      node.healthStatus = xrayFailed
+        ? NodeHealthStatus.Degraded
+        : NodeHealthStatus.Online;
       node.consecutiveFailures = 0;
-      node.lastError = undefined;
+      node.lastError = xrayFailed
+        ? status.xrayError || `Xray: ${status.xrayState}`
+        : undefined;
       if (status.version) node.version = status.version;
       if (status.xrayVersion) node.xrayVersion = status.xrayVersion;
       node.webCertificateFile = status.webCertificateFile;
@@ -430,10 +438,10 @@ export class NodesService {
       if (!item.host || !item.port) {
         continue;
       }
-      const url = `${item.protocol}://${item.host}:${item.port}`.replace(
-        /\/+$/,
-        '',
-      );
+      const host = item.host.replace(/^\[|\]$/g, '');
+      const authority = host.includes(':') ? `[${host}]` : host;
+      const basePath = (item.basePath || '/').replace(/^\/+|\/+$/g, '');
+      const url = `${item.protocol}://${authority}:${item.port}${basePath ? `/${basePath}` : ''}`;
 
       const existing = await this.nodesRepo.findOne({
         where: { url },

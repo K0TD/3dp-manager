@@ -6,13 +6,16 @@ export interface XuiInboundRaw {
   protocol: string;
   settings: string; // JSON string
   streamSettings: string; // JSON string
+  sniffing?: string;
   remark?: string;
+  [key: string]: unknown;
 }
 
 export interface XuiInboundSettings {
   clients?: Array<{
     id?: string;
     password?: string;
+    auth?: string;
     secret?: string;
     email?: string;
     flow?: string;
@@ -50,6 +53,7 @@ export interface XuiStreamSettings {
   };
   wsSettings?: {
     path: string;
+    host?: string;
     headers?: {
       Host?: string;
     };

@@ -185,6 +185,9 @@ describe('InboundBuilderService', () => {
         fakeTlsDomain: 'www.cloudflare.com',
       });
 
+      inbound.settings = JSON.stringify({
+        clients: [{ secret: 'invalid-secret' }],
+      });
       expect(
         service.buildInboundLink(inbound, '203.0.113.10', 'invalid-secret', ''),
       ).toBe('');

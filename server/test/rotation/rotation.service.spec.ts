@@ -47,6 +47,7 @@ describe('RotationService resilient generations', () => {
     getNewX25519Cert: jest.fn(),
     getWebCertificateFiles: jest.fn(),
     addInbound: jest.fn(),
+    waitForXray: jest.fn(),
     deleteInbound: jest.fn(),
     getLastInboundError: jest.fn(),
   };
@@ -83,6 +84,7 @@ describe('RotationService resilient generations', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    xuiService.waitForXray.mockResolvedValue(undefined);
     settingRepo.findOne.mockResolvedValue(null);
     inboundRepo.findOne.mockResolvedValue(null);
     xuiService.getWebCertificateFiles.mockResolvedValue({
@@ -203,7 +205,7 @@ describe('RotationService resilient generations', () => {
       andWhere: jest.fn().mockReturnThis(),
       getOne: jest.fn().mockResolvedValue(node),
     });
-    xuiService.addInbound.mockResolvedValue(101);
+    xuiService.addInbound.mockResolvedValue({ id: 101, inbound: builtInbound });
     inboundBuilder.buildVlessTlsTcp.mockReturnValue(builtInbound);
     inboundBuilder.buildInboundLink.mockReturnValue('vless://tls');
 
@@ -331,7 +333,7 @@ describe('RotationService resilient generations', () => {
       andWhere: jest.fn().mockReturnThis(),
       getOne: jest.fn().mockResolvedValue(node),
     });
-    xuiService.addInbound.mockResolvedValue(202);
+    xuiService.addInbound.mockResolvedValue({ id: 202, inbound: builtInbound });
     inboundBuilder.buildMtprotoInbound.mockReturnValue(builtInbound);
     inboundBuilder.buildInboundLink.mockReturnValue(
       `tg://proxy?server=203.0.113.10&port=8443&secret=${secret}`,
@@ -356,7 +358,7 @@ describe('RotationService resilient generations', () => {
     expect(inboundBuilder.buildInboundLink).toHaveBeenCalledWith(
       builtInbound,
       '203.0.113.10',
-      secret,
+      '',
       expect.any(String),
     );
     expect(inboundRepo.create).toHaveBeenCalledWith(
@@ -513,13 +515,19 @@ describe('RotationService resilient generations', () => {
       inbounds: [],
     } as unknown as Subscription;
 
-    const resolveNodeSpy = jest.spyOn(service as any, 'resolveNode').mockResolvedValue(defaultNode);
-    const rotateNodeGroupSpy = jest.spyOn(service as any, 'rotateNodeGroup').mockResolvedValue({
-      subscriptionId: 'sub-1',
-      status: 'succeeded',
-      created: 1,
-    });
-    const queueCleanupSpy = jest.spyOn(service as any, 'queueCleanup').mockResolvedValue(undefined);
+    const resolveNodeSpy = jest
+      .spyOn(service as any, 'resolveNode')
+      .mockResolvedValue(defaultNode);
+    const rotateNodeGroupSpy = jest
+      .spyOn(service as any, 'rotateNodeGroup')
+      .mockResolvedValue({
+        subscriptionId: 'sub-1',
+        status: 'succeeded',
+        created: 1,
+      });
+    const queueCleanupSpy = jest
+      .spyOn(service as any, 'queueCleanup')
+      .mockResolvedValue(undefined);
 
     const results = await (service as any).rotateSubscription(
       sub,
@@ -552,7 +560,9 @@ describe('RotationService resilient generations', () => {
       inbounds: [],
     } as unknown as Subscription;
 
-    const resolveNodeSpy = jest.spyOn(service as any, 'resolveNode').mockResolvedValue(undefined);
+    const resolveNodeSpy = jest
+      .spyOn(service as any, 'resolveNode')
+      .mockResolvedValue(undefined);
 
     const results = await (service as any).rotateSubscription(sub, [], null);
 
@@ -564,7 +574,7 @@ describe('RotationService resilient generations', () => {
     resolveNodeSpy.mockRestore();
   });
 
-  it('accumulates rejected inbounds, logs summary with reason, and succeeds with created ones', async () => {
+  it('preserves the generation when one requested inbound is rejected', async () => {
     const node = {
       id: 'node-partial',
       name: 'Partial node',
@@ -604,7 +614,15 @@ describe('RotationService resilient generations', () => {
 
     // 1st inbound succeeds, 2nd fails
     xuiService.addInbound
-      .mockResolvedValueOnce(201)
+      .mockResolvedValueOnce({
+        id: 201,
+        inbound: {
+          port: 8080,
+          protocol: 'vless',
+          settings: '{}',
+          streamSettings: '{}',
+        },
+      })
       .mockResolvedValueOnce(null);
     xuiService.getLastInboundError.mockReturnValue('Go struct unmarshal error');
 
@@ -617,8 +635,8 @@ describe('RotationService resilient generations', () => {
     );
 
     expect(results[0]).toMatchObject({
-      status: 'succeeded',
-      created: 1,
+      status: 'preserved',
+      created: 0,
     });
     expect(loggerWarnSpy).toHaveBeenCalledWith(
       expect.stringContaining('Сводка отклонённых панелью инбаундов'),
@@ -681,5 +699,97 @@ describe('RotationService resilient generations', () => {
       message: expect.stringContaining('Port 8080 already in use'),
     });
     expect(oldInbound.status).toBe(InboundStatus.Active);
+  });
+  describe('verified creation and port selection', () => {
+    const node = {
+      id: 'ports',
+      name: 'ports',
+      url: 'https://panel.example',
+      domain: 'public.example',
+    } as Node;
+    const built = {
+      enable: true,
+      protocol: 'vmess',
+      port: 20000,
+      settings: '{"clients":[{"id":"saved"}]}',
+      streamSettings: '{"network":"tcp"}',
+    };
+    const request = (port: number | string = 'random') => ({
+      subscription: { id: 'ports-sub', inbounds: [] },
+      node,
+      domains: [],
+      positionedConfig: { position: 0, config: { type: 'vmess-tcp', port } },
+      usedPorts: new Set<number>(),
+      generationId: 'gen',
+    });
+    beforeEach(() => {
+      inboundBuilder.buildVmessTcp.mockReturnValue({ ...built });
+      inboundBuilder.buildInboundLink.mockReturnValue('vmess://saved');
+      xuiService.addInbound.mockReset();
+    });
+    it('uses the actual saved port in the database and link after a conflict', async () => {
+      xuiService.addInbound
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ id: 300, inbound: { ...built, port: 25001 } });
+      xuiService.getLastInboundError.mockReturnValue(
+        'Port 20000 is already in use',
+      );
+      const result = await (service as any).createInbound(request());
+      expect(result.port).toBe(25001);
+      expect(inboundBuilder.buildInboundLink).toHaveBeenCalledWith(
+        expect.objectContaining({ port: 25001 }),
+        'public.example',
+        '',
+        expect.any(String),
+      );
+      expect(xuiService.addInbound).toHaveBeenCalledTimes(2);
+    });
+    it('does not change an explicitly selected occupied port', async () => {
+      xuiService.addInbound.mockResolvedValue(null);
+      xuiService.getLastInboundError.mockReturnValue(
+        'Port 20000 is already in use',
+      );
+      expect(await (service as any).createInbound(request(20000))).toBeNull();
+      expect(xuiService.addInbound).toHaveBeenCalledTimes(1);
+    });
+    it('queues ownership for cleanup when detail verification fails', async () => {
+      xuiService.addInbound.mockResolvedValue({
+        id: 300,
+        inbound: built,
+        verificationError: 'detail unavailable',
+      });
+      await expect((service as any).createInbound(request())).rejects.toThrow(
+        'detail unavailable',
+      );
+      expect(inboundRepo.save).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({
+            xuiId: 300,
+            status: InboundStatus.PendingCleanup,
+          }),
+        ]),
+      );
+      expect(inboundBuilder.buildInboundLink).not.toHaveBeenCalled();
+    });
+    it('preserves the old group and cleans up the staged generation when Xray fails', async () => {
+      const old = {
+        id: 44,
+        nodeId: node.id,
+        status: InboundStatus.Active,
+        protocol: 'vmess',
+      };
+      xuiService.addInbound.mockResolvedValue({ id: 300, inbound: built });
+      xuiService.waitForXray.mockRejectedValue(new Error('Xray stopped'));
+      const result = await (service as any).rotateNodeGroup(
+        { id: 'sub', inbounds: [old] },
+        node.id,
+        { node, configs: [request().positionedConfig] },
+        [],
+      );
+      expect(result.status).toBe('preserved');
+      expect(result.message).toContain('Xray stopped');
+      expect(manager.transaction).not.toHaveBeenCalled();
+      expect(old.status).toBe(InboundStatus.Active);
+    });
   });
 });

@@ -266,7 +266,7 @@ export class InboundBuilderService {
           ],
           settings: {
             publicKey: publicKey,
-            fingerprint: 'random',
+            fingerprint: 'chrome',
             serverName: '',
             spiderX: '/',
           },
@@ -331,7 +331,7 @@ export class InboundBuilderService {
           ],
           settings: {
             publicKey: publicKey,
-            fingerprint: 'random',
+            fingerprint: 'chrome',
             serverName: '',
             spiderX: '/',
           },
@@ -402,7 +402,7 @@ export class InboundBuilderService {
           shortIds: [crypto.randomBytes(4).toString('hex')],
           settings: {
             publicKey: publicKey,
-            fingerprint: 'random',
+            fingerprint: 'chrome',
             serverName: '',
             spiderX: '/',
           },
@@ -704,7 +704,7 @@ export class InboundBuilderService {
           ],
           settings: {
             publicKey: publicKey,
-            fingerprint: 'random',
+            fingerprint: 'chrome',
             serverName: '',
             spiderX: '/',
           },
@@ -818,6 +818,17 @@ export class InboundBuilderService {
     flagEmoji: string,
   ): string {
     this.flag = flagEmoji;
+    const settings = JSON.parse(inbound.settings) as XuiInboundSettings;
+    const client = settings.clients?.[0];
+    const credential =
+      inbound.protocol === 'trojan'
+        ? client?.password
+        : inbound.protocol === 'mtproto'
+          ? client?.secret
+          : inbound.protocol === 'hysteria' || inbound.protocol === 'hysteria2'
+            ? client?.auth || client?.password
+            : client?.id;
+    idOrPass = credential || idOrPass;
     let link = '';
 
     switch (inbound.protocol) {
@@ -973,7 +984,7 @@ export class InboundBuilderService {
       const r = stream.realitySettings;
       if (!r) return '';
       params.set('pbk', r.settings?.publicKey || '');
-      params.set('fp', r.settings?.fingerprint || 'random');
+      params.set('fp', r.settings?.fingerprint || 'chrome');
       params.set('sni', r.serverNames?.[0] || '');
       params.set('sid', r.shortIds?.[0] || '');
       params.set('spx', '/');
@@ -1022,17 +1033,21 @@ export class InboundBuilderService {
       const ws =
         (
           stream as {
-            wsSettings?: { path?: string; headers?: { Host?: string } };
+            wsSettings?: {
+              path?: string;
+              host?: string;
+              headers?: { Host?: string };
+            };
           }
         ).wsSettings || {};
       params.set('path', ws.path || '/');
-      if (ws.headers?.Host) {
-        params.set('host', ws.headers.Host);
+      if (ws.host || ws.headers?.Host) {
+        params.set('host', ws.host || ws.headers.Host);
       }
     }
 
     return (
-      `vless://${uuid}@${sni}:${inbound.port}` +
+      `vless://${encodeURIComponent(uuid)}@${this.urlHost(sni)}:${inbound.port}` +
       `?${params.toString()}` +
       `#${this.flag}%20${encodeURIComponent(inbound.remark || '')}`
     );
@@ -1075,9 +1090,9 @@ export class InboundBuilderService {
 
     const userInfo = `${method}:${serverPassword}:${clientPassword}`;
 
-    const base64 = Buffer.from(userInfo, 'utf8').toString('base64');
+    const base64 = Buffer.from(userInfo, 'utf8').toString('base64url');
 
-    return `ss://${base64}@${sni}:${inbound.port}?type=tcp#${this.flag}%20${inbound.remark || ''}`;
+    return `ss://${base64}@${this.urlHost(sni)}:${inbound.port}?type=tcp#${this.flag}%20${encodeURIComponent(inbound.remark || '')}`;
   }
 
   private buildTrojanLink(
@@ -1089,22 +1104,21 @@ export class InboundBuilderService {
     const reality = stream.realitySettings;
     if (!reality) return '';
 
-    const pbk = reality.settings?.publicKey || '';
-    const SNI = reality.serverNames?.[0] || sni;
-    const sid = reality.shortIds?.[0] || '';
-    const spx = '%2F';
+    const params = new URLSearchParams({
+      type: stream.network || 'tcp',
+      security: 'reality',
+      pbk: reality.settings?.publicKey || '',
+      fp: reality.settings?.fingerprint || 'chrome',
+      sni: reality.serverNames?.[0] || '',
+      sid: reality.shortIds?.[0] || '',
+      spx: '/',
+    });
+    return `trojan://${encodeURIComponent(password)}@${this.urlHost(sni)}:${inbound.port}?${params}#${this.flag}%20${encodeURIComponent(inbound.remark || '')}`;
+  }
 
-    return (
-      `trojan://${password}@${SNI}:${inbound.port}` +
-      `?type=tcp` +
-      `&security=reality` +
-      `&pbk=${pbk}` +
-      `&fp=random` +
-      `&sni=${SNI}` +
-      `&sid=${sid}` +
-      `&spx=${spx}` +
-      `#${this.flag}%20${inbound.remark || ''}`
-    );
+  private urlHost(address: string): string {
+    const host = address.replace(/^\[|\]$/g, '');
+    return host.includes(':') ? `[${host}]` : host;
   }
 
   private buildHysteria2PanelLink(
@@ -1132,17 +1146,19 @@ export class InboundBuilderService {
     params.set('fp', 'chrome');
     params.set('alpn', 'h3');
 
-    const fmConfig = {
-      udp: [
-        {
-          type: finalmask.type,
-          settings: {
-            password: finalmask.settings.password,
-          },
-        },
-      ],
-    };
-    params.set('fm', JSON.stringify(fmConfig));
+    const fmConfig = finalmask
+      ? {
+          udp: [
+            {
+              type: finalmask.type,
+              settings: {
+                password: finalmask.settings?.password,
+              },
+            },
+          ],
+        }
+      : undefined;
+    if (fmConfig) params.set('fm', JSON.stringify(fmConfig));
     params.set('sni', stream.tlsSettings?.serverName || serverAddress);
     if (finalmask?.type) params.set('obfs', finalmask.type);
     if (finalmask?.settings?.password) {
@@ -1150,7 +1166,7 @@ export class InboundBuilderService {
     }
 
     return (
-      `hy2://${auth}@${serverAddress}:${inbound.port}/?${params.toString()}` +
+      `hy2://${encodeURIComponent(auth)}@${this.urlHost(serverAddress)}:${inbound.port}/?${params.toString()}` +
       `#${flagEmoji}%20${encodeURIComponent(inbound.remark || '')}`
     );
   }
@@ -1212,7 +1228,7 @@ export class InboundBuilderService {
         },
       ],
     };
-    params.set('fm', JSON.stringify(fmConfig));
+    if (fmConfig) params.set('fm', JSON.stringify(fmConfig));
 
     return `hy2://${auth}@${serverAddress}:${port}/?${params.toString()}#${remark}`;
   }

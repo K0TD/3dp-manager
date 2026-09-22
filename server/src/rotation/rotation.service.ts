@@ -24,6 +24,7 @@ import {
   CERTIFICATE_INBOUND_TYPES,
   InboundType,
 } from '../subscriptions/inbound-config.constants';
+import { isPortConflict } from '../xui/xui-contract';
 import { supportsInboundType } from '../nodes/node-capabilities';
 import {
   RotationNodeResult,
@@ -512,6 +513,7 @@ export class RotationService implements OnModuleInit {
         this.logger.warn(
           `[RotationService] Сводка отклонённых панелью инбаундов для подписки «${subscription.name}» на ноде «${nodeLabel}» (${rejectedInbounds.length}/${group.configs.length}): ${summary}`,
         );
+        throw new Error(summary);
       }
 
       if (!created.length) {
@@ -524,6 +526,15 @@ export class RotationService implements OnModuleInit {
           `3x-ui отклонил все инбаунды на ноде «${nodeLabel}»: ${failureDetails}`,
         );
       }
+
+      if (
+        group.node &&
+        group.configs.some(
+          ({ config }) =>
+            !['custom', 'amneziawg', 'mtproto-faketls'].includes(config.type),
+        )
+      )
+        await this.xuiService.waitForXray(group.node);
 
       const old = (subscription.inbounds || []).filter((inbound) => {
         if (inbound.status !== InboundStatus.Active) return false;
@@ -614,8 +625,12 @@ export class RotationService implements OnModuleInit {
       autoTlsCertificate: Boolean(node.webCertificateFile && node.webKeyFile),
     });
     if (!supported) {
+      if (config.type === 'vless-ws')
+        throw new Error(
+          'VLESS WS без TLS несовместим с клиентом Xray 26.9.9+; выберите VLESS WS TLS',
+        );
       throw new Error(
-        `Нода «${node.name}» не поддерживает ${config.type} ` +
+        `Конфигурация ${config.type} несовместима с профилем ноды «${node.name}» ` +
           `(3x-ui: ${node.version || 'не определена'}, Xray: ${node.xrayVersion || 'не определена'})`,
       );
     }
@@ -752,122 +767,82 @@ export class RotationService implements OnModuleInit {
     const uuid = uuidv4();
     const sni = this.resolveInboundSni(config, domains);
 
-    if (config.type === 'hysteria2-udp') {
-      const tls = this.resolveTlsConfig(config, node, nodeCertificate);
-      const built = this.inboundBuilder.buildHysteria2Inbound({
-        port,
-        uuid,
-        ...tls,
-      });
-      if (config.name?.trim()) built.remark = config.name.trim();
-      const xuiId = await this.xuiService.addInbound(built, node);
-      if (!xuiId) {
-        this.logger.error(
-          `[RotationService] 3x-ui отклонил добавление hysteria2 инбаунда на ноде «${node.name}» (порт ${port})`,
-        );
-        return null;
-      }
-      this.logger.log(
-        `[RotationService] Hysteria2 инбаунд успешно создан с ID ${xuiId} на ноде «${node.name}» (порт ${port})`,
-      );
-      return this.saveStagedInbound({
-        subscription,
-        config,
-        position,
-        node,
-        relayServer,
-        generationId,
-        xuiId,
-        port,
-        protocol: 'hysteria2',
-        remark: built.remark,
-        link: this.inboundBuilder.buildInboundLink(
-          built,
-          targetAddress,
-          uuid,
-          flag,
-        ),
-      });
-    }
-
-    if (config.type === 'amneziawg') {
-      const built = this.inboundBuilder.buildAmneziaWgInbound({ port, uuid });
-      if (config.name?.trim()) built.remark = config.name.trim();
-      const xuiId = await this.xuiService.addInbound(built, node);
-      if (!xuiId) {
-        this.logger.error(
-          `[RotationService] 3x-ui отклонил добавление amneziawg инбаунда на ноде «${node.name}» (порт ${port})`,
-        );
-        return null;
-      }
-      return this.saveStagedInbound({
-        subscription,
-        config,
-        position,
-        node,
-        relayServer,
-        generationId,
-        xuiId,
-        port,
-        protocol: built.protocol,
-        remark: built.remark,
-        link: this.inboundBuilder.buildInboundLink(
-          built,
-          targetAddress,
-          '',
-          flag,
-        ),
-      });
-    }
-
-    const built = this.buildPanelInbound({
-      config,
-      port,
-      uuid,
-      sni,
-      realityKeys,
-      tls: CERTIFICATE_INBOUND_TYPES.has(config.type as InboundType)
-        ? this.resolveTlsConfig(config, node, nodeCertificate)
-        : undefined,
-    });
+    const built =
+      config.type === 'hysteria2-udp'
+        ? this.inboundBuilder.buildHysteria2Inbound({
+            port,
+            uuid,
+            ...this.resolveTlsConfig(config, node, nodeCertificate),
+          })
+        : config.type === 'amneziawg'
+          ? this.inboundBuilder.buildAmneziaWgInbound({ port, uuid })
+          : this.buildPanelInbound({
+              config,
+              port,
+              uuid,
+              sni,
+              realityKeys,
+              tls: CERTIFICATE_INBOUND_TYPES.has(config.type as InboundType)
+                ? this.resolveTlsConfig(config, node, nodeCertificate)
+                : undefined,
+            });
     if (!built) throw new Error(`Неизвестный тип inbound: ${config.type}`);
     if (config.name?.trim()) built.remark = config.name.trim();
-    const xuiId = await this.xuiService.addInbound(built, node);
-    if (!xuiId) {
-      this.logger.error(
-        `[RotationService] 3x-ui отклонил добавление инбаунда «${built.remark}» (${built.protocol}) на ноде «${node.name}» (порт ${port})`,
-      );
-      return null;
+
+    const randomPort = config.port === 'random' || !config.port;
+    let result = await this.xuiService.addInbound(built, node);
+    for (let attempt = 1; !result && randomPort && attempt < 3; attempt++) {
+      if (!isPortConflict(this.xuiService.getLastInboundError(node))) break;
+      built.port = await this.getFreePort(usedPorts);
+      usedPorts.add(built.port);
+      result = await this.xuiService.addInbound(built, node);
     }
-    this.logger.log(
-      `[RotationService] Инбаунд «${built.remark}» (${built.protocol}) успешно создан с ID ${xuiId} на ноде «${node.name}» (порт ${port})`,
-    );
-    const settings = JSON.parse(built.settings) as {
-      clients?: Array<{ id?: string; password?: string; secret?: string }>;
-    };
-    const credential =
-      settings.clients?.[0]?.id ||
-      settings.clients?.[0]?.password ||
-      settings.clients?.[0]?.secret ||
-      '';
-    return this.saveStagedInbound({
-      subscription,
-      config,
-      position,
-      node,
-      relayServer,
-      generationId,
-      xuiId,
-      port,
-      protocol: built.protocol,
-      remark: built.remark,
-      link: this.inboundBuilder.buildInboundLink(
-        built,
+    if (!result) return null;
+    const saved = result.inbound;
+    usedPorts.add(saved.port);
+    let staged: Inbound;
+    try {
+      // Persist ownership before building the link, so failures can be cleaned
+      // up by the existing durable cleanup queue.
+      staged = await this.saveStagedInbound({
+        subscription,
+        config,
+        position,
+        node,
+        relayServer,
+        generationId,
+        xuiId: result.id,
+        port: saved.port,
+        protocol: saved.protocol === 'hysteria' ? 'hysteria2' : saved.protocol,
+        remark: saved.remark,
+        link: '',
+      });
+    } catch (error) {
+      const deleted = await this.xuiService.deleteInbound(result.id, node);
+      if (!deleted)
+        this.logger.error(
+          `Не удалось сохранить или удалить новый инбаунд ${result.id} на ноде «${node.name}»; требуется очистка на панели`,
+        );
+      throw error;
+    }
+    try {
+      if (result.verificationError) throw new Error(result.verificationError);
+      // The builder chooses the credential according to the protocol from the
+      // panel's saved client, not from the originally requested UUID.
+      const link = this.inboundBuilder.buildInboundLink(
+        saved,
         targetAddress,
-        credential,
+        '',
         flag,
-      ),
-    });
+      );
+      if (!link)
+        throw new Error(`Не удалось сформировать ссылку ${config.type}`);
+      staged.link = link;
+      return await this.inboundRepo.save(staged);
+    } catch (error) {
+      await this.queueCleanup([staged]);
+      throw error;
+    }
   }
 
   private buildPanelInbound(request: {

@@ -49,3 +49,21 @@ describe('MTProto node capabilities', () => {
     ).toBe(true);
   });
 });
+
+describe('modern Xray client profile', () => {
+  it('keeps legacy WS on older nodes and directs current nodes to WS TLS', () => {
+    const base = { panelVersion: '3.8.5', autoTlsCertificate: true };
+    expect(
+      supportsInboundType('vless-ws', { ...base, xrayVersion: '26.7.11' }),
+    ).toBe(true);
+    const capabilities = buildNodeCapabilities({
+      ...base,
+      xrayVersion: '26.9.9',
+    });
+    expect(capabilities.supportedInboundTypes).not.toContain('vless-ws');
+    expect(capabilities.supportedInboundTypes).toContain('vless-ws-tls');
+    expect(capabilities.warnings).toEqual(
+      expect.arrayContaining([expect.stringContaining('WS TLS')]),
+    );
+  });
+});

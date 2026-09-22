@@ -1,467 +1,386 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { XuiService } from 'src/xui/xui.service';
-import { Setting } from 'src/settings/entities/setting.entity';
-import { SessionService } from 'src/session/session.service';
 import axios from 'axios';
+import { XuiService } from 'src/xui/xui.service';
+import { Node, NodeAuthType } from 'src/nodes/entities/node.entity';
+import { SessionService } from 'src/session/session.service';
 import {
-  Node,
-  NodeAuthType,
-  NodeProtocol,
-} from 'src/nodes/entities/node.entity';
+  mergeCookies,
+  normalizeInbound,
+  responsePayload,
+  isPortConflict,
+} from 'src/xui/xui-contract';
 
 jest.mock('axios');
 
-describe('XuiService', () => {
+const inbound = {
+  id: 42,
+  enable: true,
+  protocol: 'vless',
+  port: 443,
+  settings: {
+    clients: [{ id: 'client-id', email: 'test', enable: true }],
+    decryption: 'none',
+  },
+  streamSettings: { network: 'tcp', security: 'none' },
+  sniffing: null,
+};
+const tokenNode = {
+  id: 'node',
+  name: 'test',
+  url: 'https://panel.test/base/',
+  authType: NodeAuthType.Token,
+  token: 'token',
+} as Node;
+const passwordNode = {
+  ...tokenNode,
+  authType: NodeAuthType.Password,
+  login: 'admin',
+  password: 'password',
+} as Node;
+
+describe('3x-ui API contracts', () => {
   let service: XuiService;
-
-  const mockSettingsRepo = {
-    find: jest.fn(),
-    findOne: jest.fn(),
-    create: jest.fn(),
-    save: jest.fn(),
-  };
-
-  const mockSessionService = {
-    getCookie: jest.fn(),
-    setFromHeaders: jest.fn(),
-  };
-
-  const mockAxiosInstance = {
-    get: jest.fn(),
-    post: jest.fn(),
-    defaults: {
-      baseURL: '',
-      headers: { common: {} as Record<string, string> },
-    },
-    interceptors: {
-      request: { use: jest.fn() },
-      response: { use: jest.fn() },
-    },
-  };
-
-  beforeEach(async () => {
-    mockAxiosInstance.defaults.headers.common = {};
-    (axios.create as jest.Mock).mockReturnValue(mockAxiosInstance);
-
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        XuiService,
-        {
-          provide: getRepositoryToken(Setting),
-          useValue: mockSettingsRepo,
-        },
-        {
-          provide: SessionService,
-          useValue: mockSessionService,
-        },
-      ],
-    }).compile();
-
-    service = module.get<XuiService>(XuiService);
-    settingsRepo = module.get<Repository<Setting>>(getRepositoryToken(Setting));
-    sessionService = module.get<SessionService>(SessionService);
-  });
-
-  afterEach(() => {
-    jest.resetAllMocks();
-  });
-
-  describe('login', () => {
-    it('должен вернуть false, если настройки не заполнены', async () => {
-      mockSettingsRepo.find.mockResolvedValue([]);
-
-      const result = await service.login();
-
-      expect(result).toBe(false);
-    });
-
-    it('должен вернуть true при успешном логине', async () => {
-      mockSettingsRepo.find.mockResolvedValue([
-        { key: 'xui_url', value: 'http://localhost:3100' },
-        { key: 'xui_login', value: 'admin' },
-        { key: 'xui_password', value: 'password' },
-      ]);
-
-      mockAxiosInstance.post.mockResolvedValue({
-        headers: {
-          'set-cookie': ['session=abc123'],
-        },
-      });
-
-      const result = await service.login();
-
-      expect(result).toBe(true);
-      expect(mockAxiosInstance.post).toHaveBeenCalledWith('/login', {
-        username: 'admin',
-        password: 'password',
-      });
-    });
-
-    it('должен вернуть false при ошибке логина', async () => {
-      mockSettingsRepo.find.mockResolvedValue([
-        { key: 'xui_url', value: 'http://localhost:3100' },
-        { key: 'xui_login', value: 'admin' },
-        { key: 'xui_password', value: 'password' },
-      ]);
-
-      mockAxiosInstance.post.mockRejectedValue(new Error('Network error'));
-
-      const result = await service.login();
-
-      expect(result).toBe(false);
-    });
-
-    it('должен вернуть false, если нет cookie в ответе', async () => {
-      mockSettingsRepo.find.mockResolvedValue([
-        { key: 'xui_url', value: 'http://localhost:3100' },
-        { key: 'xui_login', value: 'admin' },
-        { key: 'xui_password', value: 'password' },
-      ]);
-
-      mockAxiosInstance.post.mockResolvedValue({
-        headers: {},
-      });
-
-      const result = await service.login();
-
-      expect(result).toBe(false);
-    });
-  });
-
-  describe('checkConnection', () => {
-    it('должен вернуть false при ошибке подключения', async () => {
-      mockAxiosInstance.post.mockRejectedValue(new Error('Connection failed'));
-
-      const result = await service.checkConnection(
-        'http://localhost:3100',
-        'admin',
-        'password',
-      );
-
-      expect(result).toBe(false);
-    });
-  });
-
-  describe('node compatibility profile', () => {
-    const tokenNode = {
-      id: 'node-profile',
-      name: 'profile-node',
-      url: 'https://node.example.com',
-      authType: NodeAuthType.Token,
-      token: 'secret-token',
-    } as Node;
-
-    it('reads panel, Xray and web certificate data from 3x-ui', async () => {
-      mockAxiosInstance.get
-        .mockResolvedValueOnce({
-          data: { success: true, obj: [] },
-          headers: {},
-        })
-        .mockResolvedValueOnce({
-          data: { success: true, obj: { xray: { version: '26.7.11' } } },
-        })
-        .mockResolvedValueOnce({
-          data: { success: true, obj: { currentVersion: 'v3.7.1' } },
-          headers: {},
-        })
-        .mockResolvedValueOnce({
-          data: {
-            success: true,
-            obj: {
-              webCertFile: '/etc/ssl/node/fullchain.pem',
-              webKeyFile: '/etc/ssl/node/privkey.pem',
+  let api: any;
+  beforeEach(() => {
+    api = {
+      get: jest.fn(async (path: string) => {
+        if (path === '/csrf-token')
+          return {
+            data: { success: true, obj: 'csrf' },
+            headers: { 'set-cookie': ['session=current; Path=/; HttpOnly'] },
+          };
+        if (path === '/panel/api/inbounds/list')
+          return { data: { success: true, obj: [inbound] }, headers: {} };
+        if (path === '/panel/api/inbounds/get/42')
+          return { data: { success: true, obj: inbound } };
+        if (path === '/panel/api/server/status')
+          return {
+            data: {
+              success: true,
+              obj: {
+                panelVersion: '3.8.5',
+                xray: { version: '26.9.9', state: 'running', errorMsg: '' },
+              },
             },
-          },
-        });
-
-      await expect(
-        service.checkNodeConnection(tokenNode),
-      ).resolves.toMatchObject({
-        success: true,
-        version: 'v3.7.1',
-        xrayVersion: '26.7.11',
-        webCertificateFile: '/etc/ssl/node/fullchain.pem',
-        webKeyFile: '/etc/ssl/node/privkey.pem',
-      });
-    });
-
-    it('rejects relative certificate paths returned by a node', async () => {
-      mockAxiosInstance.get.mockResolvedValueOnce({
-        data: {
-          success: true,
-          obj: {
-            webCertFile: 'cert/fullchain.pem',
-            webKeyFile: '/etc/ssl/node/privkey.pem',
-          },
-        },
-      });
-
-      await expect(
-        service.getWebCertificateFiles(tokenNode),
-      ).resolves.toBeNull();
-    });
+          };
+        if (path === '/panel/api/server/getPanelUpdateInfo')
+          return { data: { success: true, obj: { currentVersion: '3.7.0' } } };
+        if (path === '/panel/api/server/getWebCertFiles')
+          return {
+            data: {
+              success: true,
+              obj: {
+                webCertFile: '/cert/fullchain.pem',
+                webKeyFile: '/cert/privkey.pem',
+              },
+            },
+          };
+        throw { response: { status: 404 } };
+      }),
+      post: jest.fn(async (path: string) =>
+        path === '/login'
+          ? {
+              data: { success: true },
+              headers: { 'set-cookie': ['session=logged-in; Path=/'] },
+            }
+          : { data: { success: true, obj: inbound }, headers: {} },
+      ),
+      defaults: { headers: { common: {} } },
+      interceptors: {
+        request: { use: jest.fn() },
+        response: { use: jest.fn() },
+      },
+    };
+    (axios.create as jest.Mock).mockReturnValue(api);
+    service = new XuiService(
+      {
+        find: jest.fn(async () => [
+          { key: 'xui_url', value: tokenNode.url },
+          { key: 'xui_login', value: 'admin' },
+          { key: 'xui_password', value: 'password' },
+        ]),
+      } as any,
+      new SessionService(),
+    );
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    jest.clearAllMocks();
   });
 
-  describe('addInbound', () => {
-    it('должен вернуть null при ошибке', async () => {
-      mockAxiosInstance.post.mockRejectedValue(new Error('API error'));
-
-      const result = await service.addInbound(
-        {} as unknown as { port: number },
-      );
-
-      expect(result).toBeNull();
-    });
-
-    it('добавляет CSRF заголовок для cookie-auth в 3x-ui 3.x', async () => {
-      const node = {
-        id: 'node-1',
-        name: 'modern-node',
-        url: 'https://node.example.com:2053',
-        protocol: NodeProtocol.Https,
-        authType: NodeAuthType.Password,
-        login: 'admin',
-        password: 'password',
-        allowInvalidTls: false,
-      } as never;
-      mockAxiosInstance.post
-        .mockResolvedValueOnce({
-          data: { success: true },
-          headers: { 'set-cookie': ['session=abc'] },
-        })
-        .mockResolvedValueOnce({ data: { success: true, obj: { id: 42 } } });
-      mockAxiosInstance.get.mockResolvedValueOnce({
-        data: { success: true, obj: 'csrf-value' },
-      });
-
-      const result = await service.addInbound({ port: 443 }, node);
-
-      expect(result).toBe(42);
-      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/csrf-token');
-      expect(mockAxiosInstance.defaults.headers.common.Cookie).toBe(
-        'session=abc',
-      );
-      expect(mockAxiosInstance.defaults.headers.common['X-CSRF-Token']).toBe(
-        'csrf-value',
-      );
-    });
+  it('reads back the modern object response and returns the saved configuration', async () => {
+    const result = await service.addInbound(
+      normalizeInbound(inbound),
+      tokenNode,
+    );
+    expect(result).toEqual({ id: 42, inbound: normalizeInbound(inbound) });
+    expect(api.get).toHaveBeenCalledWith('/panel/api/inbounds/get/42');
+    expect(api.defaults.headers.common.Authorization).toBe('Bearer token');
+    expect(api.get).not.toHaveBeenCalledWith('/csrf-token');
+    expect(axios.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseURL: 'https://panel.test/base',
+        maxRedirects: 0,
+      }),
+    );
   });
 
-  describe('deleteInbound', () => {
-    it('должен удалить инбаунд', async () => {
-      mockSettingsRepo.find.mockResolvedValue([
-        { key: 'xui_url', value: 'http://localhost:3100' },
-        { key: 'xui_login', value: 'admin' },
-        { key: 'xui_password', value: 'password' },
-      ]);
-      mockAxiosInstance.post
-        .mockResolvedValueOnce({
-          headers: { 'set-cookie': ['session=abc123'] },
-        })
-        .mockResolvedValueOnce({ data: { success: true } });
-
-      await service.deleteInbound(101);
-
-      expect(mockAxiosInstance.post).toHaveBeenCalledWith(
-        '/panel/api/inbounds/del/101',
-      );
+  it('accepts legacy JSON strings and numeric creation IDs', async () => {
+    api.post.mockResolvedValue({ data: { success: true, obj: '42' } });
+    api.get.mockResolvedValue({
+      data: { success: true, obj: normalizeInbound(inbound) },
     });
-
-    it('должен обработать ошибку удаления', async () => {
-      mockSettingsRepo.find.mockResolvedValue([
-        { key: 'xui_url', value: 'http://localhost:3100' },
-        { key: 'xui_login', value: 'admin' },
-        { key: 'xui_password', value: 'password' },
-      ]);
-      mockAxiosInstance.post
-        .mockResolvedValueOnce({
-          headers: { 'set-cookie': ['session=abc123'] },
-        })
-        .mockRejectedValueOnce(new Error('Not found'));
-
-      await service.deleteInbound(999);
-
-      expect(mockAxiosInstance.post).toHaveBeenCalledWith(
-        '/panel/api/inbounds/del/999',
-      );
-    });
-
-    it('считает отсутствующий inbound успешно очищенным', async () => {
-      mockSettingsRepo.find.mockResolvedValue([
-        { key: 'xui_url', value: 'http://localhost:3100' },
-        { key: 'xui_login', value: 'admin' },
-        { key: 'xui_password', value: 'password' },
-      ]);
-      mockAxiosInstance.post
-        .mockResolvedValueOnce({
-          headers: { 'set-cookie': ['session=abc123'] },
-        })
-        .mockRejectedValueOnce({
-          response: { status: 404 },
-          message: 'Not found',
-        });
-
-      await expect(service.deleteInbound(999)).resolves.toBe(true);
-    });
+    await expect(
+      service.addInbound(normalizeInbound(inbound), tokenNode),
+    ).resolves.toEqual({ id: 42, inbound: normalizeInbound(inbound) });
   });
 
-  describe('getNewX25519Cert', () => {
-    it('должен получить Reality ключи', async () => {
-      mockSettingsRepo.find.mockResolvedValue([
-        { key: 'xui_url', value: 'http://localhost:3100' },
-        { key: 'xui_login', value: 'admin' },
-        { key: 'xui_password', value: 'password' },
-      ]);
-      mockAxiosInstance.post.mockResolvedValueOnce({
-        headers: { 'set-cookie': ['session=abc123'] },
-      });
-      mockAxiosInstance.get.mockResolvedValue({
-        data: {
-          success: true,
-          obj: {
-            publicKey: 'pub-key',
-            privateKey: 'priv-key',
-          },
-        },
-      });
-
-      const result = await service.getNewX25519Cert();
-
-      expect(result).toEqual({
-        publicKey: 'pub-key',
-        privateKey: 'priv-key',
-      });
+  it('preserves the ID for cleanup when readback fails', async () => {
+    api.get.mockRejectedValue({ response: { status: 503 } });
+    await expect(
+      service.addInbound(normalizeInbound(inbound), tokenNode),
+    ).resolves.toMatchObject({
+      id: 42,
+      verificationError: '3x-ui returned HTTP 503',
     });
-
-    it('должен вернуть null при ошибке', async () => {
-      mockAxiosInstance.get.mockRejectedValue(new Error('API error'));
-
-      const result = await service.getNewX25519Cert();
-
-      expect(result).toBeNull();
-    });
+    expect(api.post).toHaveBeenCalledTimes(1);
   });
 
-  describe('CSRF token handling', () => {
-    it('извлекает CSRF токен из cookie x-ui-csrf при логине', async () => {
-      mockSettingsRepo.find.mockResolvedValue([
-        { key: 'xui_url', value: 'http://localhost:3100' },
-        { key: 'xui_login', value: 'admin' },
-        { key: 'xui_password', value: 'password' },
-      ]);
-      mockAxiosInstance.post.mockResolvedValueOnce({
-        headers: {
-          'set-cookie': ['session=s1', 'x-ui-csrf=token123; Path=/'],
-        },
-      });
-
-      await service.login();
-
-      expect(mockAxiosInstance.defaults.headers.common['X-CSRF-Token']).toBe(
-        'token123',
-      );
+  it('rejects disabled readback without losing ownership', async () => {
+    api.get.mockResolvedValue({
+      data: { success: true, obj: { ...inbound, enable: false } },
     });
+    await expect(
+      service.addInbound(normalizeInbound(inbound), tokenNode),
+    ).resolves.toMatchObject({ id: 42, verificationError: expect.any(String) });
+  });
 
-    it('извлекает CSRF токен из HTML meta если cookie отсутствует', async () => {
-      mockSettingsRepo.find.mockResolvedValue([
-        { key: 'xui_url', value: 'http://localhost:3100' },
-        { key: 'xui_login', value: 'admin' },
-        { key: 'xui_password', value: 'password' },
-      ]);
-      mockAxiosInstance.post.mockResolvedValueOnce({
-        headers: {
-          'set-cookie': ['session=s1'],
-        },
-      });
-      // GET /csrf-token returns 404, GET / returns HTML with meta
-      mockAxiosInstance.get
-        .mockRejectedValueOnce({ response: { status: 404 } })
-        .mockResolvedValueOnce({
-          data: '<html><head><meta name="csrf-token" content="metaToken999"></head><body></body></html>',
-          headers: {},
-        });
+  it.each([
+    { success: false, msg: 'Port 443 is already in use' },
+    '<html>login</html>',
+  ])('rejects HTTP 200 errors: %j', async (data) => {
+    api.post.mockResolvedValue({ data });
+    await expect(
+      service.addInbound(normalizeInbound(inbound), tokenNode),
+    ).resolves.toBeNull();
+    expect(api.post).toHaveBeenCalledTimes(1);
+  });
 
-      await service.login();
+  it('does not silently change a port or retry a network failure', async () => {
+    const config = normalizeInbound(inbound);
+    api.post.mockRejectedValue({ message: 'timeout' });
+    await expect(service.addInbound(config, tokenNode)).resolves.toBeNull();
+    expect(config.port).toBe(443);
+    expect(api.post).toHaveBeenCalledTimes(1);
+  });
 
-      expect(mockAxiosInstance.defaults.headers.common['X-CSRF-Token']).toBe(
-        'metaToken999',
-      );
-    });
-
-    it('передает CSRF токен в теле POST /login и заголовке X-CSRF-Token при предлогиновом токене (v3.6.0)', async () => {
-      mockSettingsRepo.find.mockResolvedValue([
-        { key: 'xui_url', value: 'http://localhost:3100' },
-        { key: 'xui_login', value: 'admin' },
-        { key: 'xui_password', value: 'password' },
-      ]);
-      // Предлогиновый GET /login возвращает cookie x-ui-csrf и HTML форму с _csrf
-      mockAxiosInstance.get.mockResolvedValueOnce({
-        headers: { 'set-cookie': ['x-ui-csrf=preLogin123; Path=/'] },
-        data: '<html><input name="_csrf" value="preLogin123"></html>',
-      });
-      mockAxiosInstance.post.mockResolvedValueOnce({
+  it('refreshes CSRF and merges the refreshed session cookie', async () => {
+    api.post
+      .mockResolvedValueOnce({
         data: { success: true },
-        headers: { 'set-cookie': ['session=sessionCookie'] },
-      });
+        headers: { 'set-cookie': ['session=logged-in; HttpOnly'] },
+      })
+      .mockRejectedValueOnce({ response: { status: 403 } })
+      .mockResolvedValueOnce({ data: { success: true, obj: 42 } });
+    const result = await service.addInbound(
+      normalizeInbound(inbound),
+      passwordNode,
+    );
+    expect(result?.id).toBe(42);
+    expect(api.defaults.headers.common.Cookie).toBe('session=current');
+    expect(api.defaults.headers.common['X-CSRF-Token']).toBe('csrf');
+    expect(api.post).toHaveBeenCalledWith(
+      '/login',
+      expect.objectContaining({ _csrf: 'csrf' }),
+    );
+  });
 
-      const result = await service.login();
+  it('reauthenticates once on a cookie session 401', async () => {
+    api.post
+      .mockResolvedValueOnce({
+        data: { success: true },
+        headers: { 'set-cookie': ['session=one'] },
+      })
+      .mockRejectedValueOnce({ response: { status: 401 } })
+      .mockResolvedValueOnce({
+        data: { success: true },
+        headers: { 'set-cookie': ['session=two'] },
+      })
+      .mockResolvedValueOnce({ data: { success: true, obj: 42 } });
+    await expect(
+      service.addInbound(normalizeInbound(inbound), passwordNode),
+    ).resolves.toMatchObject({ id: 42 });
+  });
 
-      expect(result).toBe(true);
-      expect(mockAxiosInstance.post).toHaveBeenCalledWith(
-        '/login',
-        expect.objectContaining({
-          username: 'admin',
-          password: 'password',
-          _csrf: 'preLogin123',
-          csrf_token: 'preLogin123',
-        }),
-      );
-      expect(mockAxiosInstance.defaults.headers.common['X-CSRF-Token']).toBe(
-        'preLogin123',
-      );
+  it('does not retry rejected bearer credentials', async () => {
+    api.post.mockRejectedValue({ response: { status: 403 } });
+    await expect(
+      service.addInbound(normalizeInbound(inbound), tokenNode),
+    ).resolves.toBeNull();
+    expect(api.post).toHaveBeenCalledTimes(1);
+    expect(api.get).not.toHaveBeenCalled();
+  });
+
+  it('requires login success even when a cookie was set', async () => {
+    api.post.mockResolvedValue({
+      data: { success: false },
+      headers: { 'set-cookie': ['session=anonymous'] },
     });
+    await expect(service.login()).resolves.toBe(false);
+  });
 
-    it('повторяет запрос addInbound при получении HTTP 403 (CSRF refresh)', async () => {
-      const node = {
-        id: 'node-csrf-retry',
-        name: 'csrf-retry-node',
-        url: 'https://node-csrf.example.com',
-        protocol: NodeProtocol.Https,
-        authType: NodeAuthType.Password,
-        login: 'admin',
-        password: 'password',
-      } as never;
-
-      // login: POST /login -> 200
-      mockAxiosInstance.post
-        .mockResolvedValueOnce({
-          data: { success: true },
-          headers: { 'set-cookie': ['session=s1'] },
-        })
-        // 1st addInbound: rejects with 403 (CSRF expired)
-        .mockRejectedValueOnce({
-          response: { status: 403, data: { msg: 'CSRF token mismatch' } },
-          message: 'Request failed with status code 403',
-        })
-        // 2nd addInbound (after refresh): succeeds with ID 77
-        .mockResolvedValueOnce({
-          data: { success: true, obj: { id: 77 } },
-        });
-
-      // GET for CSRF refresh
-      mockAxiosInstance.get.mockResolvedValue({
-        headers: { 'x-csrf-token': 'refreshed-token' },
-      });
-
-      const result = await service.addInbound({ port: 443 }, node);
-
-      expect(result).toBe(77);
-      expect(mockAxiosInstance.defaults.headers.common['X-CSRF-Token']).toBe(
-        'refreshed-token',
-      );
+  it('supports CSRF HTML with reversed attribute order on older panels', async () => {
+    const get = api.get.getMockImplementation();
+    api.get.mockImplementation(async (path: string) => {
+      if (path === '/csrf-token') throw { response: { status: 404 } };
+      if (path === '/login')
+        return {
+          data: '<meta content="legacy-token" name="csrf-token">',
+          headers: {},
+        };
+      return get(path);
     });
+    await expect(service.login()).resolves.toBe(true);
+    expect(api.defaults.headers.common['X-CSRF-Token']).toBe('legacy-token');
+  });
+
+  it('uses panelVersion and reports Xray independently from API availability', async () => {
+    await expect(service.checkNodeConnection(tokenNode)).resolves.toMatchObject(
+      {
+        success: true,
+        version: '3.8.5',
+        xrayVersion: '26.9.9',
+        xrayState: 'running',
+        webCertificateFile: '/cert/fullchain.pem',
+      },
+    );
+  });
+
+  it.each([
+    { success: false, msg: 'Access denied' },
+    '<html>login</html>',
+    { success: true, obj: {} },
+  ])('rejects invalid inbound lists: %j', async (data) => {
+    api.get.mockResolvedValue({ data });
+    await expect(service.checkNodeConnection(tokenNode)).resolves.toMatchObject(
+      { success: false, errorType: 'api' },
+    );
+  });
+
+  it('classifies network failures separately from authentication', async () => {
+    api.get.mockRejectedValue(new Error('connect ECONNREFUSED'));
+    await expect(service.checkNodeConnection(tokenNode)).resolves.toMatchObject(
+      { success: false, errorType: 'network' },
+    );
+  });
+
+  it('requires a running Xray before activation', async () => {
+    await expect(service.waitForXray(tokenNode)).resolves.toBeUndefined();
+    api.get.mockResolvedValue({
+      data: {
+        success: true,
+        obj: { xray: { state: 'error', errorMsg: 'invalid transport' } },
+      },
+    });
+    jest.spyOn(global, 'setTimeout').mockImplementation(((
+      callback: () => void,
+    ) => {
+      callback();
+      return 0;
+    }) as any);
+    await expect(service.waitForXray(tokenNode)).rejects.toThrow(
+      'invalid transport',
+    );
+  });
+
+  it('returns false for ambiguous deletion HTTP 404', async () => {
+    api.post.mockRejectedValue({ response: { status: 404 } });
+    await expect(service.deleteInbound(42, tokenNode)).resolves.toBe(false);
+  });
+
+  it('accepts a confirmed already absent inbound', async () => {
+    api.post.mockResolvedValue({
+      data: { success: false, msg: 'record not found' },
+    });
+    await expect(service.deleteInbound(42, tokenNode)).resolves.toBe(true);
+  });
+
+  it('validates Reality key responses', async () => {
+    api.get.mockResolvedValue({
+      data: {
+        success: true,
+        obj: { privateKey: 'private', publicKey: 'public' },
+      },
+    });
+    await expect(service.getNewX25519Cert(tokenNode)).resolves.toEqual({
+      privateKey: 'private',
+      publicKey: 'public',
+    });
+    api.get.mockResolvedValue({
+      data: { success: true, obj: { privateKey: 'private' } },
+    });
+    await expect(service.getNewX25519Cert(tokenNode)).resolves.toBeNull();
+  });
+
+  it('maps modern and legacy discovery fields', async () => {
+    api.get.mockResolvedValue({
+      data: {
+        success: true,
+        obj: [
+          {
+            address: 'edge.test',
+            port: 2053,
+            scheme: 'https',
+            basePath: '/secret/',
+            panelVersion: '3.8.5',
+          },
+          { host: 'old.test', port: 2053, protocol: 'http', version: '2.9.4' },
+          { address: 'bad.test', port: 0, scheme: 'file' },
+        ],
+      },
+    });
+    await expect(service.getNodes(tokenNode)).resolves.toEqual([
+      {
+        host: 'edge.test',
+        port: 2053,
+        protocol: 'https',
+        basePath: '/secret/',
+        version: '3.8.5',
+      },
+      {
+        host: 'old.test',
+        port: 2053,
+        protocol: 'http',
+        basePath: '/',
+        version: '2.9.4',
+      },
+    ]);
   });
 });
 
+describe('wire normalization', () => {
+  it('merges cookies without duplicating names or forwarding attributes', () => {
+    expect(
+      mergeCookies('session=old; other=keep', [
+        'session=new; Path=/; HttpOnly',
+        'csrf=value; Secure',
+      ]),
+    ).toBe('session=new; other=keep; csrf=value');
+    expect(
+      mergeCookies('session=old; other=keep', ['session=; Max-Age=0']),
+    ).toBe('other=keep');
+  });
+  it('rejects malformed JSON instead of silently publishing empty settings', () => {
+    expect(() => normalizeInbound({ ...inbound, settings: 'bad' })).toThrow(
+      'settings',
+    );
+    expect(() => responsePayload({ success: false, msg: 'Denied' })).toThrow(
+      'Denied',
+    );
+  });
+  it.each(['Port 443 is already in use', 'port 443 exists', 'Порт 443 занят'])(
+    'recognizes port conflict: %s',
+    (message) => {
+      expect(isPortConflict(message)).toBe(true);
+    },
+  );
+});

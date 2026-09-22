@@ -17,6 +17,9 @@ interface NodeCapabilityInput {
 
 const AMNEZIAWG_MIN_PANEL_VERSION = [3, 7, 0] as const;
 const MTPROTO_MULTI_CLIENT_MIN_PANEL_VERSION = [3, 5, 0] as const;
+// Conservative client profile: the installed Xray 26.9.9 rejects public
+// VLESS outbounds without TLS/REALITY or VLESS encryption.
+const ENCRYPTED_VLESS_CLIENT_VERSION = [26, 9, 9] as const;
 const HYSTERIA2_MIN_XRAY_VERSION = [26, 3, 27] as const;
 
 export function buildNodeCapabilities(
@@ -26,6 +29,12 @@ export function buildNodeCapabilities(
     supportsInboundType(type, input),
   );
   const warnings: string[] = [];
+
+  if (!supportsInboundType('vless-ws', input)) {
+    warnings.push(
+      'VLESS WS без TLS несовместим с клиентом Xray 26.9.9+; используйте VLESS WS TLS',
+    );
+  }
 
   if (!input.panelVersion) {
     warnings.push('Версия 3x-ui не определена; новые протоколы отключены');
@@ -50,6 +59,9 @@ export function supportsInboundType(
   type: InboundType,
   input: NodeCapabilityInput,
 ): boolean {
+  if (type === 'vless-ws') {
+    return !versionAtLeast(input.xrayVersion, ENCRYPTED_VLESS_CLIENT_VERSION);
+  }
   if (type === 'amneziawg') {
     return (
       isDevelopmentVersion(input.panelVersion) ||
