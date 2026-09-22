@@ -66,6 +66,19 @@ const isValidIp = (value?: string) =>
   (/^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(value.trim()) ||
     /^([0-9a-f]{1,4}:){2,7}[0-9a-f]{1,4}$/i.test(value.trim()));
 
+const extractDomainFromUrl = (value?: string) => {
+  if (!value) return '';
+  try {
+    const raw = value.trim();
+    const url = raw.includes('://') ? raw : `https://${raw}`;
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^\[|\]$/g, '');
+    return host && !isValidIp(host) ? host : '';
+  } catch {
+    return '';
+  }
+};
+
 export default function NodesPage() {
   const [nodes, setNodes] = useState<NodeRecord[]>([]);
   const [open, setOpen] = useState(false);
@@ -122,6 +135,20 @@ export default function NodesPage() {
     setFormErrors((prev) => ({ ...prev, [key]: undefined }));
   };
 
+  const handleUrlChange = (value: string) => {
+    const prevAutoDomain = extractDomainFromUrl(form.url);
+    const nextAutoDomain = extractDomainFromUrl(value);
+    setForm((prev) => {
+      const shouldUpdateDomain = !prev.domain || prev.domain === prevAutoDomain;
+      return {
+        ...prev,
+        url: value,
+        domain: shouldUpdateDomain && nextAutoDomain ? nextAutoDomain : prev.domain,
+      };
+    });
+    setFormErrors((prev) => ({ ...prev, url: undefined }));
+  };
+
   const validateForm = (requireSecrets = !editing) => {
     const errors: Partial<Record<keyof NodePayload, string>> = {};
 
@@ -147,6 +174,7 @@ export default function NodesPage() {
     const url = form.url.trim();
     if (!url) return;
 
+    const autoDomain = extractDomainFromUrl(url);
     setDetectingLocation(true);
     try {
       const result = await nodesApi.detectLocation(url.replace(/\/+$/, ''));
@@ -154,6 +182,7 @@ export default function NodesPage() {
         ...prev,
         ip: result.ip || prev.ip,
         flag: result.flag || prev.flag,
+        domain: prev.domain || result.domain || autoDomain || '',
       }));
       if (result.country || result.ip) {
         setMessage({
@@ -175,10 +204,11 @@ export default function NodesPage() {
       return;
     }
 
+    const autoDomain = extractDomainFromUrl(form.url);
     const payload: NodePayload = {
       ...form,
       url: form.url.replace(/\/+$/, ''),
-      domain: form.domain?.trim() || undefined,
+      domain: form.domain?.trim() || autoDomain || undefined,
       ip: form.ip || undefined,
       flag: form.flag || undefined,
       login: form.authType === 'password' ? form.login : undefined,
@@ -368,14 +398,14 @@ export default function NodesPage() {
               required
               helperText={formErrors.url || 'Например: https://85.198.84.27:35366/2vIsDA5HanQ3R7JyIH'}
               value={form.url}
-              onChange={(e) => updateField('url', e.target.value)}
+              onChange={(e) => handleUrlChange(e.target.value)}
               onBlur={detectNodeLocation}
               error={!!formErrors.url}
               InputProps={{ endAdornment: detectingLocation ? <CircularProgress size={18} /> : undefined }}
             />
             <TextField
               label="Домен ноды"
-              helperText="Имя из TLS-сертификата панели, например node.example.com"
+              helperText="Определяется автоматически из ссылки (при необходимости можно изменить)"
               value={form.domain || ''}
               onChange={(e) => updateField('domain', e.target.value)}
             />

@@ -92,7 +92,7 @@ export class NodesService {
       ...dto,
       url: this.normalizeUrl(dto.url),
       host: resolved.host,
-      domain: dto.domain || resolved.domain,
+      domain: dto.domain?.trim() || resolved.domain,
       port: resolved.port,
       protocol: resolved.protocol,
       ip: resolved.ip,
@@ -142,13 +142,13 @@ export class NodesService {
         dto.ip,
       );
       node.host = resolved.host;
-      node.domain = dto.domain || resolved.domain;
+      node.domain = dto.domain?.trim() || resolved.domain;
       node.port = resolved.port;
       node.protocol = resolved.protocol;
       node.ip = resolved.ip;
       node.flag = resolved.flag;
     } else {
-      if (dto.domain !== undefined) node.domain = dto.domain;
+      if (dto.domain !== undefined) node.domain = dto.domain.trim() || undefined;
       if (dto.ip) node.ip = dto.ip;
       if (dto.flag) node.flag = dto.flag;
     }
@@ -651,6 +651,9 @@ export class NodesService {
   }
 
   private normalizeUrl(url: string) {
-    return url.trim().replace(/\/+$/, '');
+    return url
+      .trim()
+      .replace(/\/(?:panel|xui)(?:\/.*)?$/i, '')
+      .replace(/\/+$/, '');
   }
 }

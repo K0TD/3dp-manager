@@ -536,4 +536,74 @@ describe('SubscriptionsService', () => {
       expect(xuiService.deleteInbound).not.toHaveBeenCalled();
     });
   });
+
+  describe('certificateMode handling', () => {
+    it('defaults to node certificate and ignores leftover certificate paths', async () => {
+      mockSubRepo.create.mockImplementation((data) => data);
+      mockSubRepo.save.mockImplementation(async (data) => data);
+
+      const sub = await service.create({
+        name: 'Test Sub',
+        inboundsConfig: [
+          {
+            type: 'hysteria2-udp',
+            port: 443,
+            certificateFile: '/root/cert/old.mooo.com/fullchain.pem',
+            keyFile: '/root/cert/old.mooo.com/privkey.pem',
+          },
+        ],
+      });
+
+      expect(sub.inboundsConfig[0].certificateMode).toBe('node');
+      expect(sub.inboundsConfig[0].certificateFile).toBeUndefined();
+      expect(sub.inboundsConfig[0].keyFile).toBeUndefined();
+    });
+
+    it('resets certificateMode to node when nodeId is changed on an inbound', async () => {
+      const existingSub = {
+        id: 'sub-1',
+        name: 'Existing Sub',
+        inboundsConfig: [
+          {
+            configId: 'cfg-1',
+            type: 'hysteria2-udp',
+            port: 443,
+            nodeId: 'node-1',
+            certificateMode: 'custom',
+            certificateFile: '/root/cert/node-1.mooo.com/fullchain.pem',
+            keyFile: '/root/cert/node-1.mooo.com/privkey.pem',
+            tlsServerName: 'node-1.mooo.com',
+          },
+        ],
+      } as unknown as Subscription;
+
+      mockSubRepo.findOne.mockResolvedValue(existingSub);
+      mockNodeRepo.findOne.mockResolvedValue({
+        id: 'node-2',
+        version: '3.8.5',
+        xrayVersion: '26.9.9',
+      } as Node);
+      mockEntityManager.save.mockImplementation(async (_cls, data) => data);
+
+      const updated = await service.update('sub-1', {
+        inboundsConfig: [
+          {
+            configId: 'cfg-1',
+            type: 'hysteria2-udp',
+            port: 443,
+            nodeId: 'node-2',
+            certificateMode: 'custom',
+            certificateFile: '/root/cert/node-1.mooo.com/fullchain.pem',
+            keyFile: '/root/cert/node-1.mooo.com/privkey.pem',
+            tlsServerName: 'node-1.mooo.com',
+          },
+        ],
+      });
+
+      expect(updated?.inboundsConfig[0].nodeId).toBe('node-2');
+      expect(updated?.inboundsConfig[0].certificateMode).toBe('node');
+      expect(updated?.inboundsConfig[0].certificateFile).toBeUndefined();
+      expect(updated?.inboundsConfig[0].keyFile).toBeUndefined();
+    });
+  });
 });

@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import axios, { AxiosInstance, AxiosError, AxiosResponse } from 'axios';
@@ -8,6 +8,9 @@ import { XuiCertResult, XuiInboundRaw, XuiDiscoveredNode } from './xui.types';
 import { SessionService } from '../session/session.service';
 import { Node, NodeAuthType } from '../nodes/entities/node.entity';
 import { isSafeAbsoluteRemotePath } from '../inbounds/tls-config';
+import { RoutingStore } from '../nodes/routing/routing-store.service';
+import { emptyRoutingState, hasPresets, prepareSniffing, supportsSniffing } from '../nodes/routing/routing-presets';
+import type { XrayTemplate } from '../nodes/routing/routing-presets';
 import {
   XuiApiError,
   asRecord,
@@ -51,6 +54,7 @@ export class XuiService {
   constructor(
     @InjectRepository(Setting) private settingsRepo: Repository<Setting>,
     private sessionService: SessionService,
+    @Optional() private readonly routingStore?: RoutingStore,
   ) {}
 
   getLastInboundError(node?: Node): string | undefined {
@@ -58,8 +62,12 @@ export class XuiService {
   }
 
   private createApi(baseURL: string, allowInvalidTls = false): AxiosInstance {
+    const cleanBaseURL = baseURL
+      .trim()
+      .replace(/\/(?:panel|xui)(?:\/.*)?$/i, '')
+      .replace(/\/+$/, '');
     const api = axios.create({
-      baseURL: baseURL.replace(/\/+$/, ''),
+      baseURL: cleanBaseURL,
       timeout: 8000,
       proxy: false,
       withCredentials: true,
@@ -253,6 +261,31 @@ export class XuiService {
     inboundConfig: XuiInboundRaw,
     node?: Node,
   ): Promise<XuiCreatedInbound | null> {
+    if (!node || !this.routingStore) return this.createInbound(inboundConfig, node);
+    return this.routingStore.withLock(node.id, async () => {
+      const current = await this.routingStore!.node(node.id);
+      const state = current.routingPresets || emptyRoutingState();
+      if (state.pending) throw new ConflictException('Применение маршрутизации ноды не завершено. Проверьте быстрые настройки.');
+      const prepared = hasPresets(state) && supportsSniffing(inboundConfig)
+        ? prepareSniffing(inboundConfig) : undefined;
+      const result = await this.createInbound(prepared?.inbound || inboundConfig, current);
+      if (result && prepared) {
+        state.sniffing[String(result.id)] = prepared.change;
+        try {
+          await this.routingStore!.save(node.id, state);
+        } catch {
+          // Return the created identity so rotation's existing cleanup can remove it.
+          result.verificationError = 'Не удалось сохранить исходный sniffing для нового inbound';
+        }
+      }
+      return result;
+    });
+  }
+
+  private async createInbound(
+    inboundConfig: XuiInboundRaw,
+    node?: Node,
+  ): Promise<XuiCreatedInbound | null> {
     const key = node?.id || 'main';
     this.lastInboundErrors.delete(key);
     let created: XuiCreatedInbound | undefined;
@@ -327,6 +360,11 @@ export class XuiService {
   }
 
   async deleteInbound(id: number, node?: Node): Promise<boolean> {
+    if (!node || !this.routingStore) return this.removeInbound(id, node);
+    return this.routingStore.withLock(node.id, () => this.removeInbound(id, node));
+  }
+
+  private async removeInbound(id: number, node?: Node): Promise<boolean> {
     if (!id || id <= 0) return true;
     try {
       return await this.authenticatedRequest(node, async (api) => {
@@ -478,6 +516,85 @@ export class XuiService {
       }
       throw new XuiApiError(message);
     });
+  }
+
+  async getXrayTemplate(node: Node): Promise<XrayTemplate> {
+    return this.authenticatedRequest(node, async (api) => {
+      for (const path of ['/panel/api/xray', '/panel/xray'] as const) {
+        let response: AxiosResponse<unknown>;
+        try {
+          response = await api.post<unknown>(`${path}/`);
+        } catch (error) {
+          if (path === '/panel/api/xray' && [404, 405].includes((error as AxiosError).response?.status || 0)) continue;
+          throw error;
+        }
+        const wrapper = jsonObject(responsePayload(response.data), 'Xray settings');
+        const config = jsonObject(wrapper.xraySetting, 'Xray template');
+        if (!Array.isArray(config.outbounds) || !config.outbounds.length) {
+          throw new XuiApiError('Шаблон Xray не содержит исходящих подключений');
+        }
+        if (typeof wrapper.outboundTestUrl !== 'string') throw new XuiApiError('Invalid outbound test URL');
+        return { path, config, outboundTestUrl: wrapper.outboundTestUrl };
+      }
+      throw new XuiApiError('API маршрутизации недоступен для этой панели или способа авторизации');
+    });
+  }
+
+  async saveXrayTemplate(node: Node, template: XrayTemplate): Promise<void> {
+    await this.authenticatedRequest(node, async (api) => {
+      const body = new URLSearchParams({ xraySetting: JSON.stringify(template.config), outboundTestUrl: template.outboundTestUrl });
+      responsePayload((await api.post<unknown>(`${template.path}/update`, body)).data);
+    });
+  }
+
+  async listRoutingInbounds(node: Node): Promise<XuiInboundRaw[]> {
+    return this.authenticatedRequest(node, async (api) => {
+      const payload = responsePayload((await api.get<unknown>('/panel/api/inbounds/list')).data);
+      if (!Array.isArray(payload)) throw new XuiApiError('Invalid inbound list');
+      return payload.map((value) => {
+        const raw = jsonObject(value, 'object');
+        // Do not normalize sidecar protocols/port ranges into the creation DTO.
+        if (!Number.isInteger(raw.id) || typeof raw.protocol !== 'string') throw new XuiApiError('Invalid inbound identity');
+        return raw as unknown as XuiInboundRaw;
+      });
+    });
+  }
+
+  async updateInboundSniffing(node: Node, inbound: XuiInboundRaw): Promise<void> {
+    await this.authenticatedRequest(node, async (api) => {
+      const body = { ...inbound };
+      for (const field of ['settings', 'streamSettings', 'sniffing']) {
+        if (typeof body[field] !== 'string') body[field] = JSON.stringify(body[field] ?? {});
+      }
+      // Read-only statistics must never reset live counters on an update.
+      for (const field of ['up', 'down', 'allTime', 'clientStats', 'lastTrafficResetTime']) delete body[field];
+      responsePayload((await api.post<unknown>(`/panel/api/inbounds/update/${inbound.id}`, body)).data);
+    });
+  }
+
+  async validateRoutingGeodata(node: Node, path: XrayTemplate['path']): Promise<boolean> {
+    return this.authenticatedRequest(node, async (api) => {
+      for (const [kind, tokens] of [['domain', 'geosite:category-ru'], ['ip', 'geoip:ru']]) {
+        let response: AxiosResponse<unknown>;
+        try {
+          response = await api.post<unknown>(`${path}/geodata/validate`, new URLSearchParams({ kind, tokens }));
+        } catch (error) {
+          if ([404, 405].includes((error as AxiosError).response?.status || 0)) return false;
+          throw error;
+        }
+        const issues = responsePayload(response.data);
+        if (!Array.isArray(issues)) throw new XuiApiError('Invalid geodata validation response');
+        if (issues.length) throw new XuiApiError(`В 3x-ui отсутствует или повреждена категория ${tokens}. Обновите геобазы панели.`);
+      }
+      return true;
+    });
+  }
+
+  async applyXrayConfig(node: Node): Promise<void> {
+    await this.authenticatedRequest(node, async (api) => {
+      responsePayload((await api.post<unknown>('/panel/api/server/restartXrayService')).data);
+    });
+    await this.waitForXray(node);
   }
 
   async getWebCertificateFiles(

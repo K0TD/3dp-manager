@@ -13,6 +13,7 @@
 import https from 'node:https';
 import http from 'node:http';
 import crypto from 'node:crypto';
+import { buildCases } from './probe-xui-payloads.mjs';
 
 const ARGS = parseArgs(process.argv.slice(2));
 
@@ -23,8 +24,9 @@ if (ARGS.help || ARGS.h) {
 
 const URL_INPUT = ARGS.url || process.env.XUI_URL;
 const TOKEN = ARGS.token || process.env.XUI_TOKEN;
-const LOGIN = ARGS.login || process.env.XUI_LOGIN;
-const PASSWORD = ARGS.password || process.env.XUI_PASSWORD;
+const LOGIN = ARGS.login || ARGS.user || process.env.XUI_LOGIN || process.env.XUI_USER;
+const PASSWORD = ARGS.password || ARGS.pass || process.env.XUI_PASSWORD || process.env.XUI_PASS;
+const SNI = ARGS.sni || 'www.cloudflare.com';
 const ALLOW_INSECURE = Boolean(ARGS.insecure || ARGS['allow-insecure'] || process.env.XUI_ALLOW_INSECURE);
 
 if (!URL_INPUT) {
@@ -72,7 +74,7 @@ async function main() {
     xrayVersion: null,
     realityKeys: false,
     certPaths: null,
-    inboundAddTgId: false,
+    inbounds: [],
   };
 
   // 1. Проверка доступности
@@ -144,67 +146,60 @@ async function main() {
   // 5. TLS-сертификаты панели
   process.stdout.write(`[5/6] Проверка путей TLS-сертификата панели... `);
   const certFilesRes = await client.request('GET', 'panel/api/server/getWebCertFiles');
-  if (certFilesRes.json?.success && certFilesRes.json?.obj?.certPath) {
+  if (certFilesRes.json?.success && (certFilesRes.json?.obj?.webCertFile || certFilesRes.json?.obj?.certPath)) {
     report.certPaths = certFilesRes.json.obj;
-    console.log(`${ok} Сертификат: ${report.certPaths.certPath}`);
+    console.log(`${ok} Сертификат: ${report.certPaths.webCertFile || report.certPaths.certPath}`);
   } else {
     console.log(`${info} Авто-сертификат панели не настроен (требуются свои пути для TLS)`);
   }
 
-  // 6. Тестовое создание инбаунда с tgId: 0 (Go struct проверка)
-  process.stdout.write(`[6/6] Проверка совместимости типов (tgId: 0, alterId: 0)... `);
-  const testPort = ARGS.port ? Number(ARGS.port) : Math.floor(Math.random() * (50000 - 20000)) + 20000;
-  const testUuid = crypto.randomUUID();
-  const testInboundPayload = {
-    enable: true,
-    port: testPort,
-    protocol: 'vmess',
-    remark: `probe-test-${testPort}`,
-    settings: JSON.stringify({
-      clients: [
-        {
-          id: testUuid,
-          alterId: 0,
-          email: testUuid,
-          limitIp: 0,
-          totalGB: 0,
-          expiryTime: 0,
-          enable: true,
-          tgId: 0,
-          subId: '0',
-          reset: 0,
-        },
-      ],
-    }),
-    streamSettings: JSON.stringify({
-      network: 'tcp',
-      security: 'none',
-      tcpSettings: { acceptProxyProtocol: false, header: { type: 'none' } },
-    }),
-    sniffing: JSON.stringify({ enabled: false }),
-  };
-
-  const addRes = await client.request('POST', 'panel/api/inbounds/add', testInboundPayload);
-  let createdId = null;
-  if (addRes.json?.success) {
-    report.inboundAddTgId = true;
-    createdId = typeof addRes.json.obj === 'number'
-      ? addRes.json.obj
-      : addRes.json.obj?.id;
-    console.log(`${ok} Инбаунд принят Go struct без ошибок!`);
-
-    // Немедленная очистка
-    if (!createdId) {
+  // 6. Проверяем каждый тип отдельно и сохраняем причину отказа панели.
+  console.log('[6/6] Проверка создания восьми типов инбаундов...');
+  const certificateFile = ARGS['certificate-file'] || report.certPaths?.webCertFile || report.certPaths?.certPath || `/root/cert/${SNI}/fullchain.pem`;
+  const keyFile = ARGS['key-file'] || report.certPaths?.webKeyFile || report.certPaths?.keyPath || `/root/cert/${SNI}/privkey.pem`;
+  const usedPorts = new Set();
+  for (const testCase of buildCases(certRes.json?.obj || {}, SNI, certificateFile, keyFile)) {
+    const testPort = ARGS.port ? Number(ARGS.port) + report.inbounds.length : nextPort(usedPorts);
+    if (!Number.isInteger(testPort) || testPort < 1 || testPort > 65535) {
+      throw new Error('Порт для тестовых инбаундов должен быть в диапазоне 1–65535');
+    }
+    const payload = testCase.build(testPort, crypto.randomUUID());
+    payload.remark = `probe-${testCase.type}-${crypto.randomUUID()}`;
+    const addRes = await client.request('POST', 'panel/api/inbounds/add', payload);
+    const accepted = addRes.ok && addRes.json?.success === true;
+    const result = {
+      type: testCase.type,
+      port: testPort,
+      status: addRes.status,
+      accepted,
+      deleted: false,
+      message: accepted ? '' : String(addRes.json?.msg || addRes.error || addRes.body.slice(0, 300)),
+    };
+    report.inbounds.push(result);
+    // If the request timed out, it may still have created an inbound. Recover
+    // ownership by our unique remark, never by a possibly occupied port.
+    let createdId = Number(typeof addRes.json?.obj === 'object' ? addRes.json.obj?.id : addRes.json?.obj);
+    if (!accepted || !Number.isInteger(createdId) || createdId <= 0) {
       const listRes = await client.request('GET', 'panel/api/inbounds/list');
-      const found = (listRes.json?.obj || []).find((i) => i.port === testPort);
-      if (found) createdId = found.id;
+      if (!listRes.ok || listRes.json?.success !== true || !Array.isArray(listRes.json.obj)) {
+        result.message += ' Не удалось проверить наличие тестового инбаунда; проверьте панель.';
+        break;
+      }
+      createdId = Number(listRes.json.obj.find((item) => item.remark === payload.remark)?.id);
     }
-    if (createdId) {
-      await client.request('POST', `panel/api/inbounds/del/${createdId}`);
+    if (Number.isInteger(createdId) && createdId > 0) {
+      const deletion = await client.request('POST', `panel/api/inbounds/del/${createdId}`);
+      result.deleted = deletion.ok && deletion.json?.success === true;
+      if (!result.deleted) {
+        result.message += ` Не удалось удалить тестовый инбаунд ID ${createdId}; проверка остановлена.`;
+        break;
+      }
+    } else if (accepted) {
+      result.message = 'Панель не вернула ID созданного инбаунда; проверьте панель.';
+      break;
     }
-  } else {
-    console.log(`${fail} Отклонено 3x-ui: ${addRes.json?.msg || addRes.error || ''}`);
   }
+  console.table(report.inbounds);
 
   // Итоговый отчёт
   console.log(`\n${colors.bold}${colors.cyan}--- Итоговый статус совместимости ---${colors.reset}`);
@@ -212,10 +207,11 @@ async function main() {
   console.log(` Аутентификация:          ${report.auth ? ok : fail}`);
   console.log(` CSRF-защита (v3.6.0+):   ${report.csrfActive ? colors.green + 'Активна и поддержана' : colors.dim + 'Не требуется или токен'}${colors.reset}`);
   console.log(` Reality (X25519):        ${report.realityKeys ? ok : warn + ' Недоступно'}`);
-  console.log(` Десериализация tgId: 0:  ${report.inboundAddTgId ? ok + colors.green + ' Совместимо' : fail + colors.red + ' Ошибка'}${colors.reset}`);
+  const acceptedCount = report.inbounds.filter((item) => item.accepted).length;
+  console.log(` Принято типов инбаундов: ${acceptedCount}/8`);
 
-  if (report.connectivity && report.auth && report.inboundAddTgId) {
-    console.log(`\n${colors.bold}${colors.green}🚀 Вердикт: Нода полностью совместима с 3dp-manager!${colors.reset}\n`);
+  if (report.connectivity && report.auth && report.inbounds.length === 8 && report.inbounds.every((item) => item.accepted && item.deleted)) {
+    console.log(`\n${colors.bold}${colors.green}🚀 Вердикт: Панель приняла все восемь тестовых конфигураций.${colors.reset}\n`);
     process.exit(0);
   } else {
     console.log(`\n${colors.bold}${colors.yellow}⚠️ Вердикт: Обнаружены проблемы совместимости.${colors.reset}\n`);
@@ -238,9 +234,13 @@ class XuiHttpClient {
   }
 
   async fetchPreLoginCsrf() {
-    for (const endpoint of ['login', '']) {
+    for (const endpoint of ['csrf-token', 'login', '']) {
       try {
         const res = await this.request('GET', endpoint);
+        if (res.ok && res.json?.success !== false && typeof res.json?.obj === 'string' && res.json.obj) {
+          this.csrfToken = res.json.obj;
+          return this.csrfToken;
+        }
         if (res.headers['x-csrf-token']) {
           this.csrfToken = res.headers['x-csrf-token'];
           return this.csrfToken;
@@ -275,8 +275,14 @@ class XuiHttpClient {
       payload.csrf_token = csrfToken;
     }
     const res = await this.request('POST', 'login', payload);
+    const success = res.ok && res.json?.success === true;
+    if (success) {
+      // Login rotates the session: obtain a token bound to the new cookie.
+      this.csrfToken = null;
+      await this.fetchPreLoginCsrf();
+    }
     return {
-      success: Boolean(res.json?.success),
+      success,
       msg: res.json?.msg,
       error: res.error,
     };
@@ -398,6 +404,15 @@ class XuiHttpClient {
   }
 }
 
+function nextPort(usedPorts) {
+  let port;
+  do {
+    port = crypto.randomInt(20000, 60001);
+  } while (usedPorts.has(port));
+  usedPorts.add(port);
+  return port;
+}
+
 function normalizeUrl(url) {
   let u = url.trim();
   if (!u.startsWith('http://') && !u.startsWith('https://')) {
@@ -439,8 +454,13 @@ function printUsage() {
   --login <username>     Логин администратора
   --password <password>  Пароль администратора
   --insecure             Игнорировать самоподписанные SSL-сертификаты
-  --port <port>          Порт для тестового инбаунда (по умолчанию случайный)
+  --port <port>          Начальный порт для восьми тестовых инбаундов (иначе случайные)
+  --sni <domain>         Reality/TLS SNI (по умолчанию www.cloudflare.com)
+  --certificate-file    Путь fullchain.pem на ноде (иначе сертификат панели)
+  --key-file            Путь privkey.pem на ноде (иначе ключ панели)
   --help, -h             Справка
+
+Скрипт создаёт и удаляет восемь тестовых инбаундов; проверка трафика не выполняется.
 
 Примеры:
   node server/scripts/probe-xui.mjs --url https://node.example.com:2053/path --token secret123

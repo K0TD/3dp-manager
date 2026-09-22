@@ -97,7 +97,10 @@ export class SubscriptionsService {
     let nextConfigs: InboundConfig[] | undefined;
     if (dto.inboundsConfig) {
       await this.validateInboundsConfig(dto.inboundsConfig);
-      nextConfigs = this.withConfigIds(dto.inboundsConfig);
+      nextConfigs = this.withConfigIds(
+        dto.inboundsConfig,
+        sub.inboundsConfig as Array<{ configId?: string; nodeId?: string }>,
+      );
       sub.inboundsConfig = nextConfigs;
     }
 
@@ -208,16 +211,43 @@ export class SubscriptionsService {
     }
   }
 
-  private withConfigIds(configs: InboundConfig[]): InboundConfig[] {
-    return configs.map((config) => this.normalizeConfig(config));
+  private withConfigIds(
+    configs: InboundConfig[],
+    existingConfigs?: Array<{ configId?: string; nodeId?: string }>,
+  ): InboundConfig[] {
+    const existingMap = new Map(
+      (existingConfigs || [])
+        .filter((c): c is { configId: string; nodeId?: string } =>
+          Boolean(c.configId),
+        )
+        .map((c) => [c.configId, c]),
+    );
+    return configs.map((config) =>
+      this.normalizeConfig(
+        config,
+        config.configId ? existingMap.get(config.configId) : undefined,
+      ),
+    );
   }
 
-  private normalizeConfig(config: InboundConfig): InboundConfig {
+  private normalizeConfig(
+    config: InboundConfig,
+    existingConfig?: { configId?: string; nodeId?: string },
+  ): InboundConfig {
     const isCertificateInbound = CERTIFICATE_INBOUND_TYPES.has(
       config.type as InboundType,
     );
+    // When changing node in an already created inbound, reset certificate to the target node
+    const nodeChanged = Boolean(
+      existingConfig &&
+        existingConfig.nodeId &&
+        config.nodeId &&
+        existingConfig.nodeId !== config.nodeId,
+    );
     const certificateMode = isCertificateInbound
-      ? this.resolveCertificateMode(config)
+      ? nodeChanged
+        ? 'node'
+        : this.resolveCertificateMode(config)
       : undefined;
     return {
       ...config,
@@ -225,7 +255,9 @@ export class SubscriptionsService {
       sni: config.sni?.trim() || undefined,
       certificateMode,
       tlsServerName: isCertificateInbound
-        ? config.tlsServerName?.trim() || this.legacyTlsServerName(config)
+        ? nodeChanged
+          ? undefined
+          : config.tlsServerName?.trim() || this.legacyTlsServerName(config)
         : undefined,
       certificateFile:
         certificateMode === 'custom'
@@ -243,10 +275,7 @@ export class SubscriptionsService {
 
   private resolveCertificateMode(config: InboundConfig): CertificateMode {
     if (config.certificateMode === 'custom') return 'custom';
-    if (config.certificateMode === 'node') return 'node';
-    return config.certificateFile?.trim() && config.keyFile?.trim()
-      ? 'custom'
-      : 'node';
+    return 'node';
   }
 
   private legacyTlsServerName(config: InboundConfig) {

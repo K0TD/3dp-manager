@@ -10,6 +10,7 @@ import { Inbound } from '../../inbounds/entities/inbound.entity';
 import { Subscription } from '../../subscriptions/entities/subscription.entity';
 import { Tunnel } from '../../tunnels/entities/tunnel.entity';
 import type { NodeCapabilities } from '../node-capabilities';
+import type { RoutingPresetState } from '../routing/routing-presets';
 
 export enum NodeAuthType {
   Password = 'password',
@@ -87,6 +88,9 @@ export class Node {
 
   @Column({ type: 'simple-json', nullable: true })
   capabilities?: NodeCapabilities;
+
+  @Column({ type: 'simple-json', nullable: true, select: false })
+  routingPresets?: RoutingPresetState;
 
   @Column({ type: 'timestamp', nullable: true })
   compatibilityCheckedAt?: Date;

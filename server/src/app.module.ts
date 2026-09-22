@@ -33,6 +33,7 @@ import { BackupModule } from './backup/backup.module';
 import { InitialSchema1700000000000 } from './migrations/1700000000000-initial-schema';
 import { AddInboundOrder1790000000000 } from './migrations/1790000000000-add-inbound-order';
 import { AddNodeCapabilities1800000000000 } from './migrations/1800000000000-add-node-capabilities';
+import { AddRoutingPresets1810000000000 } from './migrations/1810000000000-add-routing-presets';
 
 @Module({
   imports: [
@@ -69,6 +70,7 @@ import { AddNodeCapabilities1800000000000 } from './migrations/1800000000000-add
         AddResilientRotation1780000000000,
         AddInboundOrder1790000000000,
         AddNodeCapabilities1800000000000,
+        AddRoutingPresets1810000000000,
       ],
       synchronize: process.env.DB_SYNCHRONIZE === 'true',
       migrationsRun: process.env.DB_MIGRATIONS_RUN !== 'false',

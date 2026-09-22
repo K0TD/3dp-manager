@@ -309,8 +309,8 @@ export default function SubscriptionsPage() {
     setInbounds(
       (sub.inboundsConfig?.length ? sub.inboundsConfig : [createInbound()]).map((item) => {
         const nodeId = item.nodeId || getDefaultNodeId();
-        const certificateMode = item.certificateMode ||
-          (item.certificateFile && item.keyFile ? 'custom' : 'node');
+        const certificateMode =
+          item.certificateMode === 'custom' ? 'custom' : 'node';
         const configId = item.configId || crypto.randomUUID();
         return {
           id: configId,
@@ -333,13 +333,13 @@ export default function SubscriptionsPage() {
               (item.sni && item.sni !== 'random' ? item.sni : getNodeAddress(nodeId))
             : undefined,
           certificateFile:
-            CERTIFICATE_TYPES.has(item.type)
+            CERTIFICATE_TYPES.has(item.type) && certificateMode === 'custom'
               ? item.certificateFile || ''
-              : undefined,
+              : '',
           keyFile:
-            CERTIFICATE_TYPES.has(item.type)
+            CERTIFICATE_TYPES.has(item.type) && certificateMode === 'custom'
               ? item.keyFile || ''
-              : undefined,
+              : '',
         };
       }),
     );
@@ -356,7 +356,10 @@ export default function SubscriptionsPage() {
         if (field === 'nodeId') {
           next.relayServerId = '';
           next.flag = getNodeFlag(value);
-          if (CERTIFICATE_TYPES.has(next.type) && next.certificateMode === 'node') {
+          if (CERTIFICATE_TYPES.has(next.type)) {
+            next.certificateMode = 'node';
+            next.certificateFile = '';
+            next.keyFile = '';
             next.tlsServerName = getNodeAddress(value);
           }
         }

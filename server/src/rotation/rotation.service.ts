@@ -637,9 +637,7 @@ export class RotationService implements OnModuleInit {
   }
 
   private getCertificateMode(config: InboundConfig) {
-    if (config.certificateMode === 'custom') return 'custom' as const;
-    if (config.certificateMode === 'node') return 'node' as const;
-    return config.certificateFile && config.keyFile
+    return config.certificateMode === 'custom'
       ? ('custom' as const)
       : ('node' as const);
   }
