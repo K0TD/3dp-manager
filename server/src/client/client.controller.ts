@@ -95,25 +95,16 @@ export class ClientController {
     } else {
       const currentUrl = `${req.protocol}://${req.get('host')}/bus/${uuid}`;
 
-      const cacheKey = `qr_${uuid}`;
-
-      let qrDataUrl = await this.cacheManager.get<string>(cacheKey);
-
-      if (!qrDataUrl) {
-        qrDataUrl = await QRCode.toDataURL(currentUrl, {
-          width: 300,
-          margin: 2,
-        });
-
-        await this.cacheManager.set(cacheKey, qrDataUrl, 86400000);
-      } else {
-        this.logger.debug(`QR loaded from cache for ${uuid}`);
-      }
+      const qrData = await this.buildPreviewQrData(
+        currentUrl,
+        previewData,
+        `qr_${uuid}`,
+      );
 
       const html = generateSubscriptionHtmlWithQr({
         ...previewData,
         currentUrl,
-        qrDataUrl,
+        ...qrData,
         subscriptionName: sub.name,
       });
 
@@ -186,31 +177,56 @@ export class ClientController {
     } else {
       const currentUrl = `${req.protocol}://${req.get('host')}/bus/${uuid}/${tunnelId}`;
 
-      const cacheKey = `qr_${uuid}_${relayHost || 'direct'}`;
-
-      let qrDataUrl = await this.cacheManager.get<string>(cacheKey);
-
-      if (!qrDataUrl) {
-        qrDataUrl = await QRCode.toDataURL(currentUrl, {
-          width: 300,
-          margin: 2,
-        });
-
-        await this.cacheManager.set(cacheKey, qrDataUrl, 86400000);
-      } else {
-        this.logger.debug(`QR loaded from cache for ${uuid}`);
-      }
+      const qrData = await this.buildPreviewQrData(
+        currentUrl,
+        previewData,
+        `qr_${uuid}_${relayHost || 'direct'}`,
+      );
 
       const html = generateSubscriptionHtmlWithQr({
         ...previewData,
         currentUrl,
-        qrDataUrl,
+        ...qrData,
         subscriptionName: sub.name,
       });
 
       res.setHeader('Content-Type', 'text/html');
       res.send(html);
     }
+  }
+
+  private async buildPreviewQrData(
+    currentUrl: string,
+    preview: Pick<
+      SubscriptionPreviewData,
+      'subscriptionLinks' | 'amneziaLinks'
+    >,
+    cacheKey: string,
+  ): Promise<Pick<SubscriptionPreviewData, 'qrDataUrl' | 'amneziaQrDataUrls'>> {
+    let qrDataUrl = '';
+    if (preview.subscriptionLinks.length > 0) {
+      qrDataUrl = (await this.cacheManager.get<string>(cacheKey)) ?? '';
+      if (!qrDataUrl) {
+        qrDataUrl = await QRCode.toDataURL(currentUrl, {
+          width: 300,
+          margin: 2,
+        });
+        await this.cacheManager.set(cacheKey, qrDataUrl, 86400000);
+      }
+    }
+
+    const amneziaQrDataUrls = await Promise.all(
+      preview.amneziaLinks.map(async (link) => {
+        try {
+          return await QRCode.toDataURL(link, { width: 480, margin: 4 });
+        } catch {
+          // Large keys may exceed QR capacity; manual import remains available.
+          this.logger.warn('Unable to generate Amnezia import QR code');
+          return '';
+        }
+      }),
+    );
+    return { qrDataUrl, amneziaQrDataUrls };
   }
 
   /** Relay rewriting preserves generated links that cannot be parsed safely. */

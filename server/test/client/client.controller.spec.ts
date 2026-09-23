@@ -76,14 +76,131 @@ describe('ClientController', () => {
     jest.clearAllMocks();
   });
 
+  describe.each(['direct', 'relay'])('%s browser QR codes', (route) => {
+    const request = {
+      headers: { 'user-agent': 'Mozilla/5.0' },
+      query: {},
+      protocol: 'https',
+      get: () => 'example.com',
+    } as any;
+    const response = { setHeader: jest.fn(), send: jest.fn() } as any;
+    const subscription = { uuid: 'qr-test', name: 'QR test', isEnabled: true };
+    const render = () =>
+      route === 'direct'
+        ? controller.getSubscription('qr-test', request, response)
+        : controller.getRelaySubscription('qr-test', '1', request, response);
+
+    beforeEach(() => {
+      mockTunnelRepo.findOne.mockResolvedValue({
+        id: 1,
+        domain: 'relay.example.com',
+      });
+      mockCacheManager.get.mockResolvedValue(null);
+      (QRCode.toDataURL as jest.Mock).mockResolvedValue(
+        'data:image/png;base64,generated',
+      );
+    });
+
+    it.each([
+      { inbounds: [] },
+      {
+        inbounds: [
+          { status: 'error', protocol: 'vless', link: 'vless://inactive' },
+        ],
+      },
+      { inbounds: [{ status: 'active', protocol: 'vless', link: '   ' }] },
+      {
+        inbounds: [
+          {
+            status: 'active',
+            protocol: 'mtproto',
+            link: 'tg://proxy?server=example.com&port=443&secret=eeaa',
+          },
+        ],
+      },
+    ])(
+      'не генерирует общий QR без активных обычных ссылок (%j)',
+      async ({ inbounds }) => {
+        mockSubRepo.findOne.mockResolvedValue({ ...subscription, inbounds });
+        await render();
+        expect(QRCode.toDataURL).not.toHaveBeenCalled();
+        expect(mockCacheManager.get).not.toHaveBeenCalled();
+        expect(generateSubscriptionHtmlWithQr).toHaveBeenCalledWith(
+          expect.objectContaining({ qrDataUrl: '' }),
+        );
+      },
+    );
+
+    it('кодирует в QR именованный ключ Amnezia с правильным endpoint', async () => {
+      const config =
+        '[Interface]\nPrivateKey = private\n[Peer]\nPublicKey = public\nEndpoint = original.example.com:51820';
+      mockSubRepo.findOne.mockResolvedValue({
+        ...subscription,
+        inbounds: [
+          {
+            status: 'active',
+            protocol: 'amneziawg',
+            link: `vpn://${Buffer.from(config).toString('base64url')}`,
+          },
+        ],
+      });
+      await render();
+      const preview = (generateSubscriptionHtmlWithQr as jest.Mock).mock
+        .calls[0][0];
+      expect(QRCode.toDataURL).toHaveBeenCalledTimes(1);
+      expect(QRCode.toDataURL).toHaveBeenCalledWith(preview.amneziaLinks[0], {
+        width: 480,
+        margin: 4,
+      });
+      expect(preview.qrDataUrl).toBe('');
+      expect(preview.amneziaQrDataUrls).toEqual([
+        'data:image/png;base64,generated',
+      ]);
+      expect(amneziaConfigFromLink(preview.amneziaLinks[0])).toContain(
+        route === 'relay'
+          ? 'relay.example.com:51820'
+          : 'original.example.com:51820',
+      );
+      expect(mockCacheManager.get).not.toHaveBeenCalled();
+    });
+
+    it('сохраняет страницу и ключ, когда QR не помещается', async () => {
+      mockSubRepo.findOne.mockResolvedValue({
+        ...subscription,
+        inbounds: [
+          { status: 'active', protocol: 'amneziawg', link: 'vpn://large-key' },
+        ],
+      });
+      (QRCode.toDataURL as jest.Mock).mockRejectedValueOnce(
+        new Error('Too much data'),
+      );
+      await render();
+      expect(generateSubscriptionHtmlWithQr).toHaveBeenCalledWith(
+        expect.objectContaining({
+          qrDataUrl: '',
+          amneziaQrDataUrls: [''],
+          amneziaLinks: ['vpn://large-key'],
+        }),
+      );
+      expect(response.send).toHaveBeenCalledWith(
+        '<html>Subscription Page</html>',
+      );
+    });
+  });
+
   describe('getSubscription', () => {
     const mockSubscription = {
       uuid: 'test-uuid',
       name: 'Test Subscription',
       isEnabled: true,
       inbounds: [
-        { id: 1, link: 'vless://abc123@192.168.1.1:443', protocol: 'vless' },
-        { id: 2, link: 'vmess://xyz789', protocol: 'vmess' },
+        {
+          id: 1,
+          status: 'active',
+          link: 'vless://abc123@192.168.1.1:443',
+          protocol: 'vless',
+        },
+        { id: 2, status: 'active', link: 'vmess://xyz789', protocol: 'vmess' },
       ],
     };
 
@@ -361,9 +478,14 @@ describe('ClientController', () => {
       name: 'Test Subscription',
       isEnabled: true,
       inbounds: [
-        { id: 1, link: 'vless://abc123@192.168.1.1:443', protocol: 'vless' },
-        { id: 2, link: 'vmess://xyz789', protocol: 'vmess' },
-        { id: 3, link: 'custom-link', protocol: 'custom' },
+        {
+          id: 1,
+          status: 'active',
+          link: 'vless://abc123@192.168.1.1:443',
+          protocol: 'vless',
+        },
+        { id: 2, status: 'active', link: 'vmess://xyz789', protocol: 'vmess' },
+        { id: 3, status: 'active', link: 'custom-link', protocol: 'custom' },
       ],
     };
 

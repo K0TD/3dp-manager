@@ -20,10 +20,11 @@ describe('subscription template', () => {
     });
 
     expect(html).toContain('AmneziaWG');
-    expect(html).toContain('Открыть «Моя подписка» в AmneziaVPN');
-    expect(html).toContain('Скачать Моя подписка.conf');
+    expect(html).toContain('Копировать ключ');
+    expect(html).toContain('download="Моя подписка.conf"');
     expect(html).toContain('Импорт туннелей из файла');
-    expect(html).toContain('href="vpn://config"');
+    expect(html).toContain('data-copy="vpn://config"');
+    expect(html).not.toContain('href="vpn://');
     expect(html).not.toContain('<h2>Telegram Proxy</h2>');
   });
 
@@ -38,7 +39,7 @@ describe('subscription template', () => {
 
     expect(html).toContain('download="Моя подписка.conf"');
     expect(html).toContain('format=amneziawg&amp;index=0');
-    expect(html).toContain('Копировать настройки');
+    expect(html).toContain('data-copy-message="Настройки скопированы"');
   });
 
   it('показывает отдельное действие для Telegram Proxy', () => {
@@ -55,6 +56,86 @@ describe('subscription template', () => {
       'https://t.me/proxy?server=example.com&amp;port=443&amp;secret=eeaa',
     );
     expect(html).not.toContain('href="tg://proxy');
+  });
+
+  it('не показывает QR и ссылку импорта в пустой подписке', () => {
+    const html = generateSubscriptionHtmlWithQr({
+      ...baseData,
+      subscriptionLinks: [],
+    });
+    expect(html).not.toContain('<img ');
+    expect(html).not.toContain('class="subscription-box"');
+    expect(html).toContain('Активных подключений пока нет');
+    expect(html).toContain('Ожидаем подключения');
+    expect(html).not.toContain('Маршрут готов');
+  });
+
+  it('показывает общий QR для обычных подключений', () => {
+    const html = generateSubscriptionHtmlWithQr(baseData);
+    expect(html).toContain('<aside class="qr-panel">');
+    expect(html).toContain('src="data:image/png;base64,qr"');
+    expect(html).toContain('class="subscription-box"');
+  });
+
+  it('показывает QR и ключи Amnezia без QR пустой общей подписки', () => {
+    const html = generateSubscriptionHtmlWithQr({
+      ...baseData,
+      subscriptionLinks: [],
+      amneziaLinks: ['vpn://first', 'vpn://second'],
+      amneziaQrDataUrls: [
+        'data:image/png;base64,first',
+        'data:image/png;base64,second',
+      ],
+    });
+    expect(html).not.toContain('<aside class="qr-panel">');
+    expect(html).not.toContain('src="data:image/png;base64,qr"');
+    expect(html).toContain('src="data:image/png;base64,first"');
+    expect(html).toContain('src="data:image/png;base64,second"');
+    expect(html).toContain(
+      'readonly spellcheck="false">vpn://first</textarea>',
+    );
+    expect(html).toContain(
+      'readonly spellcheck="false">vpn://second</textarea>',
+    );
+    expect(html).toContain('format=amneziawg&amp;index=1');
+  });
+
+  it('оставляет ручной импорт доступным, если QR ключа недоступен', () => {
+    const html = generateSubscriptionHtmlWithQr({
+      ...baseData,
+      subscriptionLinks: [],
+      amneziaLinks: ['vpn://config'],
+      amneziaQrDataUrls: [''],
+    });
+    expect(html).not.toContain('<img ');
+    expect(html).toContain('QR-код недоступен');
+    expect(html).toContain('data-copy="vpn://config"');
+    expect(html).toContain(
+      'readonly spellcheck="false">vpn://config</textarea>',
+    );
+  });
+
+  it('не показывает общий QR для подписки только с Telegram', () => {
+    const html = generateSubscriptionHtmlWithQr({
+      ...baseData,
+      subscriptionLinks: [],
+      telegramProxyLinks: [
+        'tg://proxy?server=example.com&port=443&secret=eeaa',
+      ],
+    });
+    expect(html).not.toContain('<img ');
+    expect(html).toContain('Добавить в Telegram');
+  });
+
+  it('экранирует ключ Amnezia при ручном импорте', () => {
+    const html = generateSubscriptionHtmlWithQr({
+      ...baseData,
+      amneziaLinks: ['vpn://</textarea><script>alert(1)</script>'],
+    });
+    expect(html).not.toContain('</textarea><script>');
+    expect(html).toContain(
+      'vpn://&lt;/textarea&gt;&lt;script&gt;alert(1)&lt;/script&gt;',
+    );
   });
 
   it('ограничивает QR шириной мобильного контейнера', () => {
