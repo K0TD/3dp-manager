@@ -125,14 +125,13 @@ function renderAmneziaActions(
               <p class="import-note">На этом устройстве скопируйте ключ и добавьте его через «+» в AmneziaVPN.</p>
             </div>
           </details>
-          <details class="config-download">
-            <summary>Используете приложение AmneziaWG?<span class="details-chevron" aria-hidden="true">⌄</span></summary>
-            <p class="import-note">Скачайте профиль и выберите в AmneziaWG «Импорт туннелей из файла».</p>
+          <div class="config-download">
+            <p class="connection-caption">Для отдельного приложения AmneziaWG</p>
             <div class="connection-secondary">
               <a class="button button--ghost" href="${safeDownloadUrl}" download="${safeFileName}">${actionIcon('download')}<span>Скачать .conf</span></a>
               ${vpnConfig ? `<button class="button button--ghost copy-special" type="button" data-copy="${safeConfig}" data-copy-message="Настройки скопированы">${actionIcon('copy')}<span data-copy-label>Настройки</span></button>` : ''}
             </div>
-          </details>
+          </div>
         </div>`;
     })
     .join('');
@@ -151,9 +150,13 @@ function renderAmneziaGuide(
         <span class="protocol-icon" aria-hidden="true">A<span>WG</span></span>
         <span class="count-badge">${links.length} ${connectionWord(links.length)}</span>
       </header>
-      <p class="eyebrow">Отдельный VPN</p>
+      <p class="eyebrow">Отдельное приложение</p>
       <h3>AmneziaWG</h3>
-      <p class="guide-lead">Скопируйте ключ и добавьте его в AmneziaVPN. Для другого устройства используйте QR-код.</p>
+      <div class="protocol-callout">
+        <span class="protocol-callout-icon" aria-hidden="true">A<span>WG</span></span>
+        <div><strong>Хороший вариант, если AmneziaVPN недоступен</strong><p>AmneziaWG — отдельное приложение. Подключение настраивается чуть иначе: скачайте файл <code>.conf</code> и импортируйте его в AmneziaWG.</p></div>
+      </div>
+      <p class="guide-lead">Для AmneziaVPN используйте ключ или QR. Для отдельного приложения AmneziaWG кнопка скачивания файла есть у каждого подключения.</p>
       <div class="connection-list">${renderAmneziaActions(links, subscriptionUrl, subscriptionName, qrDataUrls)}</div>
       <details class="guide-help">
         <summary>${actionIcon('help')}Как подключить Amnezia<span class="details-chevron" aria-hidden="true">⌄</span></summary>
@@ -258,7 +261,7 @@ export function generateSubscriptionHtmlWithQr(
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark light">
-  <title>${safeName} · 3DP Manager</title>
+  <title>${safeName} · Подключение</title>
   <style>${subscriptionStyles}</style>
   <script>
     (function () {
@@ -273,7 +276,7 @@ export function generateSubscriptionHtmlWithQr(
   <a class="skip-link" href="#connections">К подключениям</a>
   <div class="shell">
     <header class="topbar">
-      <div class="brand"><span class="brand-mark" aria-hidden="true">3<span>D</span></span><span>3DP<span class="brand-caption">MANAGER</span></span></div>
+      <div class="brand"><span class="brand-mark" aria-hidden="true">${actionIcon('shield')}</span><span>Ваш доступ<span class="brand-caption">ПОДКЛЮЧЕНИЯ</span></span></div>
       <div class="topbar-actions"><span class="private-label">${actionIcon('lock')}Личный доступ</span><button class="theme-toggle" id="theme-toggle" type="button" aria-label="Переключить тему">${actionIcon('sun')}</button></div>
     </header>
     <main>
@@ -288,7 +291,7 @@ export function generateSubscriptionHtmlWithQr(
           <div class="access-topline"><span>ВАШ ДОСТУП</span>${actionIcon('shield')}</div>
           <div class="access-total"><strong>${String(totalCount).padStart(2, '0')}</strong><span>${connectionWord(totalCount)}<br>в подписке</span></div>
           ${hasConnections ? `<nav class="connection-nav" aria-label="Способы подключения">${connectionNavigation}</nav>` : '<p class="access-empty">Всё будет готово здесь.<br>Сохраните эту страницу.</p>'}
-          <div class="access-bottom"><span class="access-line" aria-hidden="true"></span><span>3DP / PERSONAL ACCESS</span></div>
+          <div class="access-bottom"><span class="access-line" aria-hidden="true"></span><span>ВАША ЛИЧНАЯ ПОДПИСКА</span></div>
         </aside>
       </section>
       <section class="connections" id="connections" aria-labelledby="connections-title">
@@ -299,7 +302,7 @@ export function generateSubscriptionHtmlWithQr(
       </section>
       ${hasConnections ? `<aside class="help-strip"><span class="help-icon">${actionIcon('help')}</span><div><h2>Подключаетесь впервые?</h2><p>${helpMessage}</p></div></aside>` : ''}
     </main>
-    <footer class="footer"><span class="footer-brand">3DP <span>Manager</span></span><span>${actionIcon('lock')}Ваша личная ссылка. Не передавайте её посторонним.</span></footer>
+    <footer class="footer"><span>Подключения для ваших устройств</span><span>${actionIcon('lock')}Ваша личная ссылка. Не передавайте её посторонним.</span></footer>
   </div>
   <div class="toast" id="toast" role="status" aria-live="polite">Скопировано</div>
   <script>
@@ -362,6 +365,6 @@ export function generateErrorHtml(
   const safeMessage = escapeHtml(message);
   return `<!DOCTYPE html>
 <html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>${safeTitle} · 3DP Manager</title><style>${subscriptionStyles}</style></head>
-<body class="error-page"><main class="error-card"><span class="empty-icon">${actionIcon('lock')}</span><p class="eyebrow">3DP Manager · Подписка недоступна</p><h1>${safeTitle}</h1><p>${safeMessage}</p><a class="button button--primary" href="/">Вернуться в панель${actionIcon('arrow')}</a></main></body></html>`;
+<title>${safeTitle} · Подключение</title><style>${subscriptionStyles}</style></head>
+<body class="error-page"><main class="error-card"><span class="empty-icon">${actionIcon('lock')}</span><p class="eyebrow">Подписка недоступна</p><h1>${safeTitle}</h1><p>${safeMessage}</p></main></body></html>`;
 }

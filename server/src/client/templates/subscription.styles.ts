@@ -43,8 +43,8 @@ export const subscriptionStyles = `
   .skip-link:focus { transform: none; }
   .topbar { display: flex; justify-content: space-between; align-items: center; padding: 28px 0; border-bottom: 1px solid var(--line); }
   .brand { display: flex; align-items: center; gap: 12px; font: 500 19px/1.2 'Unbounded',sans-serif; letter-spacing: -.06em; }
-  .brand-mark { display: flex; align-items: center; justify-content: center; width: 42px; height: 42px; border: 1px solid var(--line); border-radius: 14px; color: var(--accent); font-size: 19px; letter-spacing: -.2em; padding-right: 4px; }
-  .brand-mark > span { transform: translateY(3px); }
+  .brand-mark { display: flex; align-items: center; justify-content: center; width: 42px; height: 42px; border: 1px solid var(--line); border-radius: 14px; color: var(--accent); }
+  .brand-mark .action-icon { width: 21px; height: 21px; }
   .brand-caption { display: block; margin-top: 5px; color: var(--muted); font: 600 8px/1 'IBM Plex Sans',sans-serif; letter-spacing: .23em; }
   .topbar-actions { display: flex; align-items: center; gap: 24px; }
   .private-label { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
@@ -116,10 +116,17 @@ export const subscriptionStyles = `
   .guide { --guide-accent: var(--blue); min-width: 0; padding: 30px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius); }
   .guide:only-child { grid-column: 1 / -1; }
   .guide--amnezia { --guide-accent: var(--amber); }
+  .guide--amnezia > h3 { margin: 0 0 18px; color: var(--amber); font-size: clamp(1.65rem,2.6vw,2.2rem); }
   .guide > .eyebrow { margin-bottom: 8px; color: var(--guide-accent); font-size: 9px; }
   .guide .protocol-icon { color: var(--guide-accent); background: color-mix(in srgb,var(--guide-accent) 9%,transparent); border-color: color-mix(in srgb,var(--guide-accent) 20%,transparent); }
   .guide--amnezia .protocol-icon { gap: 2px; font: 500 23px/1 'Unbounded',sans-serif; }
   .protocol-icon > span { font: 600 8px 'IBM Plex Sans',sans-serif; align-self: flex-end; margin-bottom: 11px; }
+  .protocol-callout { display: grid; grid-template-columns: 42px minmax(0,1fr); gap: 14px; align-items: start; padding: 18px; margin-bottom: 16px; background: color-mix(in srgb,var(--guide-accent) 9%,var(--paper)); border: 1px solid color-mix(in srgb,var(--guide-accent) 35%,var(--line)); border-left: 3px solid var(--guide-accent); border-radius: 14px; }
+  .protocol-callout-icon { width: 42px; height: 42px; display: grid; place-items: center; color: var(--guide-accent); background: var(--paper); border: 1px solid color-mix(in srgb,var(--guide-accent) 32%,var(--line)); border-radius: 13px; font: 500 20px/1 'Unbounded',sans-serif; }
+  .protocol-callout-icon > span { margin-top: 12px; margin-left: -4px; font: 600 7px/1 'IBM Plex Sans',sans-serif; }
+  .protocol-callout strong { display: block; font-size: 14px; line-height: 1.5; }
+  .protocol-callout p { margin-top: 5px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+  .protocol-callout code { padding: 2px 5px; color: var(--ink); background: var(--raised); border-radius: 5px; font-size: 11px; }
   .connection-list { display: grid; gap: 16px; margin-top: 24px; }
   .connection-action { display: grid; min-width: 0; gap: 10px; padding: 18px; background: var(--field); border: 1px solid var(--line); border-radius: 16px; }
   .connection-heading { display: flex; align-items: center; gap: 10px; margin-bottom: 5px; }
@@ -144,8 +151,8 @@ export const subscriptionStyles = `
   .import-note { color: var(--muted); font-size: 12px; line-height: 1.7; }
   .key-label { font-size: 10px; color: var(--muted); }
   .connection-key { width: 100%; min-width: 0; padding: 10px; color: var(--muted); background: var(--paper); border: 1px solid var(--line); border-radius: 10px; resize: vertical; font: 11px/1.6 monospace; overflow-wrap: anywhere; }
-  .config-download { border-top: 1px solid var(--line); }
-  .config-download > summary { font-size: 11px; font-weight: 400; color: var(--muted); }
+  .config-download { padding-top: 12px; border-top: 1px solid var(--line); }
+  .config-download > p { margin: 0 0 2px; font-size: 10px; }
   .guide-help { margin-top: 18px; }
   .guide-help > summary { color: var(--muted); font-weight: 400; }
   .steps { display: grid; gap: 14px; list-style: none; margin: 12px 0 0; padding: 0; }
@@ -160,8 +167,6 @@ export const subscriptionStyles = `
   .footer { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 30px 0; margin-top: 28px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; }
   .footer > span:last-child { display: flex; align-items: center; gap: 8px; }
   .footer .action-icon { width: 13px; height: 13px; flex-basis: 13px; }
-  .footer-brand { color: var(--ink); font-weight: 600; font-size: 12px; }
-  .footer-brand > span { color: var(--muted); font-weight: 400; }
   .toast { position: fixed; left: 50%; bottom: 24px; z-index: 10; width: max-content; max-width: calc(100% - 32px); padding: 14px 20px; color: var(--on-accent); background: var(--accent); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); font-size: 13px; font-weight: 600; transform: translate(-50%,20px); opacity: 0; pointer-events: none; transition: .2s ease; }
   .toast.is-visible { transform: translate(-50%,0); opacity: 1; }
   .empty-state { display: grid; justify-items: center; padding: 56px 24px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius); text-align: center; }
@@ -178,6 +183,9 @@ export const subscriptionStyles = `
     .access-card { padding: 24px; }
     .subscription-content { padding: 28px; }
     .guide { padding: 24px; }
+    .protocol-callout { grid-template-columns: 36px minmax(0,1fr); gap: 11px; padding: 14px; }
+    .protocol-callout-icon { width: 36px; height: 36px; font-size: 17px; }
+    .protocol-callout strong { font-size: 13px; }
     .section-heading > p { display: none; }
   }
   @media (max-width: 700px) {
@@ -198,6 +206,9 @@ export const subscriptionStyles = `
     .qr-panel { padding: 28px; border-left: 0; border-top: 1px solid var(--line); }
     .qr-kicker { margin-bottom: 18px; }
     .guide { padding: 26px; }
+    .protocol-callout { grid-template-columns: 40px minmax(0,1fr); gap: 12px; padding: 16px; }
+    .protocol-callout-icon { width: 40px; height: 40px; }
+    .protocol-callout strong { font-size: 14px; }
     .guide-lead { font-size: 13px; }
     .help-strip { padding: 22px; gap: 14px; }
     .footer { flex-direction: column; align-items: flex-start; gap: 12px; margin-top: 22px; padding-block: 24px; }
