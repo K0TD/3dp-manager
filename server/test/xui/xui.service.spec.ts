@@ -221,7 +221,10 @@ describe('3x-ui API contracts', () => {
   it('checks both domain and IP geodata and distinguishes an unavailable validator', async () => {
     api.post.mockResolvedValue({ data: { success: true, obj: [] } });
     expect(
-      await service.validateRoutingGeodata(tokenNode, '/panel/api/xray'),
+      await service.validateRoutingGeodata(tokenNode, '/panel/api/xray', {
+        blockRussia: true,
+        blockIpCheckers: false,
+      }),
     ).toBe(true);
     expect(
       api.post.mock.calls.map((call: [string, URLSearchParams]) => [
@@ -234,14 +237,34 @@ describe('3x-ui API contracts', () => {
     ]);
     api.post.mockRejectedValue({ response: { status: 404 } });
     expect(
-      await service.validateRoutingGeodata(tokenNode, '/panel/api/xray'),
+      await service.validateRoutingGeodata(tokenNode, '/panel/api/xray', {
+        blockRussia: true,
+        blockIpCheckers: false,
+      }),
     ).toBe(false);
     api.post.mockResolvedValue({
       data: { success: true, obj: [{ reason: 'categoryMissing' }] },
     });
     await expect(
-      service.validateRoutingGeodata(tokenNode, '/panel/api/xray'),
+      service.validateRoutingGeodata(tokenNode, '/panel/api/xray', {
+        blockRussia: true,
+        blockIpCheckers: false,
+      }),
     ).rejects.toThrow('category-ru');
+  });
+
+  it('validates only Google geodata for Google-only routing', async () => {
+    api.post.mockResolvedValue({ data: { success: true, obj: [] } });
+    expect(
+      await service.validateRoutingGeodata(tokenNode, '/panel/api/xray', {
+        blockRussia: false,
+        blockIpCheckers: false,
+        googleIpv4: true,
+      }),
+    ).toBe(true);
+    expect(api.post).toHaveBeenCalledTimes(1);
+    expect(api.post.mock.calls[0][1].get('tokens')).toBe('geosite:google');
+    expect(api.post.mock.calls[0][1].get('kind')).toBe('domain');
   });
 
   it('rejects HTTP-200 API errors and invalid Xray templates', async () => {
@@ -276,58 +299,72 @@ describe('3x-ui API contracts', () => {
     expect(payload).not.toHaveProperty('clientStats');
   });
 
-  it('applies active sniffing to newly created/rotated inbounds and persists restoration fields under the node lock', async () => {
-    const state = { ...emptyRoutingState(), blockIpCheckers: true };
-    const store = {
-      node: jest.fn(async () => ({ ...tokenNode, routingPresets: state })),
-      save: jest.fn(async () => undefined),
-      withLock: jest.fn(async (_id: string, work: () => Promise<unknown>) =>
-        work(),
-      ),
-    };
-    service = new XuiService(
-      {} as never,
-      new SessionService(),
-      store as unknown as RoutingStore,
-    );
-    api.get.mockImplementation(async (path: string) => {
-      if (path === '/panel/api/inbounds/get/42')
-        return {
-          data: {
-            success: true,
-            obj: {
-              ...api.post.mock.calls.find(
-                (call: unknown[]) => call[0] === '/panel/api/inbounds/add',
-              )[1],
-              id: 42,
+  it.each([{ blockIpCheckers: true }, { googleIpv4: true }])(
+    'applies active sniffing %j to newly created/rotated inbounds and persists restoration fields under the node lock',
+    async (selection) => {
+      const state = { ...emptyRoutingState(), ...selection };
+      const store = {
+        node: jest.fn(async () => ({ ...tokenNode, routingPresets: state })),
+        save: jest.fn(async () => undefined),
+        withLock: jest.fn(async (_id: string, work: () => Promise<unknown>) =>
+          work(),
+        ),
+      };
+      service = new XuiService(
+        {} as never,
+        new SessionService(),
+        store as unknown as RoutingStore,
+      );
+      api.get.mockImplementation(async (path: string) => {
+        if (path === '/panel/api/inbounds/get/42')
+          return {
+            data: {
+              success: true,
+              obj: {
+                ...api.post.mock.calls.find(
+                  (call: unknown[]) => call[0] === '/panel/api/inbounds/add',
+                )[1],
+                id: 42,
+              },
             },
-          },
-        };
-      throw new Error('unexpected read');
-    });
-    const created = await service.addInbound(
-      { ...normalizeInbound(inbound), sniffing: '{"enabled":false}' },
-      tokenNode,
-    );
-    expect(sniffingObject(created.inbound)).toMatchObject({
-      enabled: true,
-      routeOnly: true,
-      metadataOnly: false,
-    });
-    expect(store.withLock).toHaveBeenCalledWith('node', expect.any(Function));
-    expect(store.save).toHaveBeenCalledWith(
-      'node',
-      expect.objectContaining({
-        sniffing: {
-          '42': expect.objectContaining({
-            fields: expect.objectContaining({
-              enabled: { before: false, after: true },
+          };
+        throw new Error('unexpected read');
+      });
+      const created = await service.addInbound(
+        { ...normalizeInbound(inbound), sniffing: '{"enabled":false}' },
+        tokenNode,
+      );
+      expect(sniffingObject(created.inbound)).toMatchObject({
+        enabled: true,
+        routeOnly: true,
+        metadataOnly: false,
+      });
+      expect(store.withLock).toHaveBeenCalledWith('node', expect.any(Function));
+      expect(store.save).toHaveBeenCalledWith(
+        'node',
+        expect.objectContaining({
+          sniffing: {
+            '42': expect.objectContaining({
+              fields: expect.objectContaining({
+                enabled: { before: false, after: true },
+              }),
             }),
-          }),
-        },
-      }),
-    );
-  });
+          },
+        }),
+      );
+      api.get.mockResolvedValue({
+        data: { success: true, obj: normalizeInbound(inbound) },
+      });
+      const ignoredSniffing = await service.addInbound(
+        normalizeInbound(inbound),
+        tokenNode,
+      );
+      expect(ignoredSniffing).toMatchObject({
+        id: 42,
+        verificationError: '3x-ui не сохранила sniffing нового inbound',
+      });
+    },
+  );
 
   it('accepts legacy JSON strings and numeric creation IDs', async () => {
     api.post.mockResolvedValue({ data: { success: true, obj: '42' } });

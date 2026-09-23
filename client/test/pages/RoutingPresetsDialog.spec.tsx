@@ -6,7 +6,7 @@ import type { NodeRecord, RoutingPresetView } from '../../src/types/node';
 
 vi.mock('../../src/features/nodes/api', () => ({ nodesApi: { routingPresets: vi.fn(), updateRoutingPresets: vi.fn() } }));
 const node = { id: 'node-42', name: 'Berlin' } as NodeRecord;
-const initial: RoutingPresetView = { available: true, blockRussia: false, blockIpCheckers: false, revision: 'revision-1', needsApply: false, warnings: [] };
+const initial: RoutingPresetView = { available: true, blockRussia: false, blockIpCheckers: false, googleIpv4: false, revision: 'revision-1', needsApply: false, warnings: [] };
 
 describe('node routing quick settings', () => {
   beforeEach(() => {
@@ -31,7 +31,7 @@ describe('node routing quick settings', () => {
     fireEvent.click(await screen.findByRole('switch', { name: 'Блокировать сервисы определения IP' }));
     fireEvent.click(screen.getByRole('button', { name: 'Применить' }));
     expect(await screen.findByText('Настройки применены, Xray работает.')).toBeInTheDocument();
-    expect(nodesApi.updateRoutingPresets).toHaveBeenCalledWith('node-42', { blockRussia: false, blockIpCheckers: true, revision: 'revision-1' });
+    expect(nodesApi.updateRoutingPresets).toHaveBeenCalledWith('node-42', { blockRussia: false, blockIpCheckers: true, googleIpv4: false, revision: 'revision-1' });
     expect(screen.getByRole('button', { name: 'Применить' })).toBeDisabled();
   });
 
@@ -80,4 +80,41 @@ describe('node routing quick settings', () => {
     finish({ ...initial, result: 'applied', message: 'Готово' });
     await screen.findByText('Готово');
   });
+
+  it('shows an existing Google rule enabled and submits an explicit disable', async () => {
+    vi.mocked(nodesApi.routingPresets).mockResolvedValue({ ...initial, googleIpv4: true });
+    vi.mocked(nodesApi.updateRoutingPresets).mockResolvedValue({ ...initial, result: 'applied' });
+    render(<RoutingPresetsDialog node={node} onClose={vi.fn()} />);
+    const google = await screen.findByRole('switch', { name: 'Google через IPv4' });
+    expect(google).toBeChecked();
+    fireEvent.click(google);
+    expect(nodesApi.updateRoutingPresets).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Применить' }));
+    await waitFor(() => expect(nodesApi.updateRoutingPresets).toHaveBeenCalledWith('node-42', {
+      blockRussia: false, blockIpCheckers: false, googleIpv4: false, revision: 'revision-1',
+    }));
+  });
+
+  it('disables only Google when its outbound is missing', async () => {
+    vi.mocked(nodesApi.routingPresets).mockResolvedValue({ ...initial, capabilities: {
+      blocking: { available: true }, googleIpv4: { available: false, reason: 'Нужен выход IPv4' },
+    } });
+    render(<RoutingPresetsDialog node={node} onClose={vi.fn()} />);
+    expect(await screen.findByRole('switch', { name: 'Google через IPv4' })).toBeDisabled();
+    expect(screen.getByText('Нужен выход IPv4')).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Блокировать российские домены и IP' })).toBeEnabled();
+  });
+
+  it('allows disabling an active preset after its outbound was removed', async () => {
+    vi.mocked(nodesApi.routingPresets).mockResolvedValue({ ...initial, googleIpv4: true, capabilities: {
+      blocking: { available: true }, googleIpv4: { available: false, reason: 'Нужен выход IPv4' },
+    } });
+    render(<RoutingPresetsDialog node={node} onClose={vi.fn()} />);
+    const google = await screen.findByRole('switch', { name: 'Google через IPv4' });
+    expect(google).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Применить' })).toBeDisabled();
+    fireEvent.click(google);
+    expect(screen.getByRole('button', { name: 'Применить' })).toBeEnabled();
+  });
+
 });

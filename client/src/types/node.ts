@@ -3,11 +3,16 @@ export type NodeAuthType = 'password' | 'token';
 export interface RoutingPresetSelection {
   blockRussia: boolean;
   blockIpCheckers: boolean;
+  googleIpv4: boolean;
   revision: string;
 }
 
 export interface RoutingPresetView extends RoutingPresetSelection {
   available: boolean;
+  capabilities?: {
+    blocking: { available: boolean; reason?: string };
+    googleIpv4: { available: boolean; reason?: string };
+  };
   needsApply: boolean;
   warnings: string[];
   result?: 'applied' | 'unchanged' | 'rolled_back' | 'rollback_failed' | 'unknown';

@@ -1,4 +1,4 @@
-import { IsBoolean, IsString, Matches } from 'class-validator';
+import { IsBoolean, IsString, Matches, ValidateIf } from 'class-validator';
 
 export class UpdateRoutingPresetsDto {
   @IsBoolean()
@@ -6,6 +6,10 @@ export class UpdateRoutingPresetsDto {
 
   @IsBoolean()
   blockIpCheckers: boolean;
+
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsBoolean()
+  googleIpv4?: boolean;
 
   @IsString()
   @Matches(/^[a-f0-9]{64}$/)

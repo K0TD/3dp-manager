@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  ParseUUIDPipe,
   Post,
   Put,
   Query,
@@ -21,13 +22,13 @@ export class NodesController {
   ) {}
 
   @Get(':id/routing-presets')
-  getRoutingPresets(@Param('id') id: string) {
+  getRoutingPresets(@Param('id', ParseUUIDPipe) id: string) {
     return this.routingPresets.get(id);
   }
 
   @Put(':id/routing-presets')
   updateRoutingPresets(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateRoutingPresetsDto,
   ) {
     return this.routingPresets.update(id, dto);

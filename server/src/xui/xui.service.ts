@@ -16,11 +16,16 @@ import { isSafeAbsoluteRemotePath } from '../inbounds/tls-config';
 import { RoutingStore } from '../nodes/routing/routing-store.service';
 import {
   emptyRoutingState,
+  equal,
   hasPresets,
   prepareSniffing,
+  sniffingObject,
   supportsSniffing,
 } from '../nodes/routing/routing-presets';
-import type { XrayTemplate } from '../nodes/routing/routing-presets';
+import type {
+  RoutingSelection,
+  XrayTemplate,
+} from '../nodes/routing/routing-presets';
 import {
   XuiApiError,
   asRecord,
@@ -289,6 +294,16 @@ export class XuiService {
         current,
       );
       if (result && prepared) {
+        const savedSniffing = sniffingObject(result.inbound);
+        const expectedSniffing = sniffingObject(prepared.inbound);
+        if (
+          ['enabled', 'routeOnly', 'metadataOnly', 'destOverride'].some(
+            (field) => !equal(savedSniffing[field], expectedSniffing[field]),
+          )
+        ) {
+          result.verificationError =
+            '3x-ui не сохранила sniffing нового inbound';
+        }
         state.sniffing[String(result.id)] = prepared.change;
         try {
           await this.routingStore.save(node.id, state);
@@ -381,9 +396,11 @@ export class XuiService {
 
   async deleteInbound(id: number, node?: Node): Promise<boolean> {
     if (!node || !this.routingStore) return this.removeInbound(id, node);
-    return this.routingStore.withLock(node.id, () =>
-      this.removeInbound(id, node),
-    );
+    return this.routingStore.withLock(node.id, async () => {
+      const removed = await this.removeInbound(id, node);
+      if (removed) await this.routingStore.forgetInbound(node.id, id);
+      return removed;
+    });
   }
 
   private async removeInbound(id: number, node?: Node): Promise<boolean> {
@@ -603,6 +620,17 @@ export class XuiService {
     });
   }
 
+  async getRoutingInbound(node: Node, id: number): Promise<XuiInboundRaw> {
+    return this.authenticatedRequest(node, async (api) => {
+      const response = await api.get<unknown>(`/panel/api/inbounds/get/${id}`);
+      const inbound = jsonObject(responsePayload(response.data), 'object');
+      if (inbound.id !== id || typeof inbound.protocol !== 'string') {
+        throw new XuiApiError('Invalid inbound identity');
+      }
+      return inbound as unknown as XuiInboundRaw;
+    });
+  }
+
   async updateInboundSniffing(
     node: Node,
     inbound: XuiInboundRaw,
@@ -636,11 +664,17 @@ export class XuiService {
   async validateRoutingGeodata(
     node: Node,
     path: XrayTemplate['path'],
+    selection: RoutingSelection,
   ): Promise<boolean> {
     return this.authenticatedRequest(node, async (api) => {
       for (const [kind, tokens] of [
-        ['domain', 'geosite:category-ru'],
-        ['ip', 'geoip:ru'],
+        ...(selection.blockRussia
+          ? [
+              ['domain', 'geosite:category-ru'],
+              ['ip', 'geoip:ru'],
+            ]
+          : []),
+        ...(selection.googleIpv4 ? [['domain', 'geosite:google']] : []),
       ]) {
         let response: AxiosResponse<unknown>;
         try {

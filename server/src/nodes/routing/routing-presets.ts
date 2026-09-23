@@ -7,6 +7,7 @@ export type ConfigObject = Record<string, unknown>;
 export interface RoutingSelection {
   blockRussia: boolean;
   blockIpCheckers: boolean;
+  googleIpv4?: boolean;
 }
 export interface FieldChange {
   before?: unknown;
@@ -20,6 +21,7 @@ export interface RoutingPresetState extends RoutingSelection {
   strategy?: FieldChange;
   sniffing: Record<string, SniffingChange>;
   outboundOwned?: boolean;
+  googleRule?: ConfigObject;
   // Persisted before remote writes; a failed/unknown operation must not look applied.
   pending?: boolean;
   pendingPrevious?: Omit<RoutingPresetState, 'pendingPrevious'>;
@@ -112,12 +114,18 @@ export function supportsSniffing(inbound: XuiInboundRaw): boolean {
   return SNIFFING_PROTOCOLS.has(inbound.protocol);
 }
 export function hasPresets(selection: RoutingSelection): boolean {
-  return selection.blockRussia || selection.blockIpCheckers;
+  return (
+    selection.blockRussia ||
+    selection.blockIpCheckers ||
+    selection.googleIpv4 === true
+  );
 }
 export function presetTags(nodeId: string) {
   const prefix = `3dp:${nodeId}:`;
   return {
-    outbound: `${prefix}block`,
+    outbound: 'blocked',
+    legacyOutbound: `${prefix}block`,
+    google: `${prefix}google-ipv4`,
     russia: `${prefix}ru-domains`,
     ips: `${prefix}ru-ips`,
     checkers: `${prefix}ip-checkers`,
@@ -157,19 +165,158 @@ function objects(value: unknown, field: string): ConfigObject[] {
     throw new Error(`Некорректный ${field} в конфигурации 3x-ui`);
   return value as ConfigObject[];
 }
+
+function singleOutbound(
+  config: ConfigObject,
+  tag: string,
+): ConfigObject | undefined {
+  const matches = objects(config.outbounds, 'outbounds').filter(
+    (outbound) => outbound.tag === tag,
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function isIpv4Outbound(outbound?: ConfigObject): boolean {
+  const settings = asRecord(outbound?.settings);
+  const sockopt = asRecord(asRecord(outbound?.streamSettings)?.sockopt);
+  const strategy =
+    settings?.targetStrategy ||
+    settings?.domainStrategy ||
+    sockopt?.domainStrategy;
+  return (
+    outbound?.protocol === 'freedom' &&
+    (strategy === 'UseIPv4' || strategy === 'ForceIPv4')
+  );
+}
+
+export function routingCapabilities(config: ConfigObject) {
+  const blocking = singleOutbound(config, 'blocked')?.protocol === 'blackhole';
+  const googleIpv4 = isIpv4Outbound(singleOutbound(config, 'IPv4'));
+  return {
+    blocking: {
+      available: blocking,
+      reason: blocking
+        ? undefined
+        : 'В панели нужен выход blocked с протоколом blackhole.',
+    },
+    googleIpv4: {
+      available: googleIpv4,
+      reason: googleIpv4
+        ? undefined
+        : 'В панели нужен выход IPv4 с протоколом freedom и стратегией UseIPv4 или ForceIPv4.',
+    },
+  };
+}
+
+function isGoogleRule(rule: ConfigObject): boolean {
+  return (
+    rule.type === 'field' &&
+    rule.outboundTag === 'IPv4' &&
+    equal(rule.domain, ['geosite:google']) &&
+    (rule.enabled === undefined || typeof rule.enabled === 'boolean') &&
+    (rule.ruleTag === undefined || typeof rule.ruleTag === 'string') &&
+    Object.keys(rule).every((key) =>
+      ['type', 'outboundTag', 'domain', 'enabled', 'ruleTag'].includes(key),
+    )
+  );
+}
+
+export function googleSelection(
+  config: ConfigObject,
+  state: RoutingPresetState,
+): boolean {
+  const rules = objects(asRecord(config.routing)?.rules, 'routing.rules');
+  if (state.googleRule || state.pending) return state.googleIpv4 === true;
+  return (
+    state.googleIpv4 === true ||
+    rules.some((rule) => isGoogleRule(rule) && rule.enabled !== false)
+  );
+}
+
+function enabledGoogleRule(rule: ConfigObject): ConfigObject {
+  return { ...rule, ...(rule.enabled === undefined ? {} : { enabled: true }) };
+}
+
+function sameGoogleRule(left: ConfigObject, right: ConfigObject): boolean {
+  const { enabled: _leftEnabled, ...leftFields } = left;
+  const { enabled: _rightEnabled, ...rightFields } = right;
+  return equal(leftFields, rightFields);
+}
+
+function existingGoogleRule(
+  nodeId: string,
+  rules: ConfigObject[],
+  state: RoutingPresetState,
+) {
+  // Zero matches means a new rule; multiple matches cannot be adopted unambiguously.
+  const candidates = rules.filter(isGoogleRule);
+  if (candidates.length > 1)
+    throw new ConflictException(
+      'Найдено несколько правил Google → IPv4. Удалите дубликаты в 3x-ui.',
+    );
+  const existing = candidates[0];
+  const tag = state.googleRule?.ruleTag || presetTags(nodeId).google;
+  if (rules.some((rule) => rule.ruleTag === tag && rule !== existing))
+    throw new ConflictException(
+      'Правило Google изменено вручную или его метка занята.',
+    );
+  if (
+    existing &&
+    state.googleRule &&
+    !sameGoogleRule(existing, state.googleRule)
+  )
+    throw new ConflictException(
+      'Правило Google изменено вручную. Проверьте настройки 3x-ui.',
+    );
+  return existing;
+}
+
+function googlePlan(
+  nodeId: string,
+  rules: ConfigObject[],
+  state: RoutingPresetState,
+) {
+  const existing = existingGoogleRule(nodeId, rules, state);
+  // A disabled, previously unmanaged rule stays untouched until explicitly enabled.
+  if (
+    !state.googleIpv4 &&
+    !state.googleRule &&
+    (!existing || existing.enabled === false)
+  )
+    return { others: rules, managed: [], googleRule: undefined };
+  const googleRule =
+    state.googleRule ||
+    structuredClone(
+      existing || {
+        type: 'field',
+        ruleTag: presetTags(nodeId).google,
+        domain: ['geosite:google'],
+        outboundTag: 'IPv4',
+      },
+    );
+  return {
+    others: rules.filter((rule) => rule !== existing),
+    managed: state.googleIpv4
+      ? [enabledGoogleRule(existing || googleRule)]
+      : [],
+    googleRule,
+  };
+}
 function restoreFields(
   target: ConfigObject,
   changes: Record<string, FieldChange>,
-  warnings: string[],
 ) {
+  const restored = structuredClone(target);
+  const warnings: string[] = [];
   for (const [key, change] of Object.entries(changes)) {
-    if (!equal(target[key], change.after)) {
+    if (!equal(restored[key], change.after)) {
       warnings.push(`Поле ${key} изменено вручную и оставлено без изменений.`);
       continue;
     }
-    if (change.before === undefined) delete target[key];
-    else target[key] = structuredClone(change.before);
+    if (change.before === undefined) delete restored[key];
+    else restored[key] = structuredClone(change.before);
   }
+  return { restored, warnings };
 }
 
 function stringArray(input: unknown): string[] {
@@ -234,6 +381,7 @@ function recoveredState(previous: RoutingPresetState): RoutingPresetState {
     strategy: previous.strategy || previous.pendingPrevious?.strategy,
     outboundOwned:
       previous.outboundOwned || previous.pendingPrevious?.outboundOwned,
+    googleRule: previous.googleRule || previous.pendingPrevious?.googleRule,
     sniffing: { ...previous.pendingPrevious?.sniffing, ...previous.sniffing },
   };
   delete recovered.pendingPrevious;
@@ -256,12 +404,18 @@ function foreignRules(
       : []),
   ];
   for (const rule of rules.filter(owned)) {
-    const expected = expectedRules.find(
-      (candidate) => candidate.ruleTag === rule.ruleTag,
-    );
     // The panel can add its own UI-only enabled=true field.
     const { enabled, ...withoutEnabled } = rule;
-    if (!expected || !equal(withoutEnabled, expected) || enabled === false) {
+    const expected = expectedRules.some(
+      (candidate) =>
+        equal(withoutEnabled, candidate) ||
+        ((previous.outboundOwned || previous.pendingPrevious?.outboundOwned) &&
+          equal(withoutEnabled, {
+            ...candidate,
+            outboundTag: tags.legacyOutbound,
+          })),
+    );
+    if (!expected || enabled === false) {
       throw new ConflictException(
         'Правило пресета изменено вручную или его метка занята. Проверьте правила 3x-ui.',
       );
@@ -281,10 +435,17 @@ function orderedRules(
     rule.outboundTag === apiTag &&
     Array.isArray(rule.inboundTag) &&
     rule.inboundTag.includes(apiTag);
+  const remaining = others.filter((rule) => !isApi(rule));
+  // Google must not bypass existing blocked/private/bittorrent rules.
+  const lastBlock = remaining.findLastIndex(
+    (rule) => rule.outboundTag === 'blocked',
+  );
   return [
     ...others.filter(isApi),
-    ...managed,
-    ...others.filter((rule) => !isApi(rule)),
+    ...managed.filter((rule) => rule.outboundTag === 'blocked'),
+    ...remaining.slice(0, lastBlock + 1),
+    ...managed.filter((rule) => rule.outboundTag !== 'blocked'),
+    ...remaining.slice(lastBlock + 1),
   ];
 }
 
@@ -292,9 +453,15 @@ function strategyPlan(routing: ConfigObject, state: RoutingPresetState) {
   const next = structuredClone(routing);
   const warnings: string[] = [];
   if (!state.blockRussia) {
-    if (state.strategy)
-      restoreFields(next, { domainStrategy: state.strategy }, warnings);
-    return { routing: next, strategy: undefined, warnings };
+    const restoration = restoreFields(
+      next,
+      state.strategy ? { domainStrategy: state.strategy } : {},
+    );
+    return {
+      routing: restoration.restored,
+      strategy: undefined,
+      warnings: restoration.warnings,
+    };
   }
   if (
     state.strategy &&
@@ -320,25 +487,29 @@ function outboundPlan(
   state: RoutingPresetState,
 ) {
   const outbounds = [...objects(config.outbounds, 'outbounds')];
-  const tag = presetTags(nodeId).outbound;
+  const capabilities = routingCapabilities(config);
+  if (
+    (state.blockRussia || state.blockIpCheckers) &&
+    !capabilities.blocking.available
+  )
+    throw new ConflictException(capabilities.blocking.reason);
+  if (state.googleIpv4 && !capabilities.googleIpv4.available)
+    throw new ConflictException(capabilities.googleIpv4.reason);
+  const tag = presetTags(nodeId).legacyOutbound;
   const existing = outbounds.find((outbound) => outbound.tag === tag);
   const block = { tag, protocol: 'blackhole', settings: {} };
-  if (existing && (!state.outboundOwned || !equal(existing, block))) {
-    throw new ConflictException(
-      'Outbound пресета изменён вручную или его метка занята.',
-    );
-  }
-  if (hasPresets(state))
-    return {
-      outbounds: existing ? outbounds : [...outbounds, block],
-      owned: true,
-    };
   // References can also occur in other outbounds (dialerProxy), balancers or observatories.
   const references = {
     ...config,
     outbounds: outbounds.filter((outbound) => outbound !== existing),
   };
-  if (existing && !canonical(references).includes(JSON.stringify(tag))) {
+  if (
+    existing &&
+    state.outboundOwned &&
+    equal(existing, block) &&
+    outbounds.filter((outbound) => outbound.tag === tag).length === 1 &&
+    !canonical(references).includes(JSON.stringify(tag))
+  ) {
     return {
       outbounds: outbounds.filter((outbound) => outbound !== existing),
       owned: undefined,
@@ -347,12 +518,22 @@ function outboundPlan(
   return { outbounds, owned: existing ? state.outboundOwned : undefined };
 }
 
-function restoredSniffing(inbound: XuiInboundRaw, change?: SniffingChange) {
-  const restored = structuredClone(sniffingObject(inbound));
-  const warnings: string[] = [];
-  if (change?.identity === inboundIdentity(inbound))
-    restoreFields(restored, change.fields, warnings);
-  else if (change)
+interface InboundSniffingPlan {
+  inbound: XuiInboundRaw;
+  change?: SniffingChange;
+  warnings: string[];
+}
+
+function restoredSniffing(
+  inbound: XuiInboundRaw,
+  change?: SniffingChange,
+): InboundSniffingPlan {
+  const matchingIdentity = change?.identity === inboundIdentity(inbound);
+  const { restored, warnings } = restoreFields(
+    sniffingObject(inbound),
+    matchingIdentity ? change.fields : {},
+  );
+  if (change && !matchingIdentity)
     warnings.push(
       `Inbound ${inbound.id} заменён; его sniffing оставлен без изменений.`,
     );
@@ -363,7 +544,10 @@ function restoredSniffing(inbound: XuiInboundRaw, change?: SniffingChange) {
   };
 }
 
-function sniffingPlan(inbound: XuiInboundRaw, state: RoutingPresetState) {
+function sniffingPlan(
+  inbound: XuiInboundRaw,
+  state: RoutingPresetState,
+): InboundSniffingPlan {
   const previous = state.sniffing[String(inbound.id)];
   if (!supportsSniffing(inbound))
     return {
@@ -418,10 +602,13 @@ export function buildRoutingPlan(
     ...recoveredState(previous),
     blockRussia: selection.blockRussia,
     blockIpCheckers: selection.blockIpCheckers,
+    googleIpv4: selection.googleIpv4 ?? googleSelection(config, previous),
     pending: false,
   };
-  const managed = presetRules(nodeId, selection);
-  const others = foreignRules(nodeId, rules, previous);
+  const google = googlePlan(nodeId, rules, state);
+  state.googleRule = google.googleRule;
+  const managed = [...presetRules(nodeId, selection), ...google.managed];
+  const others = foreignRules(nodeId, google.others, previous);
   if (rules.length || managed.length)
     routing.rules = orderedRules(others, managed, asRecord(config.api)?.tag);
   const strategy = strategyPlan(routing, state);

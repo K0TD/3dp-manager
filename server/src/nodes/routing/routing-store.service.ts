@@ -35,6 +35,19 @@ export class RoutingStore {
     await this.repository().update(id, { routingPresets: state });
   }
 
+  async forgetInbound(nodeId: string, inboundId: number): Promise<void> {
+    // Deferred node removal still needs to clean metadata on soft-deleted nodes.
+    const node = await this.repository().findOne({
+      where: { id: nodeId },
+      select: { id: true, routingPresets: true },
+    });
+    if (!node?.routingPresets?.sniffing[String(inboundId)]) return;
+    delete node.routingPresets.sniffing[String(inboundId)];
+    if (node.routingPresets.pendingPrevious)
+      delete node.routingPresets.pendingPrevious.sniffing[String(inboundId)];
+    await this.save(nodeId, node.routingPresets);
+  }
+
   // Session-scoped PostgreSQL lock also serializes separate manager processes.
   // Fail promptly instead of occupying HTTP requests waiting behind a restart.
   async withLock<T>(id: string, work: () => Promise<T>): Promise<T> {
@@ -43,10 +56,10 @@ export class RoutingStore {
     let locked = false;
     try {
       await runner.connect();
-      const rows: { locked: boolean }[] = await runner.query(
+      const rows = (await runner.query(
         'SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked',
         [key],
-      );
+      )) as { locked: boolean }[];
       locked = rows[0].locked === true;
       if (!locked)
         throw new ConflictException(

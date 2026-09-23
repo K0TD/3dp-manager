@@ -68,6 +68,7 @@ export const nodesApi = {
     const { data } = await api.post<{
       ip?: string;
       host?: string;
+      domain?: string;
       flag?: string;
       country?: string;
       countryCode?: string;

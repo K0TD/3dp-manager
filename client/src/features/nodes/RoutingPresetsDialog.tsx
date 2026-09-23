@@ -13,6 +13,7 @@ export function RoutingPresetsDialog({ node, onClose }: Props) {
   const [view, setView] = useState<RoutingPresetView | null>(null);
   const [blockRussia, setBlockRussia] = useState(false);
   const [blockIpCheckers, setBlockIpCheckers] = useState(false);
+  const [googleIpv4, setGoogleIpv4] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<{ severity: 'success' | 'error'; text: string } | null>(null);
@@ -27,6 +28,7 @@ export function RoutingPresetsDialog({ node, onClose }: Props) {
       setView(current);
       setBlockRussia(current.blockRussia);
       setBlockIpCheckers(current.blockIpCheckers);
+      setGoogleIpv4(current.googleIpv4);
     } catch (error) {
       if (request !== generation.current) return;
       setView(null);
@@ -49,13 +51,14 @@ export function RoutingPresetsDialog({ node, onClose }: Props) {
     setSaving(true);
     setFeedback(null);
     try {
-      const result = await nodesApi.updateRoutingPresets(node.id, { blockRussia, blockIpCheckers, revision: view.revision });
+      const result = await nodesApi.updateRoutingPresets(node.id, { blockRussia, blockIpCheckers, googleIpv4, revision: view.revision });
       const success = result.result === 'applied' || result.result === 'unchanged';
       setView(result);
       setFeedback({ severity: success ? 'success' : 'error', text: result.message || 'Проверьте результат применения.' });
       if (success) {
         setBlockRussia(result.blockRussia);
         setBlockIpCheckers(result.blockIpCheckers);
+        setGoogleIpv4(result.googleIpv4);
       }
     } catch (error) {
       setView((current) => current ? { ...current, revision: '' } : null);
@@ -66,7 +69,10 @@ export function RoutingPresetsDialog({ node, onClose }: Props) {
   };
 
   const disabled = loading || saving || !view?.available;
-  const changed = view && (view.needsApply || blockRussia !== view.blockRussia || blockIpCheckers !== view.blockIpCheckers);
+  const blockingUnavailable = view?.capabilities?.blocking.available === false;
+  const googleUnavailable = view?.capabilities?.googleIpv4.available === false;
+  const unsupportedSelection = (blockingUnavailable && (blockRussia || blockIpCheckers)) || (googleUnavailable && googleIpv4);
+  const changed = view && (view.needsApply || blockRussia !== view.blockRussia || blockIpCheckers !== view.blockIpCheckers || googleIpv4 !== view.googleIpv4);
 
   return (
     <Dialog open onClose={saving ? undefined : onClose} fullWidth maxWidth="sm" aria-labelledby="node-quick-settings-title">
@@ -75,22 +81,22 @@ export function RoutingPresetsDialog({ node, onClose }: Props) {
         <Stack spacing={2} sx={{ pt: 1 }}>
           <Typography variant="h6">Маршрутизация</Typography>
           <Alert severity="info">
-            Выбранные сайты перестанут открываться через эту ноду. Обход VPN на устройстве не настраивается.
             Применение может кратко прервать подключения.
           </Alert>
           {feedback && <Alert severity={feedback.severity}>{feedback.text}</Alert>}
           {loading ? <Box sx={{ py: 3, textAlign: 'center' }}><CircularProgress aria-label="Загрузка настроек маршрутизации" /></Box> : (
             <>
               <Box>
-                <FormControlLabel control={<Switch checked={blockRussia} disabled={disabled}
+                <FormControlLabel control={<Switch checked={blockRussia} disabled={disabled || (blockingUnavailable && !blockRussia)}
                   onChange={(_, checked) => setBlockRussia(checked)} />}
                   label="Блокировать российские домены и IP" />
                 <Typography variant="body2" color="text.secondary">
                   Зоны .ru, .su, .рф и их поддомены, российские сервисы из GeoSite и российские IPv4/IPv6 из GeoIP.
+                  {' '}Эти адреса перестанут открываться через ноду. Обход VPN на устройстве не настраивается.
                 </Typography>
               </Box>
               <Box>
-                <FormControlLabel control={<Switch checked={blockIpCheckers} disabled={disabled}
+                <FormControlLabel control={<Switch checked={blockIpCheckers} disabled={disabled || (blockingUnavailable && !blockIpCheckers)}
                   onChange={(_, checked) => setBlockIpCheckers(checked)} />}
                   label="Блокировать сервисы определения IP" />
                 <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>
@@ -98,13 +104,24 @@ export function RoutingPresetsDialog({ node, onClose }: Props) {
                   ip-api.com, ifconfig.me, icanhazip.com, whatismyipaddress.com — включая поддомены.
                 </Typography>
               </Box>
+              {blockingUnavailable && <Alert severity="warning">{view?.capabilities?.blocking.reason}</Alert>}
+              <Box>
+                <FormControlLabel control={<Switch checked={googleIpv4} disabled={disabled || (googleUnavailable && !googleIpv4)}
+                  onChange={(_, checked) => setGoogleIpv4(checked)} />}
+                  label="Google через IPv4" />
+                <Typography variant="body2" color="text.secondary">
+                  Направляет домены Google через существующий выход IPv4. Настройки DNS не меняются.
+                  Если правило уже есть в панели, переключатель управляет им.
+                </Typography>
+              </Box>
+              {googleUnavailable && <Alert severity="warning">{view?.capabilities?.googleIpv4.reason}</Alert>}
               {view?.warnings.map((warning, index) => <Alert key={`${index}-${warning}`} severity="warning">{warning}</Alert>)}
               {view && !view.revision && view.available && <Alert severity="warning">Обновите состояние перед следующим применением.</Alert>}
             </>
           )}
           <Typography variant="body2" color="text.secondary">
             Для поддерживаемых подключений автоматически включается распознавание доменов.
-            При отключении обоих наборов внесённые нами изменения восстанавливаются.
+            При отключении всех настроек исходные параметры распознавания доменов восстанавливаются.
             Охват зависит от геобаз и видимости домена; трафик вне Xray не покрывается.
           </Typography>
         </Stack>
@@ -112,7 +129,7 @@ export function RoutingPresetsDialog({ node, onClose }: Props) {
       <DialogActions sx={{ px: 3, pb: 2, flexWrap: 'wrap', gap: 1 }}>
         <Button onClick={() => void load()} disabled={loading || saving}>Обновить состояние</Button>
         <Button onClick={onClose} disabled={saving}>Закрыть</Button>
-        <Button variant="contained" onClick={() => void apply()} disabled={disabled || !view?.revision || !changed}>
+        <Button variant="contained" onClick={() => void apply()} disabled={disabled || !view?.revision || !changed || unsupportedSelection}>
           {saving ? 'Применение…' : 'Применить'}
         </Button>
       </DialogActions>
