@@ -187,4 +187,9 @@ describe('InboundsEditor', () => {
       }),
     );
   });
+
+  it('renders extraActions when provided', () => {
+    renderEditor({ extraActions: <button type="button">Extra Action</button> });
+    expect(screen.getByText('Extra Action')).toBeInTheDocument();
+  });
 });

@@ -294,22 +294,17 @@ export default function SettingsPage() {
           portErrors={defaultPortErrors}
           onPortErrorsChange={setDefaultPortErrors}
           onResetDefaults={handleResetDefaults}
+          extraActions={
+            <Button
+              variant="contained"
+              size="small"
+              disabled={savingDefaults}
+              onClick={handleSaveDefaultInbounds}
+            >
+              {savingDefaults ? 'Сохранение…' : 'Сохранить стандартные инбаунды'}
+            </Button>
+          }
         />
-        <Stack direction="row" spacing={2} sx={{ mt: 2 }}>
-          <Button
-            variant="contained"
-            disabled={savingDefaults}
-            onClick={handleSaveDefaultInbounds}
-          >
-            {savingDefaults ? 'Сохранение…' : 'Сохранить стандартные инбаунды'}
-          </Button>
-          <Button
-            variant="outlined"
-            onClick={handleResetDefaults}
-          >
-            Сбросить по умолчанию
-          </Button>
-        </Stack>
       </Paper>
 
       <Paper className="console-panel" sx={{ maxWidth: 760 }}>

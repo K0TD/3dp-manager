@@ -48,6 +48,7 @@ export interface InboundsEditorProps {
   onResetDefaults?: () => void;
   maxInbounds?: number;
   showDisabledAlert?: boolean;
+  extraActions?: React.ReactNode;
 }
 
 export const InboundsEditor: React.FC<InboundsEditorProps> = ({
@@ -62,6 +63,7 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
   onResetDefaults,
   maxInbounds = 20,
   showDisabledAlert = false,
+  extraActions,
 }) => {
   const handleInboundChange = (
     id: string,
@@ -488,7 +490,7 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
         ))}
       </Box>
 
-      <Stack direction="row" spacing={1} sx={{ mt: 2 }} alignItems="center" flexWrap="wrap">
+      <Stack direction="row" spacing={1} useFlexGap sx={{ mt: 2 }} alignItems="center" flexWrap="wrap">
         <Button
           variant="outlined"
           size="small"
@@ -519,6 +521,7 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
             Сбросить по умолчанию
           </Button>
         )}
+        {extraActions}
       </Stack>
     </Box>
   );

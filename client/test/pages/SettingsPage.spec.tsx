@@ -150,7 +150,7 @@ describe('SettingsPage', () => {
 
     expect(await screen.findByDisplayValue('vless://one')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Сбросить по умолчанию' }))
+    fireEvent.click(screen.getByRole('button', { name: /Сбросить по умолчанию/ }))
 
     expect(await screen.findByText('Инбаунды сброшены к значениям по умолчанию (не забудьте сохранить)')).toBeInTheDocument()
     expect(await screen.findByText('Инбаунды (5/20)')).toBeInTheDocument()
