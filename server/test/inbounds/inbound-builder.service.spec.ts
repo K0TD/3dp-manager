@@ -132,6 +132,31 @@ describe('InboundBuilderService', () => {
       }
       expect(config).not.toMatch(/^(?:MTU|Jc|Jmin|Jmax|S1|S2|S3|S4)\s*=\s*$/m);
     });
+
+    it('генерирует безопасные параметры обфускации без коллизий размеров пакетов и с безопасным MTU', () => {
+      for (let i = 0; i < 20; i++) {
+        const inbound = service.buildAmneziaWgInbound({
+          port: 51820 + i,
+          uuid: `client-${i}@example`,
+        });
+        const settings = JSON.parse(inbound.settings);
+        const { s1, s2, jc } = settings.server;
+        expect(s1).not.toBe(s2);
+        expect(s1 + 56).not.toBe(s2);
+        expect(s2 + 56).not.toBe(s1);
+        expect(jc).toBeGreaterThanOrEqual(2);
+        expect(jc).toBeLessThanOrEqual(5);
+
+        const link = service.buildInboundLink(inbound, 'example.com', '', '');
+        const config = amneziaConfigFromLink(link);
+        expect(config).not.toBeNull();
+        const mtuMatch = config?.match(/^MTU = (\d+)$/m);
+        expect(mtuMatch).not.toBeNull();
+        const mtu = Number(mtuMatch?.[1]);
+        expect(mtu).toBeGreaterThanOrEqual(1280);
+        expect(mtu).toBeLessThanOrEqual(1360);
+      }
+    });
   });
 
   describe('buildMtprotoInbound', () => {

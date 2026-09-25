@@ -202,7 +202,12 @@ export class ClientController {
       'subscriptionLinks' | 'amneziaLinks'
     >,
     cacheKey: string,
-  ): Promise<Pick<SubscriptionPreviewData, 'qrDataUrl' | 'amneziaQrDataUrls'>> {
+  ): Promise<
+    Pick<
+      SubscriptionPreviewData,
+      'qrDataUrl' | 'amneziaQrDataUrls' | 'amneziaWgQrDataUrls'
+    >
+  > {
     let qrDataUrl = '';
     if (preview.subscriptionLinks.length > 0) {
       qrDataUrl = (await this.cacheManager.get<string>(cacheKey)) ?? '';
@@ -226,7 +231,25 @@ export class ClientController {
         }
       }),
     );
-    return { qrDataUrl, amneziaQrDataUrls };
+
+    const amneziaWgQrDataUrls = await Promise.all(
+      preview.amneziaLinks.map(async (link) => {
+        try {
+          const config = amneziaConfigFromLink(link);
+          if (!config) return '';
+          return await QRCode.toDataURL(config, {
+            errorCorrectionLevel: 'L',
+            width: 480,
+            margin: 2,
+          });
+        } catch {
+          this.logger.warn('Unable to generate AmneziaWG .conf QR code');
+          return '';
+        }
+      }),
+    );
+
+    return { qrDataUrl, amneziaQrDataUrls, amneziaWgQrDataUrls };
   }
 
   /** Relay rewriting preserves generated links that cannot be parsed safely. */

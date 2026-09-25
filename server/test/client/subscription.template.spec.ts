@@ -38,7 +38,7 @@ describe('subscription template', () => {
     expect(html).toContain('AmneziaWG');
     expect(html).toContain('Копировать ключ');
     expect(html).toContain('download="Моя подписка.conf"');
-    expect(html).toContain('Импорт туннелей из файла');
+    expect(html).toContain('Импортируйте туннель');
     expect(html).toContain('data-copy="vpn://config"');
     expect(html).not.toContain('href="vpn://');
     expect(html).not.toContain('<h2>Telegram Proxy</h2>');
@@ -56,6 +56,29 @@ describe('subscription template', () => {
     expect(html).toContain('download="Моя подписка.conf"');
     expect(html).toContain('format=amneziawg&amp;index=0');
     expect(html).toContain('data-copy-message="Настройки скопированы"');
+  });
+
+  it('разделяет Amnezia на два независимых подблока AmneziaVPN и AmneziaWG с точными формулировками', () => {
+    const config = '[Interface]\nPrivateKey = key\n\n[Peer]\nPublicKey = key';
+    const html = generateSubscriptionHtmlWithQr({
+      ...baseData,
+      amneziaLinks: [
+        `vpn://${Buffer.from(config, 'utf8').toString('base64url')}`,
+      ],
+      amneziaQrDataUrls: ['data:image/png;base64,vpn-qr'],
+      amneziaWgQrDataUrls: ['data:image/png;base64,wg-qr'],
+    });
+
+    expect(html).toContain('class="amnezia-subblocks"');
+    expect(html).toContain('class="amnezia-subblock amnezia-subblock--vpn"');
+    expect(html).toContain('class="amnezia-subblock amnezia-subblock--wg"');
+    expect(html).toContain('Хороший вариант, если AmneziaVPN недоступен');
+    expect(html).toContain(
+      'AmneziaWG — отдельное приложение. Подключение настраивается чуть иначе: скачайте файл <code>.conf</code> и импортируйте его в AmneziaWG.',
+    );
+    expect(html).toContain('src="data:image/png;base64,vpn-qr"');
+    expect(html).toContain('src="data:image/png;base64,wg-qr"');
+    expect(html).toContain('QR-код для AmneziaWG');
   });
 
   it('показывает отдельное действие для Telegram Proxy', () => {

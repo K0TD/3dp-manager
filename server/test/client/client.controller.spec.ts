@@ -147,13 +147,29 @@ describe('ClientController', () => {
       await render();
       const preview = (generateSubscriptionHtmlWithQr as jest.Mock).mock
         .calls[0][0];
-      expect(QRCode.toDataURL).toHaveBeenCalledTimes(1);
-      expect(QRCode.toDataURL).toHaveBeenCalledWith(preview.amneziaLinks[0], {
-        width: 480,
-        margin: 4,
-      });
+      expect(QRCode.toDataURL).toHaveBeenCalledTimes(2);
+      expect(QRCode.toDataURL).toHaveBeenNthCalledWith(
+        1,
+        preview.amneziaLinks[0],
+        {
+          width: 480,
+          margin: 4,
+        },
+      );
+      expect(QRCode.toDataURL).toHaveBeenNthCalledWith(
+        2,
+        amneziaConfigFromLink(preview.amneziaLinks[0]),
+        {
+          width: 480,
+          margin: 2,
+          errorCorrectionLevel: 'L',
+        },
+      );
       expect(preview.qrDataUrl).toBe('');
       expect(preview.amneziaQrDataUrls).toEqual([
+        'data:image/png;base64,generated',
+      ]);
+      expect(preview.amneziaWgQrDataUrls).toEqual([
         'data:image/png;base64,generated',
       ]);
       expect(amneziaConfigFromLink(preview.amneziaLinks[0])).toContain(

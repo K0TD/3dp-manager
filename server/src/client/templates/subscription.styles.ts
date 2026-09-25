@@ -123,6 +123,14 @@ export const subscriptionStyles = `
   .app-icon--small { width: 24px; height: 24px; }
   .guide .protocol-icon--amnezia-vpn { background: #242424; }
   .connection-caption.app-caption { display: flex; align-items: center; gap: 8px; }
+  .amnezia-subblocks { display: grid; gap: 20px; }
+  .amnezia-subblock { display: grid; gap: 12px; padding: 20px; background: color-mix(in srgb,var(--paper) 60%,var(--field)); border: 1px solid var(--line); border-radius: 16px; }
+  .amnezia-subblock .connection-list { margin-top: 8px; }
+  .amnezia-subblock .guide-help { margin-top: 10px; }
+  .amnezia-subblock--wg .protocol-callout { margin-bottom: 0; }
+  .subblock-header { display: flex; align-items: center; gap: 12px; }
+  .subblock-header h4 { margin: 0; font-size: 15px; font-weight: 600; color: var(--ink); }
+  .subblock-header .guide-lead { margin-top: 3px; font-size: 12px; }
   .protocol-callout { display: grid; grid-template-columns: 42px minmax(0,1fr); gap: 14px; align-items: start; padding: 18px; margin-bottom: 16px; background: color-mix(in srgb,var(--guide-accent) 9%,var(--paper)); border: 1px solid color-mix(in srgb,var(--guide-accent) 35%,var(--line)); border-left: 3px solid var(--guide-accent); border-radius: 14px; }
   .protocol-callout-icon { width: 42px; height: 42px; display: grid; place-items: center; color: var(--guide-accent); background: var(--paper); border: 1px solid color-mix(in srgb,var(--guide-accent) 32%,var(--line)); border-radius: 13px; font: 500 20px/1 'Unbounded',sans-serif; }
   .protocol-callout strong { display: block; font-size: 14px; line-height: 1.5; }
@@ -139,6 +147,7 @@ export const subscriptionStyles = `
   .button--connect { background: var(--guide-accent); color: var(--on-accent); }
   .button--connect:hover { background: color-mix(in srgb,var(--guide-accent) 88%,var(--ink)); }
   .connection-secondary { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .connection-secondary--top { margin-top: 6px; }
   .connection-secondary .button { flex: 1 1 140px; }
   details > summary { display: flex; align-items: center; gap: 9px; min-height: 46px; padding: 10px 0; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; list-style: none; }
   details > summary::-webkit-details-marker { display: none; }

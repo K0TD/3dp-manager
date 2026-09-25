@@ -10,6 +10,7 @@ export interface SubscriptionPreviewData {
   subscriptionLinks: string[];
   amneziaLinks: string[];
   amneziaQrDataUrls?: string[];
+  amneziaWgQrDataUrls?: string[];
   telegramProxyLinks: string[];
 }
 
@@ -89,27 +90,14 @@ function renderTelegramActions(links: string[]): string {
     .join('');
 }
 
-function renderAmneziaActions(
+function renderAmneziaVpnActions(
   links: string[],
-  subscriptionUrl: string,
   subscriptionName: string,
   qrDataUrls: string[],
 ): string {
   return links
     .map((link, index) => {
-      const vpnConfig = amneziaConfigFromLink(link) ?? '';
-      const downloadUrl = new URL(subscriptionUrl);
-      downloadUrl.searchParams.set('format', 'amneziawg');
-      downloadUrl.searchParams.set('index', String(index));
-      const safeDownloadUrl = escapeHtml(downloadUrl.toString());
       const safeVpnLink = escapeHtml(link);
-      const safeConfig = escapeHtml(vpnConfig);
-      const fileName = amneziaConfigFileName(
-        subscriptionName,
-        index,
-        links.length,
-      );
-      const safeFileName = escapeHtml(fileName);
       const safeSubscriptionName = escapeHtml(subscriptionName);
       const qrDataUrl = qrDataUrls[index];
 
@@ -126,13 +114,47 @@ function renderAmneziaActions(
               <p class="import-note">На этом устройстве скопируйте ключ и добавьте его через «+» в AmneziaVPN.</p>
             </div>
           </details>
-          <div class="config-download">
-            <p class="connection-caption app-caption"><img class="app-icon app-icon--small" src="${amneziaWgIcon}" width="24" height="24" alt="">Для отдельного приложения AmneziaWG</p>
-            <div class="connection-secondary">
-              <a class="button button--ghost" href="${safeDownloadUrl}" download="${safeFileName}">${actionIcon('download')}<span>Скачать .conf</span></a>
-              ${vpnConfig ? `<button class="button button--ghost copy-special" type="button" data-copy="${safeConfig}" data-copy-message="Настройки скопированы">${actionIcon('copy')}<span data-copy-label>Настройки</span></button>` : ''}
-            </div>
+        </div>`;
+    })
+    .join('');
+}
+
+function renderAmneziaWgActions(
+  links: string[],
+  subscriptionUrl: string,
+  subscriptionName: string,
+  wgQrDataUrls: string[],
+): string {
+  return links
+    .map((link, index) => {
+      const vpnConfig = amneziaConfigFromLink(link) ?? '';
+      const downloadUrl = new URL(subscriptionUrl);
+      downloadUrl.searchParams.set('format', 'amneziawg');
+      downloadUrl.searchParams.set('index', String(index));
+      const safeDownloadUrl = escapeHtml(downloadUrl.toString());
+      const safeConfig = escapeHtml(vpnConfig);
+      const fileName = amneziaConfigFileName(
+        subscriptionName,
+        index,
+        links.length,
+      );
+      const safeFileName = escapeHtml(fileName);
+      const safeSubscriptionName = escapeHtml(subscriptionName);
+      const qrDataUrl = wgQrDataUrls[index];
+
+      return `
+        <div class="connection-action">
+          <div class="connection-heading"><span class="connection-index">${String(index + 1).padStart(2, '0')}</span><div><strong>${safeSubscriptionName}</strong><span class="connection-caption">Файл и настройки для AmneziaWG</span></div></div>
+          <div class="connection-secondary connection-secondary--top">
+            <a class="button button--connect" href="${safeDownloadUrl}" download="${safeFileName}">${actionIcon('download')}<span>Скачать .conf</span></a>
+            ${vpnConfig ? `<button class="button button--ghost copy-special" type="button" data-copy="${safeConfig}" data-copy-message="Настройки скопированы">${actionIcon('copy')}<span data-copy-label>Настройки</span></button>` : ''}
           </div>
+          <details class="import-details">
+            <summary>${actionIcon('qr')}<span>QR-код для AmneziaWG</span><span class="details-chevron" aria-hidden="true">⌄</span></summary>
+            <div class="import-content">
+              ${qrDataUrl ? `<div class="qr-frame"><img src="${escapeHtml(qrDataUrl)}" width="240" height="240" alt="QR-код AmneziaWG ${safeSubscriptionName}" loading="lazy"></div><p class="import-note">В приложении AmneziaWG нажмите «+» → «Сканировать QR-код».</p>` : '<p class="import-note">QR-код недоступен. Скачайте файл .conf или скопируйте настройки выше.</p>'}
+            </div>
+          </details>
         </div>`;
     })
     .join('');
@@ -142,7 +164,8 @@ function renderAmneziaGuide(
   links: string[],
   subscriptionUrl: string,
   subscriptionName: string,
-  qrDataUrls: string[],
+  vpnQrDataUrls: string[],
+  wgQrDataUrls: string[] = [],
 ): string {
   if (links.length === 0) return '';
   return `
@@ -151,22 +174,48 @@ function renderAmneziaGuide(
         <span class="protocol-icon protocol-icon--amnezia-vpn"><img class="app-icon" src="${amneziaVpnIcon}" width="32" height="32" alt="AmneziaVPN"></span>
         <span class="count-badge">${links.length} ${connectionWord(links.length)}</span>
       </header>
-      <p class="eyebrow">Подключение через AmneziaWG</p>
-      <h3>AmneziaVPN</h3>
-      <div class="protocol-callout">
-        <span class="protocol-callout-icon"><img class="app-icon" src="${amneziaWgIcon}" width="32" height="32" alt="AmneziaWG"></span>
-        <div><strong>Хороший вариант, если AmneziaVPN недоступен</strong><p>AmneziaWG — отдельное приложение. Скачайте файл <code>.conf</code>, откройте AmneziaWG и выберите «Импорт туннелей из файла».</p></div>
+      <p class="eyebrow">Подключение через Amnezia</p>
+      <h3>AmneziaVPN и AmneziaWG</h3>
+
+      <div class="amnezia-subblocks">
+        <section class="amnezia-subblock amnezia-subblock--vpn">
+          <div class="subblock-header">
+            <span class="protocol-icon protocol-icon--amnezia-vpn"><img class="app-icon" src="${amneziaVpnIcon}" width="24" height="24" alt="AmneziaVPN"></span>
+            <div>
+              <h4>AmneziaVPN</h4>
+              <p class="guide-lead">Официальное приложение AmneziaVPN. Для подключения используйте ключ или QR-код.</p>
+            </div>
+          </div>
+          <div class="connection-list">${renderAmneziaVpnActions(links, subscriptionName, vpnQrDataUrls)}</div>
+          <details class="guide-help">
+            <summary>${actionIcon('help')}Как подключить AmneziaVPN<span class="details-chevron" aria-hidden="true">⌄</span></summary>
+            <ol class="steps">
+              <li><span>1</span><p>Нажмите <strong>«Копировать ключ»</strong> у нужного подключения.</p></li>
+              <li><span>2</span><p>Откройте <strong>AmneziaVPN</strong>, нажмите «+» и вставьте ключ (или выберите «QR-код» и отсканируйте код с другого устройства).</p></li>
+              <li><span>3</span><p>Подтвердите добавление и включите VPN в приложении.</p></li>
+            </ol>
+          </details>
+        </section>
+
+        <section class="amnezia-subblock amnezia-subblock--wg">
+          <div class="protocol-callout">
+            <span class="protocol-callout-icon"><img class="app-icon" src="${amneziaWgIcon}" width="32" height="32" alt="AmneziaWG"></span>
+            <div>
+              <strong>Хороший вариант, если AmneziaVPN недоступен</strong>
+              <p>AmneziaWG — отдельное приложение. Подключение настраивается чуть иначе: скачайте файл <code>.conf</code> и импортируйте его в AmneziaWG.</p>
+            </div>
+          </div>
+          <div class="connection-list">${renderAmneziaWgActions(links, subscriptionUrl, subscriptionName, wgQrDataUrls)}</div>
+          <details class="guide-help">
+            <summary>${actionIcon('help')}Как подключить AmneziaWG<span class="details-chevron" aria-hidden="true">⌄</span></summary>
+            <ol class="steps">
+              <li><span>1</span><p>Установите приложение <strong>AmneziaWG</strong>.</p></li>
+              <li><span>2</span><p>Скачайте файл <strong>.conf</strong> (или в AmneziaWG нажмите «+» → «Сканировать QR-код»).</p></li>
+              <li><span>3</span><p>Импортируйте туннель и включите подключение в приложении AmneziaWG.</p></li>
+            </ol>
+          </details>
+        </section>
       </div>
-      <p class="guide-lead">Для AmneziaVPN используйте ключ или QR. Для отдельного приложения AmneziaWG кнопка скачивания файла есть у каждого подключения.</p>
-      <div class="connection-list">${renderAmneziaActions(links, subscriptionUrl, subscriptionName, qrDataUrls)}</div>
-      <details class="guide-help">
-        <summary>${actionIcon('help')}Как подключить Amnezia<span class="details-chevron" aria-hidden="true">⌄</span></summary>
-        <ol class="steps">
-          <li><span>1</span><p>Нажмите <strong>«Копировать ключ»</strong> у нужного подключения.</p></li>
-          <li><span>2</span><p>Откройте <strong>AmneziaVPN</strong>, нажмите «+» и вставьте ключ.</p></li>
-          <li><span>3</span><p>Подтвердите добавление и включите VPN в приложении.</p></li>
-        </ol>
-      </details>
     </article>`;
 }
 
@@ -239,7 +288,9 @@ export function generateSubscriptionHtmlWithQr(
     : 'Активных подключений пока нет. Они появятся здесь, когда подписка будет настроена.';
   const hasImportQr =
     (regularCount > 0 && Boolean(preview.qrDataUrl)) ||
-    (amneziaCount > 0 && preview.amneziaQrDataUrls?.some(Boolean));
+    (amneziaCount > 0 &&
+      ((preview.amneziaQrDataUrls?.some(Boolean) ?? false) ||
+        (preview.amneziaWgQrDataUrls?.some(Boolean) ?? false)));
   const helpMessage =
     regularCount + amneziaCount > 0
       ? `На этом устройстве скопируйте ссылку или ключ и добавьте в нужное приложение.${hasImportQr ? ' На другом устройстве откройте сканер QR внутри приложения.' : ''}`
@@ -249,7 +300,7 @@ export function generateSubscriptionHtmlWithQr(
       ? `<a href="#vpn">${actionIcon('globe')}<span>VPN-подписка</span><strong>${regularCount}</strong>${actionIcon('arrow')}</a>`
       : '',
     amneziaCount > 0
-      ? `<a href="#amnezia">${actionIcon('shield')}<span>AmneziaWG</span><strong>${amneziaCount}</strong>${actionIcon('arrow')}</a>`
+      ? `<a href="#amnezia">${actionIcon('shield')}<span>Amnezia</span><strong>${amneziaCount}</strong>${actionIcon('arrow')}</a>`
       : '',
     telegramCount > 0
       ? `<a href="#telegram">${actionIcon('telegram')}<span>Telegram Proxy</span><strong>${telegramCount}</strong>${actionIcon('arrow')}</a>`
@@ -298,7 +349,7 @@ export function generateSubscriptionHtmlWithQr(
       <section class="connections" id="connections" aria-labelledby="connections-title">
         <header class="section-heading"><div><p class="eyebrow">${hasConnections ? 'Начните здесь' : 'Скоро здесь'}</p><h2 id="connections-title">${hasConnections ? 'Выберите подключение' : 'Подключения появятся здесь'}</h2></div>${hasConnections ? '<p>Каждая карточка — отдельный<br>способ оставаться на связи.</p>' : ''}</header>
         ${renderRegularConnections(preview)}
-        ${amneziaCount + telegramCount > 0 ? `<div class="guides">${renderAmneziaGuide(preview.amneziaLinks, preview.currentUrl, preview.subscriptionName, preview.amneziaQrDataUrls ?? [])}${renderTelegramGuide(preview.telegramProxyLinks)}</div>` : ''}
+        ${amneziaCount + telegramCount > 0 ? `<div class="guides">${renderAmneziaGuide(preview.amneziaLinks, preview.currentUrl, preview.subscriptionName, preview.amneziaQrDataUrls ?? [], preview.amneziaWgQrDataUrls ?? [])}${renderTelegramGuide(preview.telegramProxyLinks)}</div>` : ''}
         ${hasConnections ? '' : `<div class="empty-state"><span class="empty-icon">${actionIcon('globe')}</span><h3>Немного терпения</h3><p>Когда появятся активные подключения, здесь будут ссылки и инструкции для настройки.</p><a class="button button--ghost" href="${escapeHtml(preview.currentUrl)}">Обновить страницу${actionIcon('arrow')}</a></div>`}
       </section>
       ${hasConnections ? `<aside class="help-strip"><span class="help-icon">${actionIcon('help')}</span><div><h2>Подключаетесь впервые?</h2><p>${helpMessage}</p></div></aside>` : ''}

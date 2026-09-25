@@ -82,7 +82,14 @@ export class InboundBuilderService {
     const jmin = this.randomInt(40, 89);
     const s1 = this.randomInt(15, 150);
     let s2 = this.randomInt(15, 150);
-    while (s1 + 56 === s2) s2 = this.randomInt(15, 150);
+    let attempts = 0;
+    while ((s1 + 56 === s2 || s2 + 56 === s1 || s1 === s2) && attempts < 10) {
+      s2 = this.randomInt(15, 150);
+      attempts++;
+    }
+    if (s1 + 56 === s2 || s2 + 56 === s1 || s1 === s2) {
+      s2 = s1 > 75 ? s1 - 20 : s1 + 20;
+    }
     const hMax = 2_147_483_647;
     const bandSize = Math.floor((hMax - 4) / 4);
     const h = [0, 1, 2, 3].map((index) =>
@@ -96,7 +103,7 @@ export class InboundBuilderService {
     const keepaliveLo = this.randomInt(8, 12);
     const attemptsLo = this.randomInt(15, 25);
     return {
-      jc: this.randomInt(3, 6),
+      jc: this.randomInt(2, 5),
       jmin,
       jmax: jmin + this.randomInt(50, 250),
       s1,
@@ -132,7 +139,7 @@ export class InboundBuilderService {
     const serverKeys = this.generateWireguardKeyPair();
     const clientKeys = this.generateWireguardKeyPair();
     const obfuscation = this.generateAmneziaWgObfuscation();
-    const mtu = Math.max(1280, 1420 - obfuscation.s4);
+    const mtu = Math.min(1360, Math.max(1280, 1420 - obfuscation.s4));
     return {
       enable: true,
       listen: '0.0.0.0',
