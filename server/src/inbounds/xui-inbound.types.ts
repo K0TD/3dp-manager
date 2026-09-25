@@ -49,6 +49,8 @@ export interface XuiStreamSettings {
     settings?: {
       publicKey: string;
       fingerprint: string;
+      serverName?: string;
+      spiderX?: string;
     };
   };
   wsSettings?: {

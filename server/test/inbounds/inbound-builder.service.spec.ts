@@ -81,6 +81,26 @@ describe('InboundBuilderService', () => {
       const streamSettings = JSON.parse(result.streamSettings);
       expect(streamSettings.realitySettings.shortIds).toHaveLength(2);
     });
+
+    it('должен применять профиль SNI для известных сервисов (Apple)', () => {
+      const result = service.buildVlessRealityTcp({
+        ...params,
+        sni: 'swdist.apple.com',
+      });
+      const streamSettings = JSON.parse(result.streamSettings);
+      expect(streamSettings.realitySettings.settings.fingerprint).toBe(
+        'safari',
+      );
+      expect(streamSettings.realitySettings.settings.spiderX).toBe(
+        '/content/downloads/',
+      );
+      expect(streamSettings.realitySettings.serverNames).toContain(
+        'swdist.apple.com',
+      );
+      expect(streamSettings.realitySettings.serverNames).toContain(
+        'swcdn.apple.com',
+      );
+    });
   });
 
   describe('buildAmneziaWgInbound', () => {
@@ -259,6 +279,22 @@ describe('InboundBuilderService', () => {
       const streamSettings = JSON.parse(result.streamSettings);
       expect(streamSettings.security).toBe('reality');
       expect(streamSettings.network).toBe('xhttp');
+    });
+
+    it('должен применять xhttpPath и padding из профиля SNI для известных сервисов', () => {
+      const result = service.buildVlessRealityXhttp({
+        ...params,
+        sni: 'swdist.apple.com',
+      });
+      const streamSettings = JSON.parse(result.streamSettings);
+      expect(streamSettings.realitySettings.settings.fingerprint).toBe(
+        'safari',
+      );
+      expect(streamSettings.realitySettings.settings.spiderX).toBe(
+        '/content/downloads/',
+      );
+      expect(streamSettings.xhttpSettings.path).toBe('/download/updates/');
+      expect(streamSettings.xhttpSettings.xPaddingBytes).toBe('500-1500');
     });
   });
 

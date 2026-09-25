@@ -1045,9 +1045,9 @@ describe('RotationService resilient generations', () => {
     const testNode = { id: 'node-clean-1', name: 'CleanNode' } as Node;
 
     it('удаляет устаревший одиночный инбаунд с 0 B расхода, не привязанный к активным подпискам', async () => {
-      inboundRepo.find = jest.fn().mockResolvedValue([
-        { xuiId: 200, status: InboundStatus.Active },
-      ]);
+      inboundRepo.find = jest
+        .fn()
+        .mockResolvedValue([{ xuiId: 200, status: InboundStatus.Active }]);
       (xuiService as any).listRoutingInbounds = jest.fn().mockResolvedValue([
         {
           id: 97,
@@ -1076,9 +1076,9 @@ describe('RotationService resilient generations', () => {
     });
 
     it('НЕ удаляет инбаунд, если его xuiId отслеживается в БД как Active/Staged', async () => {
-      inboundRepo.find = jest.fn().mockResolvedValue([
-        { xuiId: 97, status: InboundStatus.Active },
-      ]);
+      inboundRepo.find = jest
+        .fn()
+        .mockResolvedValue([{ xuiId: 97, status: InboundStatus.Active }]);
       (xuiService as any).listRoutingInbounds = jest.fn().mockResolvedValue([
         {
           id: 97,

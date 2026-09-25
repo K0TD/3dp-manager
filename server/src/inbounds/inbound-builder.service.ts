@@ -12,6 +12,7 @@ import {
   normalizeFakeTlsDomain,
 } from './mtproto-faketls';
 import { createAmneziaVpnLink } from './amnezia-vpn-link';
+import { resolveSniProfile } from './sni-profiles';
 
 interface VlessTlsParams {
   port: number;
@@ -239,6 +240,7 @@ export class InboundBuilderService {
     publicKey: string;
   }) {
     const { port, uuid, sni, privateKey, publicKey, email } = params;
+    const profile = resolveSniProfile(sni);
     return {
       enable: true,
       port,
@@ -272,7 +274,9 @@ export class InboundBuilderService {
           xver: 0,
           target: `${sni}:443`,
           dest: `${sni}:443`,
-          serverNames: [sni],
+          serverNames: profile.serverNames?.length
+            ? profile.serverNames
+            : [sni],
           privateKey: privateKey,
           shortIds: [
             crypto.randomBytes(4).toString('hex'),
@@ -280,9 +284,9 @@ export class InboundBuilderService {
           ],
           settings: {
             publicKey: publicKey,
-            fingerprint: 'chrome',
+            fingerprint: profile.fingerprint,
             serverName: '',
-            spiderX: '/',
+            spiderX: profile.spiderX,
           },
         },
         tcpSettings: { acceptProxyProtocol: false, header: { type: 'none' } },
@@ -305,6 +309,7 @@ export class InboundBuilderService {
     publicKey: string;
   }) {
     const { port, uuid, sni, privateKey, publicKey, email } = params;
+    const profile = resolveSniProfile(sni);
     return {
       enable: true,
       port,
@@ -338,7 +343,9 @@ export class InboundBuilderService {
           xver: 0,
           target: `${sni}:443`,
           dest: `${sni}:443`,
-          serverNames: [sni],
+          serverNames: profile.serverNames?.length
+            ? profile.serverNames
+            : [sni],
           privateKey: privateKey,
           shortIds: [
             crypto.randomBytes(4).toString('hex'),
@@ -346,20 +353,20 @@ export class InboundBuilderService {
           ],
           settings: {
             publicKey: publicKey,
-            fingerprint: 'chrome',
+            fingerprint: profile.fingerprint,
             serverName: '',
-            spiderX: '/',
+            spiderX: profile.spiderX,
           },
         },
         xhttpSettings: {
           host: sni,
-          path: '/',
+          path: profile.xhttpPath || '/',
           mode: 'auto',
           noSSEHeader: false,
           scMaxBufferedPosts: 30,
           scMaxEachPostBytes: '1000000',
           scStreamUpServerSecs: '20-80',
-          xPaddingBytes: '100-1000',
+          xPaddingBytes: profile.xPaddingBytes || '100-1000',
         },
       }),
       sniffing: JSON.stringify({
@@ -380,6 +387,7 @@ export class InboundBuilderService {
     publicKey: string;
   }) {
     const { port, uuid, sni, privateKey, publicKey, email } = params;
+    const profile = resolveSniProfile(sni);
     return {
       enable: true,
       port,
@@ -413,14 +421,16 @@ export class InboundBuilderService {
           xver: 0,
           target: `${sni}:443`,
           dest: `${sni}:443`,
-          serverNames: [sni],
+          serverNames: profile.serverNames?.length
+            ? profile.serverNames
+            : [sni],
           privateKey: privateKey,
           shortIds: [crypto.randomBytes(4).toString('hex')],
           settings: {
             publicKey: publicKey,
-            fingerprint: 'chrome',
+            fingerprint: profile.fingerprint,
             serverName: '',
-            spiderX: '/',
+            spiderX: profile.spiderX,
           },
         },
         grpcSettings: {
@@ -637,11 +647,7 @@ export class InboundBuilderService {
     };
   }
 
-  buildShadowsocksTcp(params: {
-    port: number;
-    uuid: string;
-    email?: string;
-  }) {
+  buildShadowsocksTcp(params: { port: number; uuid: string; email?: string }) {
     const { port, uuid, email } = params;
     return {
       enable: true,
@@ -695,6 +701,7 @@ export class InboundBuilderService {
     publicKey: string;
   }) {
     const { port, uuid, sni, privateKey, publicKey, email } = params;
+    const profile = resolveSniProfile(sni);
     return {
       enable: true,
       port,
@@ -727,7 +734,9 @@ export class InboundBuilderService {
           xver: 0,
           target: `${sni}:443`,
           dest: `${sni}:443`,
-          serverNames: [sni],
+          serverNames: profile.serverNames?.length
+            ? profile.serverNames
+            : [sni],
           privateKey: privateKey,
           shortIds: [
             crypto.randomBytes(4).toString('hex'),
@@ -741,9 +750,9 @@ export class InboundBuilderService {
           ],
           settings: {
             publicKey: publicKey,
-            fingerprint: 'chrome',
+            fingerprint: profile.fingerprint,
             serverName: '',
-            spiderX: '/',
+            spiderX: profile.spiderX,
           },
         },
         tcpSettings: {
@@ -1021,11 +1030,13 @@ export class InboundBuilderService {
     if (security === 'reality') {
       const r = stream.realitySettings;
       if (!r) return '';
+      const sniDomain = r.serverNames?.[0] || '';
+      const profile = resolveSniProfile(sniDomain);
       params.set('pbk', r.settings?.publicKey || '');
-      params.set('fp', r.settings?.fingerprint || 'chrome');
-      params.set('sni', r.serverNames?.[0] || '');
+      params.set('fp', r.settings?.fingerprint || profile.fingerprint);
+      params.set('sni', sniDomain);
       params.set('sid', r.shortIds?.[0] || '');
-      params.set('spx', '/');
+      params.set('spx', r.settings?.spiderX || profile.spiderX);
 
       if (network === 'tcp') {
         const client = settings.clients?.[0];
@@ -1057,14 +1068,14 @@ export class InboundBuilderService {
 
     if (network === 'xhttp') {
       const x = stream.xhttpSettings;
-      params.set('path', x?.path || '/');
-      params.set(
-        'host',
+      const host =
         x?.host ||
-          stream.tlsSettings?.serverName ||
-          stream.realitySettings?.serverNames?.[0] ||
-          '',
-      );
+        stream.tlsSettings?.serverName ||
+        stream.realitySettings?.serverNames?.[0] ||
+        '';
+      const profile = resolveSniProfile(host);
+      params.set('path', x?.path || profile.xhttpPath || '/');
+      params.set('host', host);
       params.set('mode', x?.mode || 'auto');
     }
 
@@ -1143,14 +1154,17 @@ export class InboundBuilderService {
     const reality = stream.realitySettings;
     if (!reality) return '';
 
+    const sniDomain = reality.serverNames?.[0] || sni;
+    const profile = resolveSniProfile(sniDomain);
+
     const params = new URLSearchParams({
       type: stream.network || 'tcp',
       security: 'reality',
       pbk: reality.settings?.publicKey || '',
-      fp: reality.settings?.fingerprint || 'chrome',
-      sni: reality.serverNames?.[0] || '',
+      fp: reality.settings?.fingerprint || profile.fingerprint,
+      sni: sniDomain,
       sid: reality.shortIds?.[0] || '',
-      spx: '/',
+      spx: reality.settings?.spiderX || profile.spiderX,
     });
     return `trojan://${encodeURIComponent(password)}@${this.urlHost(sni)}:${inbound.port}?${params}#${this.flag}%20${encodeURIComponent(inbound.remark || '')}`;
   }

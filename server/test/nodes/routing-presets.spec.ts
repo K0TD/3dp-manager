@@ -477,7 +477,7 @@ describe('existing routing outbounds and Google', () => {
       emptyRoutingState(),
       googleOnly,
     );
-    rulesOf(active.template).find((rule) => rule.outboundTag === 'IPv4')!.port =
+    rulesOf(active.template).find((rule) => rule.outboundTag === 'IPv4').port =
       '443';
     expect(() =>
       buildRoutingPlan(
@@ -498,7 +498,7 @@ describe('existing routing outbounds and Google', () => {
     );
     rulesOf(active.template).find(
       (rule) => rule.outboundTag === 'IPv4',
-    )!.enabled = true;
+    ).enabled = true;
     const repeated = buildRoutingPlan(
       'node',
       { template: active.template, inbounds: [] },
@@ -517,7 +517,7 @@ describe('existing routing outbounds and Google', () => {
           (o) => o.tag !== 'blocked',
         );
       if (kind === 'wrong protocol')
-        outboundsOf(source).find((o) => o.tag === 'blocked')!.protocol =
+        outboundsOf(source).find((o) => o.tag === 'blocked').protocol =
           'freedom';
       if (kind === 'duplicate')
         outboundsOf(source).push({ tag: 'blocked', protocol: 'blackhole' });
@@ -546,7 +546,7 @@ describe('existing routing outbounds and Google', () => {
     'rejects an incompatible IPv4 outbound: %s',
     (kind) => {
       const source = templateFixture();
-      const ipv4 = outboundsOf(source).find((o) => o.tag === 'IPv4')!;
+      const ipv4 = outboundsOf(source).find((o) => o.tag === 'IPv4');
       if (kind === 'missing')
         source.config.outbounds = outboundsOf(source).filter((o) => o !== ipv4);
       if (kind === 'wrong protocol') ipv4.protocol = 'blackhole';
@@ -647,7 +647,11 @@ describe('existing routing outbounds and Google', () => {
       plan.template.config.routing as { rules: Record<string, unknown>[] }
     ).rules;
     // Modify the preset rule manually
-    rules[1].domain = ['domain:ru', 'regexp:.*\\.ru$', 'ext:geosite_RU.dat:custom'];
+    rules[1].domain = [
+      'domain:ru',
+      'regexp:.*\\.ru$',
+      'ext:geosite_RU.dat:custom',
+    ];
     expect(() =>
       buildRoutingPlan(
         'node',

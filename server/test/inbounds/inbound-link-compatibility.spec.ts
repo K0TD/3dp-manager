@@ -71,6 +71,34 @@ describe('published links match saved panel clients', () => {
       pbk: 'public',
     });
   });
+
+  it('applies tailored SNI profile fields to published VLESS Reality links', () => {
+    const appleReality = {
+      port: 24443,
+      uuid: 'db6b9a55-494a-4e63-8b78-b15df0aa1c0e',
+      sni: 'swdist.apple.com',
+      privateKey: 'private',
+      publicKey: 'public',
+    };
+    const link = new URL(
+      builder.buildInboundLink(
+        builder.buildVlessRealityXhttp(appleReality),
+        'node.example',
+        '',
+        '',
+      ),
+    );
+    expect(Object.fromEntries(link.searchParams)).toMatchObject({
+      type: 'xhttp',
+      security: 'reality',
+      host: 'swdist.apple.com',
+      path: '/download/updates/',
+      mode: 'auto',
+      pbk: 'public',
+      fp: 'safari',
+      spx: '/content/downloads/',
+    });
+  });
   it('uses the Trojan password and node address independently from UUID and SNI', () => {
     const inbound = builder.buildTrojanRealityTcp(reality);
     const settings = JSON.parse(inbound.settings) as {

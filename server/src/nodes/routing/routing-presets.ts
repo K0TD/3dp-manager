@@ -416,7 +416,8 @@ function foreignRules(
       const expected = expectedRules.some(
         (candidate) =>
           equal(withoutEnabled, candidate) ||
-          ((previous.outboundOwned || previous.pendingPrevious?.outboundOwned) &&
+          ((previous.outboundOwned ||
+            previous.pendingPrevious?.outboundOwned) &&
             equal(withoutEnabled, {
               ...candidate,
               outboundTag: tags.legacyOutbound,
