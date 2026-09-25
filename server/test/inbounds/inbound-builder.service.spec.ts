@@ -831,4 +831,58 @@ describe('InboundBuilderService', () => {
       expect(typeof settings.clients[0].alterId).toBe('number');
     });
   });
+
+  describe('custom client email parameter', () => {
+    const customEmail = 'Sai-0939535c';
+    const uuid = '0939535c-1f2c-4ffb-93e6-cb86d20a37b3';
+
+    it('использует переданный email в vless reality tcp', () => {
+      const inbound = service.buildVlessRealityTcp({
+        port: 443,
+        uuid,
+        email: customEmail,
+        sni: 'ya.ru',
+        privateKey: 'pk',
+        publicKey: 'pub',
+      });
+      const settings = JSON.parse(inbound.settings);
+      expect(settings.clients[0].email).toBe(customEmail);
+      expect(settings.clients[0].id).toBe(uuid);
+    });
+
+    it('использует переданный email в hysteria2', () => {
+      const inbound = service.buildHysteria2Inbound({
+        port: 443,
+        uuid,
+        email: customEmail,
+        serverName: 'example.com',
+        certificateFile: '/cert',
+        keyFile: '/key',
+      });
+      const settings = JSON.parse(inbound.settings);
+      expect(settings.clients[0].email).toBe(customEmail);
+      expect(settings.clients[0].auth).toBe(uuid);
+    });
+
+    it('использует переданный email в amneziawg', () => {
+      const inbound = service.buildAmneziaWgInbound({
+        port: 51820,
+        uuid,
+        email: customEmail,
+      });
+      const settings = JSON.parse(inbound.settings);
+      expect(settings.clients[0].email).toBe(customEmail);
+    });
+
+    it('использует переданный email в mtproto', () => {
+      const inbound = service.buildMtprotoInbound({
+        port: 8443,
+        uuid,
+        email: customEmail,
+        fakeTlsDomain: 'vk.com',
+      });
+      const settings = JSON.parse(inbound.settings);
+      expect(settings.clients[0].email).toBe(customEmail);
+    });
+  });
 });

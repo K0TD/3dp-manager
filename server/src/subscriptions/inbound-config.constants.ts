@@ -5,6 +5,7 @@ export const INBOUND_TYPES = [
   'vless-ws',
   'vless-tcp-tls',
   'vless-ws-tls',
+  'vless-xhttp-tls',
   'hysteria2-udp',
   'vmess-tcp',
   'shadowsocks-tcp',
@@ -19,6 +20,7 @@ export type InboundType = (typeof INBOUND_TYPES)[number];
 export const VLESS_TLS_TYPES = new Set<InboundType>([
   'vless-tcp-tls',
   'vless-ws-tls',
+  'vless-xhttp-tls',
 ]);
 
 export const CERTIFICATE_INBOUND_TYPES = new Set<InboundType>([

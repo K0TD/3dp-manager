@@ -46,12 +46,21 @@ export function RoutingPresetsDialog({ node, onClose }: Props) {
     };
   }, [load]);
 
+  const [forceAdopt, setForceAdopt] = useState(false);
+
   const apply = async () => {
     if (!view?.available || !view.revision) return;
     setSaving(true);
     setFeedback(null);
     try {
-      const result = await nodesApi.updateRoutingPresets(node.id, { blockRussia, blockIpCheckers, googleIpv4, revision: view.revision });
+      const shouldForce = Boolean(view.hasConflict || forceAdopt);
+      const result = await nodesApi.updateRoutingPresets(node.id, {
+        blockRussia,
+        blockIpCheckers,
+        googleIpv4,
+        ...(shouldForce ? { forceAdopt: true } : {}),
+        revision: view.revision,
+      });
       const success = result.result === 'applied' || result.result === 'unchanged';
       setView(result);
       setFeedback({ severity: success ? 'success' : 'error', text: result.message || 'Проверьте результат применения.' });
@@ -59,6 +68,7 @@ export function RoutingPresetsDialog({ node, onClose }: Props) {
         setBlockRussia(result.blockRussia);
         setBlockIpCheckers(result.blockIpCheckers);
         setGoogleIpv4(result.googleIpv4);
+        setForceAdopt(false);
       }
     } catch (error) {
       setView((current) => current ? { ...current, revision: '' } : null);
@@ -115,6 +125,12 @@ export function RoutingPresetsDialog({ node, onClose }: Props) {
                 </Typography>
               </Box>
               {googleUnavailable && <Alert severity="warning">{view?.capabilities?.googleIpv4.reason}</Alert>}
+              {view?.hasConflict && (
+                <Alert severity="warning">
+                  Правила маршрутизации в 3x-ui были изменены вручную или отличаются от сохранённых.
+                  Применение сбросит ручные изменения в правилах пресета и восстановит эталонные настройки.
+                </Alert>
+              )}
               {view?.warnings.map((warning, index) => <Alert key={`${index}-${warning}`} severity="warning">{warning}</Alert>)}
               {view && !view.revision && view.available && <Alert severity="warning">Обновите состояние перед следующим применением.</Alert>}
             </>

@@ -1,6 +1,7 @@
 import { subscriptionStyles } from './subscription.styles';
 import { amneziaConfigFileName } from '../subscription-name';
 import { amneziaConfigFromLink } from '../../inbounds/amnezia-vpn-link';
+import { amneziaVpnIcon, amneziaWgIcon } from './amnezia-icons';
 
 export interface SubscriptionPreviewData {
   currentUrl: string;
@@ -126,7 +127,7 @@ function renderAmneziaActions(
             </div>
           </details>
           <div class="config-download">
-            <p class="connection-caption">Для отдельного приложения AmneziaWG</p>
+            <p class="connection-caption app-caption"><img class="app-icon app-icon--small" src="${amneziaWgIcon}" width="24" height="24" alt="">Для отдельного приложения AmneziaWG</p>
             <div class="connection-secondary">
               <a class="button button--ghost" href="${safeDownloadUrl}" download="${safeFileName}">${actionIcon('download')}<span>Скачать .conf</span></a>
               ${vpnConfig ? `<button class="button button--ghost copy-special" type="button" data-copy="${safeConfig}" data-copy-message="Настройки скопированы">${actionIcon('copy')}<span data-copy-label>Настройки</span></button>` : ''}
@@ -147,14 +148,14 @@ function renderAmneziaGuide(
   return `
     <article class="guide guide--amnezia" id="amnezia">
       <header class="guide-header">
-        <span class="protocol-icon" aria-hidden="true">A<span>WG</span></span>
+        <span class="protocol-icon protocol-icon--amnezia-vpn"><img class="app-icon" src="${amneziaVpnIcon}" width="32" height="32" alt="AmneziaVPN"></span>
         <span class="count-badge">${links.length} ${connectionWord(links.length)}</span>
       </header>
-      <p class="eyebrow">Отдельное приложение</p>
-      <h3>AmneziaWG</h3>
+      <p class="eyebrow">Подключение через AmneziaWG</p>
+      <h3>AmneziaVPN</h3>
       <div class="protocol-callout">
-        <span class="protocol-callout-icon" aria-hidden="true">A<span>WG</span></span>
-        <div><strong>Хороший вариант, если AmneziaVPN недоступен</strong><p>AmneziaWG — отдельное приложение. Подключение настраивается чуть иначе: скачайте файл <code>.conf</code> и импортируйте его в AmneziaWG.</p></div>
+        <span class="protocol-callout-icon"><img class="app-icon" src="${amneziaWgIcon}" width="32" height="32" alt="AmneziaWG"></span>
+        <div><strong>Хороший вариант, если AmneziaVPN недоступен</strong><p>AmneziaWG — отдельное приложение. Скачайте файл <code>.conf</code>, откройте AmneziaWG и выберите «Импорт туннелей из файла».</p></div>
       </div>
       <p class="guide-lead">Для AmneziaVPN используйте ключ или QR. Для отдельного приложения AmneziaWG кнопка скачивания файла есть у каждого подключения.</p>
       <div class="connection-list">${renderAmneziaActions(links, subscriptionUrl, subscriptionName, qrDataUrls)}</div>

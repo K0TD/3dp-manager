@@ -635,4 +635,75 @@ describe('existing routing outbounds and Google', () => {
       });
     },
   );
+
+  it('adopts manually modified rules when forceAdopt is true', () => {
+    const plan = buildRoutingPlan(
+      'node',
+      { template: templateFixture(), inbounds: [] },
+      emptyRoutingState(),
+      both,
+    );
+    const rules = (
+      plan.template.config.routing as { rules: Record<string, unknown>[] }
+    ).rules;
+    // Modify the preset rule manually
+    rules[1].domain = ['domain:ru', 'regexp:.*\\.ru$', 'ext:geosite_RU.dat:custom'];
+    expect(() =>
+      buildRoutingPlan(
+        'node',
+        { template: plan.template, inbounds: [] },
+        plan.state,
+        both,
+      ),
+    ).toThrow('изменено вручную');
+
+    // With forceAdopt: true, adoption succeeds
+    const adopted = buildRoutingPlan(
+      'node',
+      { template: plan.template, inbounds: [] },
+      plan.state,
+      { ...both, forceAdopt: true },
+    );
+    expect(adopted.changed).toBe(true);
+    const adoptedRules = (
+      adopted.template.config.routing as { rules: Record<string, unknown>[] }
+    ).rules;
+    expect(adoptedRules[1].domain).toEqual([
+      'domain:ru',
+      'domain:su',
+      'domain:xn--p1ai',
+      'geosite:category-ru',
+    ]);
+  });
+
+  it('preserves geoip:private when bundled into an owned rule, even when presets are disabled', () => {
+    const plan = buildRoutingPlan(
+      'node',
+      { template: templateFixture(), inbounds: [] },
+      emptyRoutingState(),
+      both,
+    );
+    const rules = (
+      plan.template.config.routing as { rules: Record<string, unknown>[] }
+    ).rules;
+    // Bundle geoip:private into ru-ips (simulating manual panel edit)
+    rules[2].ip = ['geoip:private', 'ext:geoip_RU.dat:ru'];
+
+    // Disabling Russia with forceAdopt should preserve geoip:private as an unmanaged rule
+    const disabled = buildRoutingPlan(
+      'node',
+      { template: plan.template, inbounds: [] },
+      plan.state,
+      { blockRussia: false, blockIpCheckers: false, forceAdopt: true },
+    );
+    const disabledRules = (
+      disabled.template.config.routing as { rules: Record<string, unknown>[] }
+    ).rules;
+    const privateRule = disabledRules.find(
+      (r) => Array.isArray(r.ip) && r.ip.includes('geoip:private'),
+    );
+    expect(privateRule).toBeDefined();
+    expect(privateRule?.outboundTag).toBe('blocked');
+    expect(privateRule?.ruleTag).toBeUndefined();
+  });
 });

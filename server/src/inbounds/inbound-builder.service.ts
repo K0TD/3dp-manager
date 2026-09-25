@@ -16,6 +16,7 @@ import { createAmneziaVpnLink } from './amnezia-vpn-link';
 interface VlessTlsParams {
   port: number;
   uuid: string;
+  email?: string;
   serverName: string;
   certificateFile: string;
   keyFile: string;
@@ -123,7 +124,11 @@ export class InboundBuilderService {
     };
   }
 
-  buildAmneziaWgInbound(params: { port: number; uuid: string }) {
+  buildAmneziaWgInbound(params: {
+    port: number;
+    uuid: string;
+    email?: string;
+  }) {
     const serverKeys = this.generateWireguardKeyPair();
     const clientKeys = this.generateWireguardKeyPair();
     const obfuscation = this.generateAmneziaWgObfuscation();
@@ -156,7 +161,7 @@ export class InboundBuilderService {
             publicKey: clientKeys.publicKey,
             allowedIPs: ['10.8.1.2/32'],
             keepAlive: 25,
-            email: params.uuid,
+            email: params.email ?? params.uuid,
             limitIp: 0,
             totalGB: 0,
             expiryTime: 0,
@@ -175,6 +180,7 @@ export class InboundBuilderService {
   buildMtprotoInbound(params: {
     port: number;
     uuid: string;
+    email?: string;
     fakeTlsDomain: string;
   }) {
     const fakeTlsDomain = normalizeFakeTlsDomain(params.fakeTlsDomain);
@@ -194,7 +200,7 @@ export class InboundBuilderService {
         clients: [
           {
             secret,
-            email: params.uuid,
+            email: params.email ?? params.uuid,
             limitIp: 0,
             totalGB: 0,
             expiryTime: 0,
@@ -220,11 +226,12 @@ export class InboundBuilderService {
   buildVlessRealityTcp(params: {
     port: number;
     uuid: string;
+    email?: string;
     sni: string;
     privateKey: string;
     publicKey: string;
   }) {
-    const { port, uuid, sni, privateKey, publicKey } = params;
+    const { port, uuid, sni, privateKey, publicKey, email } = params;
     return {
       enable: true,
       port,
@@ -235,7 +242,7 @@ export class InboundBuilderService {
           {
             id: uuid,
             flow: 'xtls-rprx-vision',
-            email: uuid,
+            email: email ?? uuid,
             enable: true,
             limitIp: 0,
             totalGB: 0,
@@ -285,11 +292,12 @@ export class InboundBuilderService {
   buildVlessRealityXhttp(params: {
     port: number;
     uuid: string;
+    email?: string;
     sni: string;
     privateKey: string;
     publicKey: string;
   }) {
-    const { port, uuid, sni, privateKey, publicKey } = params;
+    const { port, uuid, sni, privateKey, publicKey, email } = params;
     return {
       enable: true,
       port,
@@ -300,7 +308,7 @@ export class InboundBuilderService {
           {
             id: uuid,
             flow: '',
-            email: uuid,
+            email: email ?? uuid,
             enable: true,
             limitIp: 0,
             totalGB: 0,
@@ -359,11 +367,12 @@ export class InboundBuilderService {
   buildVlessRealityGrpc(params: {
     port: number;
     uuid: string;
+    email?: string;
     sni: string;
     privateKey: string;
     publicKey: string;
   }) {
-    const { port, uuid, sni, privateKey, publicKey } = params;
+    const { port, uuid, sni, privateKey, publicKey, email } = params;
     return {
       enable: true,
       port,
@@ -373,7 +382,7 @@ export class InboundBuilderService {
         clients: [
           {
             id: uuid,
-            email: uuid,
+            email: email ?? uuid,
             enable: true,
             flow: '',
             limitIp: 0,
@@ -433,6 +442,17 @@ export class InboundBuilderService {
     });
   }
 
+  buildVlessTlsXhttp(params: VlessTlsParams) {
+    return this.buildVlessTlsInbound(params, {
+      network: 'xhttp',
+      remark: 'vless-xhttp-tls',
+      flow: '',
+      transportSettings: {
+        xhttpSettings: { path: '/', host: params.serverName, mode: 'auto' },
+      },
+    });
+  }
+
   buildVlessTlsWs(params: VlessTlsParams) {
     return this.buildVlessTlsInbound(params, {
       network: 'ws',
@@ -452,7 +472,7 @@ export class InboundBuilderService {
   private buildVlessTlsInbound(
     params: VlessTlsParams,
     transport: {
-      network: 'tcp' | 'ws';
+      network: 'tcp' | 'ws' | 'xhttp';
       remark: string;
       flow: string;
       transportSettings: Record<string, unknown>;
@@ -467,7 +487,7 @@ export class InboundBuilderService {
         clients: [
           {
             id: params.uuid,
-            email: params.uuid,
+            email: params.email ?? params.uuid,
             flow: transport.flow,
             enable: true,
             limitIp: 0,
@@ -518,8 +538,13 @@ export class InboundBuilderService {
     };
   }
 
-  buildVlessWs(params: { port: number; uuid: string; sni: string }) {
-    const { port, uuid, sni } = params;
+  buildVlessWs(params: {
+    port: number;
+    uuid: string;
+    email?: string;
+    sni: string;
+  }) {
+    const { port, uuid, sni, email } = params;
     return {
       enable: true,
       port,
@@ -529,7 +554,7 @@ export class InboundBuilderService {
         clients: [
           {
             id: uuid,
-            email: uuid,
+            email: email ?? uuid,
             enable: true,
             flow: '',
             limitIp: 0,
@@ -564,8 +589,8 @@ export class InboundBuilderService {
     };
   }
 
-  buildVmessTcp(params: { port: number; uuid: string }) {
-    const { port, uuid } = params;
+  buildVmessTcp(params: { port: number; uuid: string; email?: string }) {
+    const { port, uuid, email } = params;
     return {
       enable: true,
       port,
@@ -576,7 +601,7 @@ export class InboundBuilderService {
           {
             id: uuid,
             flow: '',
-            email: uuid,
+            email: email ?? uuid,
             enable: true,
             limitIp: 0,
             totalGB: 0,
@@ -605,8 +630,12 @@ export class InboundBuilderService {
     };
   }
 
-  buildShadowsocksTcp(params: { port: number; uuid: string }) {
-    const { port, uuid } = params;
+  buildShadowsocksTcp(params: {
+    port: number;
+    uuid: string;
+    email?: string;
+  }) {
+    const { port, uuid, email } = params;
     return {
       enable: true,
       port,
@@ -617,7 +646,7 @@ export class InboundBuilderService {
           {
             id: '',
             flow: '',
-            email: uuid,
+            email: email ?? uuid,
             password: crypto.randomBytes(32).toString('base64'),
             enable: true,
             limitIp: 0,
@@ -653,11 +682,12 @@ export class InboundBuilderService {
   buildTrojanRealityTcp(params: {
     port: number;
     uuid: string;
+    email?: string;
     sni: string;
     privateKey: string;
     publicKey: string;
   }) {
-    const { port, uuid, sni, privateKey, publicKey } = params;
+    const { port, uuid, sni, privateKey, publicKey, email } = params;
     return {
       enable: true,
       port,
@@ -667,7 +697,7 @@ export class InboundBuilderService {
         clients: [
           {
             id: uuid,
-            email: uuid,
+            email: email ?? uuid,
             password: crypto.randomBytes(8).toString('hex'),
             enable: true,
             flow: '',
@@ -726,11 +756,12 @@ export class InboundBuilderService {
   buildHysteria2Inbound(params: {
     port: number;
     uuid: string;
+    email?: string;
     serverName: string;
     certificateFile: string;
     keyFile: string;
   }) {
-    const { port, uuid, serverName } = params;
+    const { port, uuid, serverName, email } = params;
     const obfsPassword = crypto.randomBytes(8).toString('hex');
     return {
       enable: true,
@@ -743,7 +774,7 @@ export class InboundBuilderService {
         clients: [
           {
             auth: uuid,
-            email: uuid,
+            email: email ?? uuid,
             enable: true,
           },
         ],
@@ -996,18 +1027,6 @@ export class InboundBuilderService {
         }
       }
 
-      if (network === 'xhttp') {
-        const x =
-          (
-            stream as {
-              xhttpSettings?: { path?: string; host?: string; mode?: string };
-            }
-          ).xhttpSettings || {};
-        params.set('path', x.path || '/');
-        params.set('host', x.host || r.serverNames?.[0] || '');
-        params.set('mode', x.mode || 'auto');
-      }
-
       if (network === 'grpc') {
         const g =
           (
@@ -1027,6 +1046,19 @@ export class InboundBuilderService {
         const flow = settings.clients?.[0]?.flow;
         if (flow) params.set('flow', flow);
       }
+    }
+
+    if (network === 'xhttp') {
+      const x = stream.xhttpSettings;
+      params.set('path', x?.path || '/');
+      params.set(
+        'host',
+        x?.host ||
+          stream.tlsSettings?.serverName ||
+          stream.realitySettings?.serverNames?.[0] ||
+          '',
+      );
+      params.set('mode', x?.mode || 'auto');
     }
 
     if (network === 'ws') {

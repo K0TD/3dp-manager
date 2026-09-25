@@ -52,7 +52,7 @@ interface Subscription {
   id: string;
   name: string;
   uuid: string;
-  inbounds: unknown[];
+  inbounds: Array<{ protocol?: string; configId?: string; nodeId?: string; relayServerId?: number }>;
   inboundsConfig?: InboundConfigUI[];
   isAutoRotationEnabled?: boolean;
 }
@@ -83,6 +83,7 @@ interface InboundConfigUI {
   keyFile?: string;
   enabled?: boolean;
   disabledReason?: string;
+  awgLocked?: boolean;
 }
 
 interface Domain {
@@ -101,6 +102,7 @@ const CERTIFICATE_TYPES = new Set([
   'hysteria2-udp',
   'vless-tcp-tls',
   'vless-ws-tls',
+  'vless-xhttp-tls',
 ]);
 
 const getSubscriptionUrl = (uuid: string) => {
@@ -117,6 +119,7 @@ export default function SubscriptionsPage() {
   const [menuAnchorEl, setMenuAnchorEl] = useState<null | HTMLElement>(null);
   const [activeSub, setActiveSub] = useState<Subscription | null>(null);
   const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [inbounds, setInbounds] = useState<InboundConfigUI[]>([]);
@@ -294,14 +297,16 @@ export default function SubscriptionsPage() {
     setEditingId(sub.id);
     setName(sub.name);
     setInbounds(
-      (sub.inboundsConfig?.length ? sub.inboundsConfig : [createInbound()]).map((item) => {
-        const nodeId = item.nodeId || getDefaultNodeId();
+      (sub.inboundsConfig || []).map((item) => {
+        const activeAwg = sub.inbounds?.find((inbound) => inbound.protocol === 'amneziawg' && inbound.configId === item.configId);
+        const nodeId = item.nodeId || activeAwg?.nodeId || getDefaultNodeId();
         const certificateMode =
           item.certificateMode === 'custom' ? 'custom' : 'node';
         const configId = item.configId || crypto.randomUUID();
         return {
           id: configId,
           configId,
+          awgLocked: Boolean(activeAwg),
           type: item.type || 'vless-tcp-reality',
           port: item.port ? item.port.toString() : 'random',
           sni: inboundSni(item.type || '', item.sni),
@@ -335,6 +340,7 @@ export default function SubscriptionsPage() {
   };
 
   const handleSave = async () => {
+    if (saving) return;
     const nextPortErrors = inbounds.reduce<Record<string, string>>((acc, inbound) => {
       if (inbound.type !== 'custom' && !isValidPort(inbound.port)) {
         acc[inbound.id] = 'Порт: число 1-65535 или random';
@@ -441,25 +447,33 @@ export default function SubscriptionsPage() {
       ),
     };
 
+    setSaving(true);
     try {
+      let awgProvisioning: { status: string; message?: string } | undefined;
       if (editingId) {
-        await api.put(`/subscriptions/${editingId}`, payload);
+        const res = await api.put(`/subscriptions/${editingId}`, payload);
+        awgProvisioning = res.data?.awgProvisioning;
       } else {
-        const res = await api.post<{ id?: string }>('/subscriptions', payload);
-        setCreatedSubscriptionId(res.data?.id || null);
+        const res = await api.post<{ id?: string; awgProvisioning?: { status: string; message?: string } }>('/subscriptions', payload);
+        setCreatedSubscriptionId(inbounds.some((inbound) => inbound.type !== 'amneziawg') ? res.data?.id || null : null);
+        awgProvisioning = res.data?.awgProvisioning;
       }
       setOpen(false);
       loadSubs();
       setSnackbar({
         open: true,
-        type: 'success',
-        message: editingId ? 'Подписка обновлена' : 'Подписка создана',
+        type: awgProvisioning?.status === 'failed' ? 'error' : 'success',
+        message: awgProvisioning?.status === 'failed'
+          ? `Настройки сохранены, но создание AWG не завершено: ${awgProvisioning.message || ''} Повторите сохранение подписки.`
+          : editingId ? 'Подписка обновлена' : 'Подписка создана',
       });
     } catch (error: unknown) {
       const message =
         (error as { response?: { data?: { message?: string } } })?.response?.data?.message ||
         'Произошла ошибка при сохранении';
       setSnackbar({ open: true, type: 'error', message });
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -595,7 +609,8 @@ export default function SubscriptionsPage() {
   };
 
   const showLinks = (sub: Subscription) => {
-    const links = sub.inbounds?.map((item) => (item as { link?: string }).link).filter(Boolean) || [];
+    const links = sub.inbounds?.map((item) => (item as { link?: string }).link)
+      .filter((link): link is string => Boolean(link)) || [];
     setCurrentLinks(links.length ? links : ['Нет активных ссылок (ждите ротации)']);
     setLinksOpen(true);
   };
@@ -770,7 +785,7 @@ export default function SubscriptionsPage() {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setOpen(false)}>Отмена</Button>
-          <Button onClick={handleSave} variant="contained" color="primary">Сохранить</Button>
+          <Button onClick={handleSave} disabled={saving} variant="contained" color="primary">{saving ? 'Сохранение…' : 'Сохранить'}</Button>
         </DialogActions>
       </Dialog>
 

@@ -4,6 +4,7 @@ export interface RoutingPresetSelection {
   blockRussia: boolean;
   blockIpCheckers: boolean;
   googleIpv4: boolean;
+  forceAdopt?: boolean;
   revision: string;
 }
 
@@ -14,6 +15,7 @@ export interface RoutingPresetView extends RoutingPresetSelection {
     googleIpv4: { available: boolean; reason?: string };
   };
   needsApply: boolean;
+  hasConflict?: boolean;
   warnings: string[];
   result?: 'applied' | 'unchanged' | 'rolled_back' | 'rollback_failed' | 'unknown';
   message?: string;

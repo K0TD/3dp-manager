@@ -11,6 +11,10 @@ export class UpdateRoutingPresetsDto {
   @IsBoolean()
   googleIpv4?: boolean;
 
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsBoolean()
+  forceAdopt?: boolean;
+
   @IsString()
   @Matches(/^[a-f0-9]{64}$/)
   revision: string;

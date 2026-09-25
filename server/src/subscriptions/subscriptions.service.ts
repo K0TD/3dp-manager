@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, Repository } from 'typeorm';
+import { EntityManager, In, Repository } from 'typeorm';
 import { Subscription } from './entities/subscription.entity';
 import { XuiService } from '../xui/xui.service';
 import { CreateSubscriptionDto } from './dto/create-subscription.dto';
@@ -23,6 +23,8 @@ import {
 } from '../inbounds/mtproto-faketls';
 import { isSafeAbsoluteRemotePath } from '../inbounds/tls-config';
 import { Domain } from '../domains/entities/domain.entity';
+import { RotationService } from '../rotation/rotation.service';
+import { SubscriptionLockService } from './subscription-lock.service';
 
 type InboundConfig = NonNullable<
   CreateSubscriptionDto['inboundsConfig']
@@ -43,6 +45,8 @@ export class SubscriptionsService {
     @InjectRepository(Domain)
     private domainRepo: Repository<Domain>,
     private xuiService: XuiService,
+    private rotationService: RotationService,
+    private subscriptionLock: SubscriptionLockService,
   ) {}
 
   async findAll() {
@@ -68,6 +72,7 @@ export class SubscriptionsService {
   async create(dto: CreateSubscriptionDto) {
     await this.validateInboundsConfig(dto.inboundsConfig);
     const sub = this.subRepo.create({
+      id: uuidv4(),
       name: dto.name,
       uuid: uuidv4(),
       inboundsConfig: this.withConfigIds(dto.inboundsConfig || []),
@@ -76,10 +81,17 @@ export class SubscriptionsService {
       relayServer: await this.resolveRelay(dto.relayServerId),
     });
 
-    return this.subRepo.save(sub);
+    return this.subscriptionLock.run(sub.id, async () => {
+      const saved = await this.subRepo.save(sub);
+      return this.provisionAmnezia(saved);
+    });
   }
 
   async update(id: string, dto: UpdateSubscriptionDto) {
+    return this.subscriptionLock.run(id, () => this.updateLocked(id, dto));
+  }
+
+  private async updateLocked(id: string, dto: UpdateSubscriptionDto) {
     const sub = await this.subRepo.findOne({
       where: { id },
       relations: ['inbounds', 'node', 'relayServer'],
@@ -88,6 +100,8 @@ export class SubscriptionsService {
     if (!sub) {
       return null;
     }
+
+    this.validateAmneziaChanges(sub, dto);
 
     // Пустое имя не обновляется — защита от случайной очистки
     if (dto.name && dto.name.trim().length > 0) {
@@ -120,14 +134,46 @@ export class SubscriptionsService {
 
     if (!nextConfigs) return this.subRepo.save(sub);
 
-    return this.subRepo.manager.transaction(async (entityManager) => {
-      const savedSubscription = await entityManager.save(Subscription, sub);
-      await this.syncActivePositions(entityManager, id, nextConfigs);
-      return savedSubscription;
-    });
+    const desiredAwgIds = new Set(
+      nextConfigs
+        .filter((config) => config.type === 'amneziawg')
+        .map((config) => config.configId),
+    );
+    const removedAwg = (sub.inbounds || []).filter(
+      (inbound) =>
+        inbound.protocol === 'amneziawg' &&
+        inbound.status === InboundStatus.Active &&
+        inbound.configId &&
+        !desiredAwgIds.has(inbound.configId),
+    );
+    const saved = await this.subRepo.manager.transaction(
+      async (entityManager) => {
+        const savedSubscription = await entityManager.save(Subscription, sub);
+        if (removedAwg.length) {
+          await entityManager.update(
+            Inbound,
+            { id: In(removedAwg.map((inbound) => inbound.id)) },
+            {
+              status: InboundStatus.PendingCleanup,
+              nextCleanupAt: new Date(),
+            },
+          );
+        }
+        await this.syncActivePositions(entityManager, id, nextConfigs);
+        return savedSubscription;
+      },
+    );
+    saved.inbounds = (saved.inbounds || []).filter(
+      (inbound) => !removedAwg.some((removed) => removed.id === inbound.id),
+    );
+    return this.provisionAmnezia(saved);
   }
 
   async remove(id: string) {
+    return this.subscriptionLock.run(id, () => this.removeLocked(id));
+  }
+
+  private async removeLocked(id: string) {
     const sub = await this.subRepo.findOne({
       where: { id },
       relations: ['inbounds', 'inbounds.node'],
@@ -152,6 +198,102 @@ export class SubscriptionsService {
     }
 
     return this.subRepo.remove(sub);
+  }
+
+  private async provisionAmnezia(sub: Subscription) {
+    if (
+      !(sub.inboundsConfig || []).some((config) => config.type === 'amneziawg')
+    )
+      return sub;
+    try {
+      const awgProvisioning = await this.rotationService.provisionAmnezia(sub);
+      return { ...sub, awgProvisioning };
+    } catch {
+      return {
+        ...sub,
+        awgProvisioning: {
+          status: 'failed' as const,
+          message:
+            'Не удалось завершить создание AWG. Повторите сохранение подписки.',
+        },
+      };
+    }
+  }
+
+  private validateAmneziaChanges(
+    sub: Subscription,
+    dto: UpdateSubscriptionDto,
+  ) {
+    if (!dto.inboundsConfig && !('nodeId' in dto) && !('relayServerId' in dto))
+      return;
+    const activeAwg = (sub.inbounds || []).filter(
+      (inbound) =>
+        inbound.protocol === 'amneziawg' &&
+        inbound.status === InboundStatus.Active,
+    );
+    const oldConfigs = sub.inboundsConfig || [];
+    const nextConfigs = dto.inboundsConfig ?? oldConfigs;
+    for (const inbound of activeAwg) {
+      const matches = oldConfigs.filter(
+        (config) =>
+          config.configId === inbound.configId && config.type === 'amneziawg',
+      );
+      if (
+        !inbound.configId ||
+        matches.length !== 1 ||
+        activeAwg.filter((item) => item.configId === inbound.configId)
+          .length !== 1
+      ) {
+        throw new BadRequestException(
+          'AWG не связан однозначно с конфигурацией. Существующее подключение сохранено; исправьте связь configId.',
+        );
+      }
+      const previous = matches[0];
+      const next = nextConfigs.find(
+        (config) => config.configId === inbound.configId,
+      );
+      if (!next) continue;
+      const previousNode = previous.nodeId || sub.nodeId || inbound.nodeId;
+      const nextNode =
+        next.nodeId ||
+        ('nodeId' in dto ? dto.nodeId : sub.nodeId) ||
+        inbound.nodeId;
+      const previousRelay =
+        previous.relayServerId || sub.relayServerId || undefined;
+      const nextRelay =
+        next.relayServerId ||
+        ('relayServerId' in dto ? dto.relayServerId : sub.relayServerId) ||
+        undefined;
+      if (
+        next.type !== 'amneziawg' ||
+        String(next.port || 'random') !== String(previous.port || 'random') ||
+        nextNode !== previousNode ||
+        nextRelay !== previousRelay
+      ) {
+        throw new BadRequestException(
+          'Чтобы изменить AWG, удалите инбаунд, сохраните подписку, затем добавьте AWG заново и сохраните.',
+        );
+      }
+    }
+    // A new row cannot replace an active AWG in the same save operation.
+    const removed = activeAwg.some(
+      (inbound) =>
+        !nextConfigs.some((config) => config.configId === inbound.configId),
+    );
+    const added = nextConfigs.some(
+      (config) =>
+        config.type === 'amneziawg' &&
+        !oldConfigs.some(
+          (previous) =>
+            previous.type === 'amneziawg' &&
+            previous.configId === config.configId,
+        ),
+    );
+    if (removed && added) {
+      throw new BadRequestException(
+        'Сначала сохраните удаление AWG, затем откройте подписку и добавьте новый AWG.',
+      );
+    }
   }
 
   private async resolveNode(nodeId?: string | null) {

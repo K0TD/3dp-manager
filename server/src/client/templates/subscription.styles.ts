@@ -119,11 +119,12 @@ export const subscriptionStyles = `
   .guide--amnezia > h3 { margin: 0 0 18px; color: var(--amber); font-size: clamp(1.65rem,2.6vw,2.2rem); }
   .guide > .eyebrow { margin-bottom: 8px; color: var(--guide-accent); font-size: 9px; }
   .guide .protocol-icon { color: var(--guide-accent); background: color-mix(in srgb,var(--guide-accent) 9%,transparent); border-color: color-mix(in srgb,var(--guide-accent) 20%,transparent); }
-  .guide--amnezia .protocol-icon { gap: 2px; font: 500 23px/1 'Unbounded',sans-serif; }
-  .protocol-icon > span { font: 600 8px 'IBM Plex Sans',sans-serif; align-self: flex-end; margin-bottom: 11px; }
+  .app-icon { display: block; width: 32px; height: 32px; object-fit: contain; flex-shrink: 0; }
+  .app-icon--small { width: 24px; height: 24px; }
+  .guide .protocol-icon--amnezia-vpn { background: #242424; }
+  .connection-caption.app-caption { display: flex; align-items: center; gap: 8px; }
   .protocol-callout { display: grid; grid-template-columns: 42px minmax(0,1fr); gap: 14px; align-items: start; padding: 18px; margin-bottom: 16px; background: color-mix(in srgb,var(--guide-accent) 9%,var(--paper)); border: 1px solid color-mix(in srgb,var(--guide-accent) 35%,var(--line)); border-left: 3px solid var(--guide-accent); border-radius: 14px; }
   .protocol-callout-icon { width: 42px; height: 42px; display: grid; place-items: center; color: var(--guide-accent); background: var(--paper); border: 1px solid color-mix(in srgb,var(--guide-accent) 32%,var(--line)); border-radius: 13px; font: 500 20px/1 'Unbounded',sans-serif; }
-  .protocol-callout-icon > span { margin-top: 12px; margin-left: -4px; font: 600 7px/1 'IBM Plex Sans',sans-serif; }
   .protocol-callout strong { display: block; font-size: 14px; line-height: 1.5; }
   .protocol-callout p { margin-top: 5px; color: var(--muted); font-size: 12px; line-height: 1.7; }
   .protocol-callout code { padding: 2px 5px; color: var(--ink); background: var(--raised); border-radius: 5px; font-size: 11px; }

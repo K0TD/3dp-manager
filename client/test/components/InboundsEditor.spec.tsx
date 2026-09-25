@@ -147,6 +147,27 @@ describe('InboundsEditor', () => {
     ]);
   });
 
+  it('allows deleting the sole AWG and protects its connection settings', () => {
+    const { handleChange } = renderEditor({ inbounds: [{
+      ...initialInbounds[0], type: 'amneziawg', awgLocked: true,
+    }] });
+    expect(screen.getByLabelText('Порт')).toBeDisabled();
+    const selects = screen.getAllByRole('combobox');
+    expect(selects.slice(0, 3).every((select) => select.getAttribute('aria-disabled') === 'true')).toBe(true);
+    expect(screen.getByLabelText('Название')).not.toBeDisabled();
+    expect(screen.getByText(/AmneziaWG не участвует в общей ротации/)).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('icon-Delete').closest('button')!);
+    expect(handleChange).toHaveBeenCalledWith([]);
+  });
+
+  it('shows certificate fields for the XHTTP TLS option', () => {
+    renderEditor({ inbounds: [{ ...initialInbounds[0], type: 'vless-xhttp-tls', certificateMode: 'custom' }] });
+    expect(screen.getByLabelText('Сертификат')).toBeInTheDocument();
+    expect(screen.getByLabelText('Приватный ключ')).toBeInTheDocument();
+    expect(screen.getByLabelText('TLS server name')).toBeEnabled();
+    expect(screen.queryByLabelText('SNI')).not.toBeInTheDocument();
+  });
+
   it('calls onResetDefaults when clicking "Сбросить по умолчанию"', () => {
     const { handleResetDefaults } = renderEditor();
 

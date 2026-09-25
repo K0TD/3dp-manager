@@ -15,6 +15,7 @@ export interface InboundConfigUI {
   keyFile?: string;
   enabled?: boolean;
   disabledReason?: string;
+  awgLocked?: boolean;
 }
 
 export interface Tunnel {
@@ -45,6 +46,7 @@ export const CONNECTION_OPTIONS = [
   'vless-ws',
   'vless-tcp-tls',
   'vless-ws-tls',
+  'vless-xhttp-tls',
   'hysteria2-udp',
   'vmess-tcp',
   'shadowsocks-tcp',
@@ -58,6 +60,7 @@ export const CERTIFICATE_TYPES = new Set([
   'hysteria2-udp',
   'vless-tcp-tls',
   'vless-ws-tls',
+  'vless-xhttp-tls',
 ]);
 
 export const DEFAULT_INBOUND_TYPES = [

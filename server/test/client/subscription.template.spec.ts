@@ -13,6 +13,22 @@ describe('subscription template', () => {
     telegramProxyLinks: [] as string[],
   };
 
+  it('embeds distinct local application icons with stable dimensions', () => {
+    const html = generateSubscriptionHtmlWithQr({
+      ...baseData,
+      amneziaLinks: ['vpn://config'],
+    });
+    const icons = [
+      ...html.matchAll(
+        /<img class="app-icon" src="([^"]+)" width="32" height="32" alt="([^"]+)">/g,
+      ),
+    ];
+    expect(icons.map((icon) => icon[2])).toEqual(['AmneziaVPN', 'AmneziaWG']);
+    expect(icons.every((icon) => icon[1].startsWith('data:image/'))).toBe(true);
+    expect(icons[0][1] === icons[1][1]).toBe(false);
+    expect(html.includes('A<span>WG</span>')).toBe(false);
+  });
+
   it('показывает инструкции только для присутствующих специальных подключений', () => {
     const html = generateSubscriptionHtmlWithQr({
       ...baseData,
@@ -63,7 +79,7 @@ describe('subscription template', () => {
       ...baseData,
       subscriptionLinks: [],
     });
-    expect(html).not.toContain('<img ');
+    expect(html).not.toContain('class="qr-frame"');
     expect(html).not.toContain('class="subscription-box"');
     expect(html).toContain('Активных подключений пока нет');
     expect(html).toContain('Ожидаем подключения');
@@ -107,7 +123,7 @@ describe('subscription template', () => {
       amneziaLinks: ['vpn://config'],
       amneziaQrDataUrls: [''],
     });
-    expect(html).not.toContain('<img ');
+    expect(html).not.toContain('class="qr-frame"');
     expect(html).toContain('QR-код недоступен');
     expect(html).toContain('data-copy="vpn://config"');
     expect(html).toContain(
@@ -123,7 +139,7 @@ describe('subscription template', () => {
         'tg://proxy?server=example.com&port=443&secret=eeaa',
       ],
     });
-    expect(html).not.toContain('<img ');
+    expect(html).not.toContain('class="qr-frame"');
     expect(html).toContain('Добавить в Telegram');
   });
 

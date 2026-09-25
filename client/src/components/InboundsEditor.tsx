@@ -176,11 +176,10 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
 
   const removeInbound = (id?: string) => {
     if (!id) {
-      onChange([createInboundTemplate('vless-tcp-reality', nodes, domains)]);
+      onChange([]);
       if (onPortErrorsChange) onPortErrorsChange({});
       return;
     }
-    if (inbounds.length <= 1) return;
     onChange(inbounds.filter((item) => item.id !== id));
     if (onPortErrorsChange && portErrors[id]) {
       const nextErrors = { ...portErrors };
@@ -191,6 +190,12 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
 
   return (
     <Box>
+      {inbounds.some((inbound) => inbound.type === 'amneziawg') && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          AmneziaWG не участвует в общей ротации. Для замены удалите инбаунд, сохраните подписку,
+          затем откройте её, добавьте AWG заново и сохраните. Новый AWG создаётся при сохранении.
+        </Alert>
+      )}
       {showDisabledAlert && inbounds.some((i) => i.enabled === false || i.disabledReason) && (
         <Alert severity="warning" sx={{ mb: 2 }}>
           Внимание: некоторые конфигурации были отключены (удалена нода). При сохранении они будут автоматически активированы на выбранных нодах.
@@ -268,6 +273,7 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
               <Select
                 value={inbound.type}
                 label="Тип"
+                disabled={inbound.awgLocked}
                 onChange={(e) => handleInboundChange(inbound.id, 'type', e.target.value)}
               >
                 {CONNECTION_OPTIONS.map((option) => {
@@ -298,6 +304,7 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                   <Select
                     value={inbound.nodeId || ''}
                     label="Нода"
+                    disabled={inbound.awgLocked}
                     onChange={(e) => handleInboundChange(inbound.id, 'nodeId', e.target.value)}
                   >
                     <MenuItem value="">Основная нода</MenuItem>
@@ -315,6 +322,7 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                   <Select
                     value={inbound.relayServerId || ''}
                     label="Relay"
+                    disabled={inbound.awgLocked}
                     onChange={(e) => handleInboundChange(inbound.id, 'relayServerId', e.target.value)}
                   >
                     <MenuItem value="">Без relay</MenuItem>
@@ -364,6 +372,7 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                 <TextField
                   size="small"
                   label="Порт"
+                  disabled={inbound.awgLocked}
                   placeholder="random или порт"
                   value={inbound.port}
                   onChange={(e) => handleInboundChange(inbound.id, 'port', e.target.value)}
@@ -471,7 +480,6 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
             <IconButton
               color="primary"
               onClick={() => removeInbound(inbound.id)}
-              disabled={inbounds.length <= 1}
               sx={{ mt: 0.5, flexShrink: 0 }}
             >
               <Delete />

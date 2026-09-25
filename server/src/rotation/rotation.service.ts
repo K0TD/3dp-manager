@@ -20,12 +20,15 @@ import { InboundBuilderService } from '../inbounds/inbound-builder.service';
 import { XuiInboundRaw } from '../inbounds/xui-inbound.types';
 import { isSafeAbsoluteRemotePath } from '../inbounds/tls-config';
 import { normalizeFakeTlsDomain } from '../inbounds/mtproto-faketls';
+import { formatClientEmail } from '../inbounds/client-email';
 import {
   CERTIFICATE_INBOUND_TYPES,
   InboundType,
 } from '../subscriptions/inbound-config.constants';
 import { isPortConflict } from '../xui/xui-contract';
 import { supportsInboundType } from '../nodes/node-capabilities';
+import { SubscriptionLockService } from '../subscriptions/subscription-lock.service';
+import { renameAmneziaVpnLink } from '../inbounds/amnezia-vpn-link';
 import {
   RotationNodeResult,
   RotationOperation,
@@ -85,6 +88,7 @@ export class RotationService implements OnModuleInit {
     private operationRepo: Repository<RotationOperation>,
     private xuiService: XuiService,
     private inboundBuilder: InboundBuilderService,
+    private subscriptionLock: SubscriptionLockService,
   ) {}
 
   async onModuleInit() {
@@ -262,9 +266,23 @@ export class RotationService implements OnModuleInit {
 
     const results: RotationNodeResult[] = [];
     for (const subscription of subscriptions) {
-      results.push(
-        ...(await this.rotateSubscription(subscription, domains, defaultNode)),
+      const subscriptionResults = await this.subscriptionLock.run(
+        subscription.id,
+        async () => {
+          // The queued operation may have waited behind an edit or deletion.
+          const current = await this.subRepo.findOne({
+            where: { id: subscription.id },
+            relations: ['inbounds', 'inbounds.node', 'node', 'relayServer'],
+          });
+          if (
+            !current?.isEnabled ||
+            (!subscriptionIds?.length && !current.isAutoRotationEnabled)
+          )
+            return [];
+          return this.rotateSubscription(current, domains, defaultNode);
+        },
       );
+      results.push(...subscriptionResults);
     }
     const allSucceeded =
       results.length > 0 &&
@@ -292,6 +310,102 @@ export class RotationService implements OnModuleInit {
     return this.performRotation([subscriptionId]);
   }
 
+  /** Called after saving settings, while holding the subscription lock. */
+  async provisionAmnezia(subscription: Subscription) {
+    const errors: string[] = [];
+    const configs = subscription.inboundsConfig || [];
+    const active = (subscription.inbounds || []).filter(
+      (inbound) =>
+        inbound.protocol === 'amneziawg' &&
+        inbound.status === InboundStatus.Active,
+    );
+    if (
+      active.some(
+        (inbound) =>
+          !inbound.configId ||
+          configs.filter(
+            (config) =>
+              config.configId === inbound.configId &&
+              config.type === 'amneziawg',
+          ).length !== 1 ||
+          active.filter((other) => other.configId === inbound.configId)
+            .length !== 1,
+      )
+    ) {
+      return {
+        status: 'failed' as const,
+        message:
+          'AWG не связан однозначно с конфигурацией. Существующее подключение сохранено; исправьте связь configId.',
+      };
+    }
+    const usedPorts = new Set(
+      (subscription.inbounds || []).map((inbound) => inbound.port),
+    );
+    const defaultNode = await this.getDefaultNode();
+    for (const [position, config] of configs.entries()) {
+      if (config.type !== 'amneziawg' || config.enabled === false) continue;
+      const existing = active.find(
+        (inbound) => inbound.configId === config.configId,
+      );
+      if (existing) {
+        const remark = config.name?.trim() || 'amneziawg';
+        const description = [config.flag, remark].filter(Boolean).join(' ');
+        await this.inboundRepo.update(existing.id, {
+          position,
+          remark,
+          link: renameAmneziaVpnLink(existing.link, description),
+        });
+        continue;
+      }
+      let staged: Inbound | null = null;
+      try {
+        const node = await this.resolveNode(
+          config.nodeId,
+          subscription,
+          defaultNode,
+        );
+        if (!node) throw new Error('Для AWG не назначена доступная нода');
+        this.assertNodeCompatibility(config, node);
+        staged = await this.createInbound({
+          subscription,
+          positionedConfig: { config, position },
+          node,
+          domains: [],
+          usedPorts,
+          generationId: uuidv4(),
+        });
+        if (!staged)
+          throw new Error(
+            this.xuiService.getLastInboundError(node) ||
+              'Панель отклонила создание AWG',
+          );
+        await this.inboundRepo.update(staged.id, {
+          status: InboundStatus.Active,
+        });
+        staged.status = InboundStatus.Active;
+        // Panel creation retains entity relations, including the parent itself.
+        // Publish only the inbound fields, without cycles or node credentials.
+        subscription.inbounds = [
+          ...(subscription.inbounds || []),
+          {
+            ...staged,
+            subscription: undefined,
+            node: undefined,
+            relayServer: undefined,
+          },
+        ];
+      } catch (error) {
+        if (staged) await this.queueCleanup([staged]);
+        errors.push(
+          `${config.name || 'AmneziaWG'}: ${this.safeMessage(error)}`,
+        );
+      }
+    }
+    return errors.length
+      ? { status: 'failed' as const, message: errors.join('; ') }
+      : { status: 'succeeded' as const };
+  }
+
   private async rotateSubscription(
     subscription: Subscription,
     domains: Domain[],
@@ -303,6 +417,12 @@ export class RotationService implements OnModuleInit {
     );
 
     if (allConfigs.length === 0) {
+      const obsolete = (subscription.inbounds || []).filter(
+        (inbound) =>
+          inbound.status === InboundStatus.Active &&
+          inbound.protocol !== 'amneziawg',
+      );
+      await this.queueCleanup(obsolete);
       this.logger.warn(
         `[RotationService] У подписки «${subscription.name}» (${subscription.id}) нет конфигураций инбаундов.`,
       );
@@ -312,9 +432,9 @@ export class RotationService implements OnModuleInit {
           subscriptionName: subscription.name,
           nodeId: subscription.nodeId || 'none',
           nodeName: subscription.node?.name || 'Без конфигураций',
-          status: 'preserved' as const,
+          status: 'succeeded' as const,
           created: 0,
-          pendingCleanup: 0,
+          pendingCleanup: obsolete.length,
           message: 'У подписки нет конфигураций инбаундов',
         },
       ];
@@ -322,6 +442,7 @@ export class RotationService implements OnModuleInit {
 
     let configsChanged = false;
     for (const config of allConfigs) {
+      if (config.type === 'amneziawg') continue;
       if (config.enabled === false) {
         const resolved =
           config.type === 'custom'
@@ -348,7 +469,31 @@ export class RotationService implements OnModuleInit {
 
     const enabledConfigs = allConfigs
       .map((config, position) => ({ config, position }))
-      .filter(({ config }) => config.enabled !== false);
+      .filter(
+        ({ config }) => config.enabled !== false && config.type !== 'amneziawg',
+      );
+
+    if (allConfigs.every((config) => config.type === 'amneziawg')) {
+      const obsolete = (subscription.inbounds || []).filter(
+        (inbound) =>
+          inbound.status === InboundStatus.Active &&
+          inbound.protocol !== 'amneziawg',
+      );
+      await this.queueCleanup(obsolete);
+      return [
+        {
+          subscriptionId: subscription.id,
+          subscriptionName: subscription.name,
+          nodeId: subscription.nodeId,
+          nodeName: 'AmneziaWG',
+          status: 'succeeded' as const,
+          created: 0,
+          pendingCleanup: obsolete.length,
+          message:
+            'AmneziaWG сохраняется; создание выполняется при сохранении подписки',
+        },
+      ];
+    }
 
     if (enabledConfigs.length === 0) {
       const reasons = Array.from(
@@ -403,6 +548,7 @@ export class RotationService implements OnModuleInit {
     }
 
     const obsolete = (subscription.inbounds || []).filter((inbound) => {
+      if (inbound.protocol === 'amneziawg') return false;
       if (inbound.status !== InboundStatus.Active) return false;
       const key =
         inbound.protocol === 'custom'
@@ -537,6 +683,7 @@ export class RotationService implements OnModuleInit {
         await this.xuiService.waitForXray(group.node);
 
       const old = (subscription.inbounds || []).filter((inbound) => {
+        if (inbound.protocol === 'amneziawg') return false;
         if (inbound.status !== InboundStatus.Active) return false;
         return key === '__custom'
           ? inbound.protocol === 'custom'
@@ -763,6 +910,7 @@ export class RotationService implements OnModuleInit {
         : Number(config.port);
     usedPorts.add(port);
     const uuid = uuidv4();
+    const email = formatClientEmail(subscription.name, uuid);
     const sni = this.resolveInboundSni(config, domains);
 
     const built =
@@ -770,14 +918,16 @@ export class RotationService implements OnModuleInit {
         ? this.inboundBuilder.buildHysteria2Inbound({
             port,
             uuid,
+            email,
             ...this.resolveTlsConfig(config, node, nodeCertificate),
           })
         : config.type === 'amneziawg'
-          ? this.inboundBuilder.buildAmneziaWgInbound({ port, uuid })
+          ? this.inboundBuilder.buildAmneziaWgInbound({ port, uuid, email })
           : this.buildPanelInbound({
               config,
               port,
               uuid,
+              email,
               sni,
               realityKeys,
               tls: CERTIFICATE_INBOUND_TYPES.has(config.type as InboundType)
@@ -847,13 +997,14 @@ export class RotationService implements OnModuleInit {
     config: InboundConfig;
     port: number;
     uuid: string;
+    email?: string;
     sni: string;
     realityKeys?: { privateKey: string; publicKey: string } | null;
     tls?: ResolvedTlsConfig;
   }): XuiInboundRaw | null {
-    const { config, port, uuid, sni, realityKeys, tls } = request;
+    const { config, port, uuid, email, sni, realityKeys, tls } = request;
     const realityParams = realityKeys
-      ? { port, uuid, sni, ...realityKeys }
+      ? { port, uuid, email, sni, ...realityKeys }
       : null;
     const builders: Record<string, () => XuiInboundRaw | null> = {
       'vless-tcp-reality': () =>
@@ -872,22 +1023,34 @@ export class RotationService implements OnModuleInit {
         realityParams
           ? this.inboundBuilder.buildTrojanRealityTcp(realityParams)
           : null,
-      'vless-ws': () => this.inboundBuilder.buildVlessWs({ port, uuid, sni }),
+      'vless-ws': () =>
+        this.inboundBuilder.buildVlessWs({ port, uuid, email, sni }),
       'vless-tcp-tls': () =>
         tls
-          ? this.inboundBuilder.buildVlessTlsTcp({ port, uuid, ...tls })
+          ? this.inboundBuilder.buildVlessTlsTcp({ port, uuid, email, ...tls })
           : null,
       'vless-ws-tls': () =>
         tls
-          ? this.inboundBuilder.buildVlessTlsWs({ port, uuid, ...tls })
+          ? this.inboundBuilder.buildVlessTlsWs({ port, uuid, email, ...tls })
           : null,
-      'vmess-tcp': () => this.inboundBuilder.buildVmessTcp({ port, uuid }),
+      'vless-xhttp-tls': () =>
+        tls
+          ? this.inboundBuilder.buildVlessTlsXhttp({
+              port,
+              uuid,
+              email,
+              ...tls,
+            })
+          : null,
+      'vmess-tcp': () =>
+        this.inboundBuilder.buildVmessTcp({ port, uuid, email }),
       'shadowsocks-tcp': () =>
-        this.inboundBuilder.buildShadowsocksTcp({ port, uuid }),
+        this.inboundBuilder.buildShadowsocksTcp({ port, uuid, email }),
       'mtproto-faketls': () =>
         this.inboundBuilder.buildMtprotoInbound({
           port,
           uuid,
+          email,
           fakeTlsDomain: sni,
         }),
     };
@@ -945,6 +1108,7 @@ export class RotationService implements OnModuleInit {
       .getMany();
 
     const failedNodeIdsInBatch = new Set<string>();
+    const successfulNodes = new Map<string, Node>();
 
     for (const inbound of items) {
       const attempts = inbound.cleanupAttempts || 0;
@@ -1026,6 +1190,9 @@ export class RotationService implements OnModuleInit {
           : await this.xuiService.deleteInbound(inbound.xuiId, node);
 
       if (deleted) {
+        if (node?.id) {
+          successfulNodes.set(node.id, node);
+        }
         await this.inboundRepo.delete(inbound.id);
         continue;
       }
@@ -1041,6 +1208,11 @@ export class RotationService implements OnModuleInit {
       );
       await this.inboundRepo.save(inbound);
     }
+
+    for (const node of successfulNodes.values()) {
+      await this.cleanupZeroTrafficOrphans(node);
+    }
+
     await this.finalizeDeletedNodes();
   }
 
@@ -1074,6 +1246,8 @@ export class RotationService implements OnModuleInit {
       .getMany();
 
     let purgedCount = 0;
+    const nodesToClean = new Map<string, Node>();
+
     for (const item of items) {
       const isFailed =
         (item.cleanupAttempts || 0) >= 1 ||
@@ -1084,15 +1258,144 @@ export class RotationService implements OnModuleInit {
         item.node.healthStatus === NodeHealthStatus.Degraded;
 
       if (isFailed) {
+        if (item.node && item.xuiId && item.xuiId > 0 && !item.node.deletedAt) {
+          try {
+            const resolvedNode = await this.resolveInboundNode(item);
+            if (resolvedNode) {
+              await this.xuiService.deleteInbound(item.xuiId, resolvedNode);
+              nodesToClean.set(resolvedNode.id, resolvedNode);
+            }
+          } catch {
+            // Node might be offline; continue purge
+          }
+        }
         await this.inboundRepo.delete(item.id);
         purgedCount++;
       }
+    }
+
+    try {
+      const defaultNode = await this.getDefaultNode();
+      if (defaultNode && !nodesToClean.has(defaultNode.id)) {
+        nodesToClean.set(defaultNode.id, defaultNode);
+      }
+    } catch {
+      // Continue
+    }
+
+    for (const node of nodesToClean.values()) {
+      await this.cleanupZeroTrafficOrphans(node);
     }
 
     this.logger.log(
       `Принудительно очищено ${purgedCount} зависших задач очистки.`,
     );
     return { success: true, purgedCount };
+  }
+
+  async cleanupZeroTrafficOrphans(node: Node): Promise<number> {
+    try {
+      if (!this.xuiService.listRoutingInbounds) {
+        return 0;
+      }
+      const panelInbounds = await this.xuiService.listRoutingInbounds(node);
+      if (!Array.isArray(panelInbounds) || !panelInbounds.length) {
+        return 0;
+      }
+
+      const trackedInbounds = await this.inboundRepo.find({
+        where: {
+          nodeId: node.id,
+          status: In([InboundStatus.Active, InboundStatus.Staged]),
+        },
+        select: ['xuiId'],
+      });
+      const trackedXuiIds = new Set(
+        trackedInbounds
+          .map((i) => i.xuiId)
+          .filter((id): id is number => typeof id === 'number' && id > 0),
+      );
+
+      let cleanedCount = 0;
+      const now = Date.now();
+      const MIN_AGE_MS = 5 * 60 * 1000;
+
+      for (const raw of panelInbounds) {
+        if (!raw.id || trackedXuiIds.has(raw.id)) {
+          continue;
+        }
+
+        const totalTraffic = (Number(raw.up) || 0) + (Number(raw.down) || 0);
+        if (totalTraffic > 0) {
+          continue;
+        }
+
+        const clientStats = Array.isArray(raw.clientStats)
+          ? raw.clientStats
+          : [];
+        if (clientStats.length > 1) {
+          continue;
+        }
+
+        const hasClientTraffic = clientStats.some(
+          (cs: Record<string, unknown>) =>
+            (Number(cs.up) || 0) > 0 || (Number(cs.down) || 0) > 0,
+        );
+        if (hasClientTraffic) {
+          continue;
+        }
+
+        let clients: Array<Record<string, unknown>> = [];
+        try {
+          const settings =
+            typeof raw.settings === 'string'
+              ? JSON.parse(raw.settings)
+              : raw.settings;
+          clients = Array.isArray(settings?.clients) ? settings.clients : [];
+        } catch {
+          continue;
+        }
+
+        if (clients.length > 1) {
+          continue;
+        }
+
+        const createdAt =
+          Number(clients[0]?.created_at) ||
+          Number((clientStats[0] as Record<string, unknown>)?.created_at) ||
+          0;
+        if (createdAt > 0 && now - createdAt < MIN_AGE_MS) {
+          continue;
+        }
+
+        const lastOnline =
+          Number((clientStats[0] as Record<string, unknown>)?.lastOnline) || 0;
+        if (lastOnline > 0 && now - lastOnline < MIN_AGE_MS) {
+          continue;
+        }
+
+        try {
+          const deleted = await this.xuiService.deleteInbound(raw.id, node);
+          if (deleted) {
+            cleanedCount++;
+            this.logger.log(
+              `[Cleanup] Удален устаревший инбаунд ${raw.id} (${raw.remark || raw.protocol}) с 0 B расхода на ноде «${node.name}»`,
+            );
+          }
+        } catch (err) {
+          this.logger.warn(
+            `[Cleanup] Ошибка удаления устаревшего инбаунда ${raw.id} на ноде «${node.name}»: ${this.safeMessage(err)}`,
+          );
+        }
+      }
+
+      return cleanedCount;
+    } catch (err) {
+      this.logger.warn(
+        `[Cleanup] Не удалось выполнить проверку неактивных инбаундов на ноде «${node.name}»: ${this.safeMessage(err)}`,
+      );
+      return 0;
+    }
   }
 
   listCleanup() {

@@ -72,6 +72,26 @@ describe('SubscriptionsPage', () => {
     vi.clearAllMocks()
   })
 
+  it('reopens an empty subscription without adding a default inbound', async () => {
+    setupMockGet({ subscriptions: [{ id: 'empty', name: 'Empty', uuid: 'empty', inbounds: [], inboundsConfig: [] }] })
+    renderSubscriptionsPage()
+    fireEvent.click(await screen.findByTestId('icon-MoreVert'))
+    fireEvent.click(await screen.findByText('Редактировать'))
+    expect(await screen.findByText('Инбаунды (0/20)')).toBeInTheDocument()
+  })
+
+  it('shows an AWG provisioning failure separately from saved subscription settings', async () => {
+    setupMockGet({ subscriptions: [{ id: 'awg', name: 'AWG', uuid: 'awg', inbounds: [], inboundsConfig: [
+      { configId: 'awg-config', type: 'amneziawg', nodeId: 'node-1', port: 'random' },
+    ] }] })
+    mockPut.mockResolvedValue({ data: { awgProvisioning: { status: 'failed', message: 'Panel offline' } } })
+    renderSubscriptionsPage()
+    fireEvent.click(await screen.findByTestId('icon-MoreVert'))
+    fireEvent.click(await screen.findByText('Редактировать'))
+    fireEvent.click(await screen.findByText('Сохранить'))
+    expect(await screen.findByText(/Настройки сохранены, но создание AWG не завершено: Panel offline/)).toBeInTheDocument()
+  })
+
   describe('Рендеринг', () => {
     it('должен рендериться с заголовком', async () => {
       setupMockGet()
@@ -382,7 +402,7 @@ describe('SubscriptionsPage', () => {
       fireEvent.click(removeAllButton)
 
       await waitFor(() => {
-        expect(screen.getByText('Инбаунды (1/20)')).toBeInTheDocument()
+        expect(screen.getByText('Инбаунды (0/20)')).toBeInTheDocument()
       })
     })
 

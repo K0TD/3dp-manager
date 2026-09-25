@@ -8,6 +8,7 @@ export interface RoutingSelection {
   blockRussia: boolean;
   blockIpCheckers: boolean;
   googleIpv4?: boolean;
+  forceAdopt?: boolean;
 }
 export interface FieldChange {
   before?: unknown;
@@ -247,6 +248,7 @@ function existingGoogleRule(
   nodeId: string,
   rules: ConfigObject[],
   state: RoutingPresetState,
+  forceAdopt?: boolean,
 ) {
   // Zero matches means a new rule; multiple matches cannot be adopted unambiguously.
   const candidates = rules.filter(isGoogleRule);
@@ -256,18 +258,20 @@ function existingGoogleRule(
     );
   const existing = candidates[0];
   const tag = state.googleRule?.ruleTag || presetTags(nodeId).google;
-  if (rules.some((rule) => rule.ruleTag === tag && rule !== existing))
-    throw new ConflictException(
-      'Правило Google изменено вручную или его метка занята.',
-    );
-  if (
-    existing &&
-    state.googleRule &&
-    !sameGoogleRule(existing, state.googleRule)
-  )
-    throw new ConflictException(
-      'Правило Google изменено вручную. Проверьте настройки 3x-ui.',
-    );
+  if (!forceAdopt) {
+    if (rules.some((rule) => rule.ruleTag === tag && rule !== existing))
+      throw new ConflictException(
+        'Правило Google изменено вручную или его метка занята.',
+      );
+    if (
+      existing &&
+      state.googleRule &&
+      !sameGoogleRule(existing, state.googleRule)
+    )
+      throw new ConflictException(
+        'Правило Google изменено вручную. Проверьте настройки 3x-ui.',
+      );
+  }
   return existing;
 }
 
@@ -275,8 +279,9 @@ function googlePlan(
   nodeId: string,
   rules: ConfigObject[],
   state: RoutingPresetState,
+  forceAdopt?: boolean,
 ) {
-  const existing = existingGoogleRule(nodeId, rules, state);
+  const existing = existingGoogleRule(nodeId, rules, state, forceAdopt);
   // A disabled, previously unmanaged rule stays untouched until explicitly enabled.
   if (
     !state.googleIpv4 &&
@@ -392,6 +397,7 @@ function foreignRules(
   nodeId: string,
   rules: ConfigObject[],
   previous: RoutingPresetState,
+  forceAdopt?: boolean,
 ): ConfigObject[] {
   const tags = presetTags(nodeId);
   const ownedTags = [tags.russia, tags.ips, tags.checkers];
@@ -403,25 +409,44 @@ function foreignRules(
       ? presetRules(nodeId, previous.pendingPrevious)
       : []),
   ];
-  for (const rule of rules.filter(owned)) {
-    // The panel can add its own UI-only enabled=true field.
-    const { enabled, ...withoutEnabled } = rule;
-    const expected = expectedRules.some(
-      (candidate) =>
-        equal(withoutEnabled, candidate) ||
-        ((previous.outboundOwned || previous.pendingPrevious?.outboundOwned) &&
-          equal(withoutEnabled, {
-            ...candidate,
-            outboundTag: tags.legacyOutbound,
-          })),
-    );
-    if (!expected || enabled === false) {
-      throw new ConflictException(
-        'Правило пресета изменено вручную или его метка занята. Проверьте правила 3x-ui.',
+  if (!forceAdopt) {
+    for (const rule of rules.filter(owned)) {
+      // The panel can add its own UI-only enabled=true field.
+      const { enabled, ...withoutEnabled } = rule;
+      const expected = expectedRules.some(
+        (candidate) =>
+          equal(withoutEnabled, candidate) ||
+          ((previous.outboundOwned || previous.pendingPrevious?.outboundOwned) &&
+            equal(withoutEnabled, {
+              ...candidate,
+              outboundTag: tags.legacyOutbound,
+            })),
       );
+      if (!expected || enabled === false) {
+        throw new ConflictException(
+          'Правило пресета изменено вручную или его метка занята. Проверьте правила 3x-ui.',
+        );
+      }
     }
   }
-  return rules.filter((rule) => !owned(rule));
+  const hadPrivate = rules.some(
+    (rule) =>
+      owned(rule) &&
+      Array.isArray(rule.ip) &&
+      rule.ip.includes('geoip:private'),
+  );
+  const others = rules.filter((rule) => !owned(rule));
+  if (
+    hadPrivate &&
+    !others.some((r) => Array.isArray(r.ip) && r.ip.includes('geoip:private'))
+  ) {
+    others.push({
+      type: 'field',
+      ip: ['geoip:private'],
+      outboundTag: tags.outbound,
+    });
+  }
+  return others;
 }
 
 function orderedRules(
@@ -429,13 +454,13 @@ function orderedRules(
   managed: ConfigObject[],
   apiTag: unknown,
 ): ConfigObject[] {
-  if (!managed.length) return others;
   const isApi = (rule: ConfigObject) =>
     typeof apiTag === 'string' &&
     rule.outboundTag === apiTag &&
     Array.isArray(rule.inboundTag) &&
     rule.inboundTag.includes(apiTag);
   const remaining = others.filter((rule) => !isApi(rule));
+  if (!managed.length) return [...others.filter(isApi), ...remaining];
   // Google must not bypass existing blocked/private/bittorrent rules.
   const lastBlock = remaining.findLastIndex(
     (rule) => rule.outboundTag === 'blocked',
@@ -449,7 +474,11 @@ function orderedRules(
   ];
 }
 
-function strategyPlan(routing: ConfigObject, state: RoutingPresetState) {
+function strategyPlan(
+  routing: ConfigObject,
+  state: RoutingPresetState,
+  forceAdopt?: boolean,
+) {
   const next = structuredClone(routing);
   const warnings: string[] = [];
   if (!state.blockRussia) {
@@ -464,6 +493,7 @@ function strategyPlan(routing: ConfigObject, state: RoutingPresetState) {
     };
   }
   if (
+    !forceAdopt &&
     state.strategy &&
     !equal(next.domainStrategy, state.strategy.after) &&
     !equal(next.domainStrategy, state.strategy.before)
@@ -598,6 +628,7 @@ export function buildRoutingPlan(
   const routing =
     config.routing === undefined ? {} : jsonObject(config.routing, 'routing');
   const rules = objects(routing.rules, 'routing.rules');
+  const forceAdopt = selection.forceAdopt === true;
   const state: RoutingPresetState = {
     ...recoveredState(previous),
     blockRussia: selection.blockRussia,
@@ -605,13 +636,13 @@ export function buildRoutingPlan(
     googleIpv4: selection.googleIpv4 ?? googleSelection(config, previous),
     pending: false,
   };
-  const google = googlePlan(nodeId, rules, state);
+  const google = googlePlan(nodeId, rules, state, forceAdopt);
   state.googleRule = google.googleRule;
   const managed = [...presetRules(nodeId, selection), ...google.managed];
-  const others = foreignRules(nodeId, google.others, previous);
+  const others = foreignRules(nodeId, google.others, previous, forceAdopt);
   if (rules.length || managed.length)
     routing.rules = orderedRules(others, managed, asRecord(config.api)?.tag);
-  const strategy = strategyPlan(routing, state);
+  const strategy = strategyPlan(routing, state, forceAdopt);
   state.strategy = strategy.strategy;
   if (config.routing !== undefined || Object.keys(strategy.routing).length)
     config.routing = strategy.routing;

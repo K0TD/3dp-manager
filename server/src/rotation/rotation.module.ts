@@ -14,6 +14,7 @@ import { RotationController } from './rotation.controller';
 import { Node } from '../nodes/entities/node.entity';
 import { Tunnel } from '../tunnels/entities/tunnel.entity';
 import { RotationOperation } from './entities/rotation-operation.entity';
+import { SubscriptionLockService } from '../subscriptions/subscription-lock.service';
 
 @Module({
   imports: [
@@ -30,7 +31,8 @@ import { RotationOperation } from './entities/rotation-operation.entity';
     XuiModule,
     InboundsModule,
   ],
-  providers: [RotationService],
+  providers: [RotationService, SubscriptionLockService],
+  exports: [RotationService, SubscriptionLockService],
   controllers: [RotationController],
 })
 export class RotationModule {}

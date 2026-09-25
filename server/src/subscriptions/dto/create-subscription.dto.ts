@@ -7,7 +7,6 @@ import {
   IsUUID,
   IsInt,
   ValidateIf,
-  ArrayMinSize,
   ArrayMaxSize,
   ValidateBy,
   ValidationOptions,
@@ -122,7 +121,6 @@ export class CreateSubscriptionDto {
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => InboundConfigDto)
-  @ArrayMinSize(1)
   @ArrayMaxSize(20)
   @IsOptional()
   inboundsConfig?: InboundConfigDto[];

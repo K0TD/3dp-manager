@@ -1,6 +1,9 @@
 /* eslint-disable @typescript-eslint/unbound-method */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
+import { RotationService } from 'src/rotation/rotation.service';
+import { SubscriptionLockService } from 'src/subscriptions/subscription-lock.service';
+import { Inbound, InboundStatus } from 'src/inbounds/entities/inbound.entity';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -59,11 +62,17 @@ describe('SubscriptionsService', () => {
   const mockXuiService = {
     deleteInbound: jest.fn(),
   };
+  const mockRotationService = { provisionAmnezia: jest.fn() };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         SubscriptionsService,
+        { provide: RotationService, useValue: mockRotationService },
+        {
+          provide: SubscriptionLockService,
+          useValue: { run: jest.fn(async (_id, work) => work()) },
+        },
         {
           provide: getRepositoryToken(Subscription),
           useValue: mockSubRepo,
@@ -93,10 +102,172 @@ describe('SubscriptionsService', () => {
     );
     xuiService = module.get<XuiService>(XuiService);
     mockXuiService.deleteInbound.mockResolvedValue(true);
+    mockRotationService.provisionAmnezia.mockResolvedValue({
+      status: 'succeeded',
+    });
   });
 
   afterEach(() => {
     jest.clearAllMocks();
+  });
+
+  describe('AmneziaWG save lifecycle', () => {
+    const config = {
+      configId: 'awg-config',
+      type: 'amneziawg',
+      nodeId: 'node-1',
+      port: 'random',
+    };
+    let subscription: Subscription;
+
+    beforeEach(() => {
+      subscription = {
+        id: 'sub-awg',
+        name: 'AWG',
+        isAutoRotationEnabled: false,
+        inboundsConfig: [{ ...config }],
+        inbounds: [
+          {
+            id: 71,
+            configId: config.configId,
+            protocol: 'amneziawg',
+            nodeId: 'node-1',
+            port: 51820,
+            status: InboundStatus.Active,
+            link: 'vpn://existing',
+          },
+        ],
+      } as Subscription;
+      mockSubRepo.findOne.mockResolvedValue(subscription);
+      mockSubRepo.save.mockImplementation(async (sub) => sub);
+      mockSubRepo.create.mockImplementation((sub) => sub);
+      mockEntityManager.save.mockImplementation(async (_entity, sub) => sub);
+      mockNodeRepo.findOne.mockResolvedValue({
+        id: 'node-1',
+        version: '3.7.0',
+      });
+    });
+
+    it('creates AWG when a new subscription is saved even with automatic rotation disabled', async () => {
+      const result = await service.create({
+        name: 'AWG',
+        isAutoRotationEnabled: false,
+        inboundsConfig: [config],
+      });
+      expect(mockRotationService.provisionAmnezia).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({
+        awgProvisioning: { status: 'succeeded' },
+      });
+    });
+
+    it('supports deleting the sole AWG, saving an empty list and adding a new identity', async () => {
+      const empty = await service.update(subscription.id, {
+        inboundsConfig: [],
+      });
+      expect(empty?.inboundsConfig).toEqual([]);
+      expect(empty?.inbounds).toEqual([]);
+      expect(mockEntityManager.update).toHaveBeenCalledWith(
+        Inbound,
+        { id: expect.objectContaining({ _value: [71] }) },
+        expect.objectContaining({
+          status: InboundStatus.PendingCleanup,
+          nextCleanupAt: expect.any(Date),
+        }),
+      );
+      expect(mockRotationService.provisionAmnezia).not.toHaveBeenCalled();
+      await service.update(subscription.id, {
+        inboundsConfig: [{ ...config, configId: 'new-awg-config' }],
+      });
+      expect(mockRotationService.provisionAmnezia).toHaveBeenCalledWith(
+        expect.objectContaining({
+          inboundsConfig: [
+            expect.objectContaining({ configId: 'new-awg-config' }),
+          ],
+          inbounds: [],
+        }),
+      );
+    });
+
+    it.each([
+      { port: 51821 },
+      { type: 'vless-tcp-tls' },
+      { nodeId: 'node-2' },
+      { relayServerId: 2 },
+    ])(
+      'rejects changing active AWG connection settings: %s',
+      async (change) => {
+        await expect(
+          service.update(subscription.id, {
+            inboundsConfig: [{ ...config, ...change }],
+          }),
+        ).rejects.toThrow('удалите инбаунд');
+        expect(mockEntityManager.save).not.toHaveBeenCalled();
+      },
+    );
+
+    it('rejects replacing an active AWG by a new identity in the same save', async () => {
+      await expect(
+        service.update(subscription.id, {
+          inboundsConfig: [{ ...config, configId: 'new' }],
+        }),
+      ).rejects.toThrow('Сначала сохраните удаление');
+    });
+
+    it('protects inherited node and relay settings', async () => {
+      subscription.inboundsConfig[0].nodeId = undefined;
+      subscription.nodeId = 'node-1';
+      await expect(
+        service.update(subscription.id, { nodeId: 'node-2' }),
+      ).rejects.toThrow('удалите инбаунд');
+      await expect(
+        service.update(subscription.id, { relayServerId: 10 }),
+      ).rejects.toThrow('удалите инбаунд');
+    });
+
+    it('allows names, flags and order changes without retiring AWG', async () => {
+      await service.update(subscription.id, {
+        inboundsConfig: [
+          { configId: 'custom', type: 'custom', link: 'vless://example' },
+          { ...config, name: 'Новое имя', flag: '🇩🇪' },
+        ],
+      });
+      expect(mockEntityManager.update).toHaveBeenCalledWith(
+        Inbound,
+        {
+          subscriptionId: subscription.id,
+          configId: config.configId,
+          status: InboundStatus.Active,
+        },
+        { position: 1 },
+      );
+      expect(
+        mockEntityManager.update.mock.calls.some(
+          (call) => call[2].status === InboundStatus.PendingCleanup,
+        ),
+      ).toBe(false);
+    });
+
+    it('returns a provisioning error separately from saved settings', async () => {
+      mockRotationService.provisionAmnezia.mockResolvedValueOnce({
+        status: 'failed',
+        message: 'Panel offline',
+      });
+      const result = await service.update(subscription.id, {
+        inboundsConfig: [config],
+      });
+      expect(result).toMatchObject({
+        awgProvisioning: { status: 'failed', message: 'Panel offline' },
+      });
+      expect(mockEntityManager.save).toHaveBeenCalled();
+    });
+
+    it('preserves legacy AWG when identity is ambiguous', async () => {
+      subscription.inbounds[0].configId = undefined;
+      await expect(
+        service.update(subscription.id, { inboundsConfig: [] }),
+      ).rejects.toThrow('однозначно');
+      expect(mockEntityManager.update).not.toHaveBeenCalled();
+    });
   });
 
   describe('findAll', () => {
@@ -179,6 +350,7 @@ describe('SubscriptionsService', () => {
       const result = await service.create(createDto);
 
       expect(subRepo.create).toHaveBeenCalledWith({
+        id: expect.any(String),
         name: 'Test Subscription',
         uuid: expect.any(String),
         inboundsConfig: [

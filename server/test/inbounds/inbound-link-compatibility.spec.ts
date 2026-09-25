@@ -11,6 +11,66 @@ const reality = {
 };
 
 describe('published links match saved panel clients', () => {
+  it('generates XHTTP TLS and publishes the saved transport parameters without Vision', () => {
+    const inbound = builder.buildVlessTlsXhttp({
+      port: 443,
+      uuid: reality.uuid,
+      serverName: 'tls.example',
+      certificateFile: '/cert/fullchain.pem',
+      keyFile: '/cert/key.pem',
+    });
+    const stream = JSON.parse(inbound.streamSettings);
+    expect(stream).toMatchObject({
+      network: 'xhttp',
+      security: 'tls',
+      xhttpSettings: { path: '/', host: 'tls.example', mode: 'auto' },
+      tlsSettings: {
+        certificates: [
+          { certificateFile: '/cert/fullchain.pem', keyFile: '/cert/key.pem' },
+        ],
+      },
+    });
+    expect(stream.tcpSettings).toBeUndefined();
+    expect(JSON.parse(inbound.settings).clients[0].flow).toBe('');
+    stream.xhttpSettings = {
+      path: '/panel path?ed=1',
+      host: 'http.example',
+      mode: 'stream-one',
+    };
+    inbound.streamSettings = JSON.stringify(stream);
+    const link = new URL(
+      builder.buildInboundLink(inbound, 'node.example', '', ''),
+    );
+    expect(Object.fromEntries(link.searchParams)).toMatchObject({
+      type: 'xhttp',
+      security: 'tls',
+      sni: 'tls.example',
+      path: '/panel path?ed=1',
+      host: 'http.example',
+      mode: 'stream-one',
+    });
+    expect(link.searchParams.has('flow')).toBe(false);
+    expect(link.searchParams.has('pbk')).toBe(false);
+  });
+
+  it('keeps XHTTP Reality transport fields in published links', () => {
+    const link = new URL(
+      builder.buildInboundLink(
+        builder.buildVlessRealityXhttp(reality),
+        'node.example',
+        '',
+        '',
+      ),
+    );
+    expect(Object.fromEntries(link.searchParams)).toMatchObject({
+      type: 'xhttp',
+      security: 'reality',
+      host: reality.sni,
+      path: '/',
+      mode: 'auto',
+      pbk: 'public',
+    });
+  });
   it('uses the Trojan password and node address independently from UUID and SNI', () => {
     const inbound = builder.buildTrojanRealityTcp(reality);
     const settings = JSON.parse(inbound.settings) as {

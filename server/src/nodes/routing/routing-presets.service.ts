@@ -41,6 +41,7 @@ export interface RoutingPresetView {
   capabilities?: ReturnType<typeof routingCapabilities>;
   revision: string;
   needsApply: boolean;
+  hasConflict?: boolean;
   warnings: string[];
   result?:
     | 'applied'
@@ -157,6 +158,7 @@ export class RoutingPresetsService {
     const googleIpv4 = googleSelection(snapshot.template.config, state);
     const selection = { ...state, googleIpv4 };
     let needsApply = true;
+    let hasConflict = false;
     try {
       const plan = buildRoutingPlan(node.id, snapshot, state, selection);
       needsApply =
@@ -165,13 +167,23 @@ export class RoutingPresetsService {
         (plan.state.googleIpv4 === true && !state.googleRule);
       warnings.push(...plan.warnings);
     } catch (error) {
+      hasConflict = true;
       warnings.push(errorMessage(error));
+      try {
+        const fallbackPlan = buildRoutingPlan(node.id, snapshot, state, {
+          ...selection,
+          forceAdopt: true,
+        });
+        warnings.push(...fallbackPlan.warnings);
+      } catch {
+        /* Ignore secondary error */
+      }
     }
     if (state.pending)
       warnings.push(
         'Предыдущая операция не завершена. Повторное применение проверит и восстановит выбранные настройки, если нет ручных конфликтов.',
       );
-    else if (needsApply)
+    else if (needsApply && !hasConflict)
       warnings.push(
         'Настройки в панели отличаются от выбранных пресетов. Требуется применение.',
       );
@@ -183,6 +195,7 @@ export class RoutingPresetsService {
       capabilities: routingCapabilities(snapshot.template.config),
       revision: routingRevision(snapshot.template, snapshot.inbounds, state),
       needsApply,
+      hasConflict,
       warnings,
     };
   }
