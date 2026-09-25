@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import * as tls from 'tls';
 import { Domain } from './entities/domain.entity';
 import {
   resolveSniProfile,
@@ -91,6 +92,111 @@ export class DomainsService implements OnModuleInit {
 
   resolveProfile(sni: string): SniProfile {
     return resolveSniProfile(sni);
+  }
+
+  async pingDomain(
+    domain: string,
+    timeoutMs = 3500,
+  ): Promise<{
+    domain: string;
+    reachable: boolean;
+    latencyMs: number;
+    protocol?: string;
+    error?: string;
+  }> {
+    const clean = (domain || '')
+      .trim()
+      .toLowerCase()
+      .replace(/^[a-z]+:\/\//i, '')
+      .split('/')[0]
+      .split(':')[0];
+
+    if (!clean) {
+      return {
+        domain: '',
+        reachable: false,
+        latencyMs: 0,
+        error: 'Некорректный домен',
+      };
+    }
+
+    const start = Date.now();
+
+    return new Promise((resolve) => {
+      let settled = false;
+
+      const finish = (result: {
+        reachable: boolean;
+        latencyMs?: number;
+        protocol?: string;
+        error?: string;
+      }) => {
+        if (settled) return;
+        settled = true;
+        resolve({
+          domain: clean,
+          reachable: result.reachable,
+          latencyMs: result.latencyMs ?? Date.now() - start,
+          protocol: result.protocol,
+          error: result.error,
+        });
+      };
+
+      try {
+        const socket = tls.connect(
+          {
+            host: clean,
+            port: 443,
+            servername: clean,
+            timeout: timeoutMs,
+            rejectUnauthorized: false,
+          },
+          () => {
+            const latency = Date.now() - start;
+            const protocol = socket.getProtocol() || undefined;
+            socket.end();
+            finish({ reachable: true, latencyMs: latency, protocol });
+          },
+        );
+
+        socket.on('error', (err: Error) => {
+          socket.destroy();
+          const errorMsg =
+            err && typeof err.message === 'string'
+              ? err.message
+              : 'Ошибка соединения';
+          finish({
+            reachable: false,
+            error: errorMsg,
+          });
+        });
+
+        socket.on('timeout', () => {
+          socket.destroy();
+          finish({ reachable: false, error: 'Превышен таймаут ответа' });
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : 'Ошибка подключения';
+        finish({ reachable: false, error: msg });
+      }
+    });
+  }
+
+  async pingDomains(
+    domains: string[],
+    timeoutMs = 3500,
+  ): Promise<
+    Array<{
+      domain: string;
+      reachable: boolean;
+      latencyMs: number;
+      protocol?: string;
+      error?: string;
+    }>
+  > {
+    if (!domains || !Array.isArray(domains)) return [];
+    const limited = domains.slice(0, 30);
+    return Promise.all(limited.map((d) => this.pingDomain(d, timeoutMs)));
   }
 
   async findAllUnpaginated(): Promise<Domain[]> {

@@ -23,6 +23,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import api from '../api';
 import type { NodeRecord } from '../types/node';
+import { FlagIcon } from '../utils/flags';
 
 interface CleanupItem {
   id: number;
@@ -276,7 +277,10 @@ export default function DashboardPage() {
                 <Box className="node-rail" key={node.id}>
                   <span className={`health-dot health-${node.healthStatus || 'unknown'}`} />
                   <Box sx={{ minWidth: 0, flex: 1 }}>
-                    <Typography fontWeight={700} noWrap>{node.flag} {node.name}</Typography>
+                    <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+                      {node.flag && <FlagIcon flag={node.flag} size={20} />}
+                      <Typography fontWeight={700} noWrap sx={{ minWidth: 0 }}>{node.name}</Typography>
+                    </Stack>
                     <Typography variant="caption" color="text.secondary" noWrap>{node.url}</Typography>
                   </Box>
                   <Typography variant="caption" color="text.secondary">

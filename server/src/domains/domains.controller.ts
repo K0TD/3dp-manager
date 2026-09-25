@@ -37,6 +37,14 @@ export class DomainsController {
     return this.domainsService.resolveProfile(sni || '');
   }
 
+  @Post('ping')
+  ping(@Body() body: { domain?: string; domains?: string[] }) {
+    if (body.domains && Array.isArray(body.domains)) {
+      return this.domainsService.pingDomains(body.domains);
+    }
+    return this.domainsService.pingDomain(body.domain || '');
+  }
+
   @Get('scan/capabilities')
   scanCapabilities() {
     return this.domainScannerService.getCapabilities();

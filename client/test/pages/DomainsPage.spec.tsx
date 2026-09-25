@@ -757,5 +757,111 @@ describe('DomainsPage', () => {
       })
     })
   })
+
+  describe('Проверка доступности (Ping SNI)', () => {
+    const originalFetch = globalThis.fetch
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch
+    })
+
+    it('должен отображать кнопку "Пинг всех" при наличии доменов', async () => {
+      setupMockGet({
+        domains: {
+          data: [{ id: 1, name: 'swdist.apple.com' }],
+          total: 1,
+        },
+      })
+
+      renderDomainsPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Пинг всех')).toBeInTheDocument()
+      })
+    })
+
+    it('должен выполнять пинг одного домена из списка и показывать бейдж', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({ type: 'opaque' })
+      mockPost.mockImplementation((url: string) => {
+        if (url === '/domains/ping') {
+          return Promise.resolve({
+            data: { reachable: true, latencyMs: 30, protocol: 'TLSv1.3' },
+          })
+        }
+        return Promise.resolve({ data: {} })
+      })
+
+      setupMockGet({
+        domains: {
+          data: [{ id: 1, name: 'swdist.apple.com' }],
+          total: 1,
+        },
+      })
+
+      renderDomainsPage()
+
+      const pingButton = await screen.findByLabelText('Пинг swdist.apple.com')
+      fireEvent.click(pingButton)
+
+      await waitFor(() => {
+        expect(screen.getByText(/РФ:/)).toBeInTheDocument()
+      })
+    })
+
+    it('должен отображать статус блокировки в РФ при сбое браузерного пинга', async () => {
+      globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'))
+      mockPost.mockImplementation((url: string) => {
+        if (url === '/domains/ping') {
+          return Promise.resolve({
+            data: { reachable: true, latencyMs: 50, protocol: 'TLSv1.3' },
+          })
+        }
+        return Promise.resolve({ data: {} })
+      })
+
+      setupMockGet({
+        domains: {
+          data: [{ id: 1, name: 'blocked.com' }],
+          total: 1,
+        },
+      })
+
+      renderDomainsPage()
+
+      const pingButton = await screen.findByLabelText('Пинг blocked.com')
+      fireEvent.click(pingButton)
+
+      await waitFor(() => {
+        expect(screen.getByText('Блок в РФ')).toBeInTheDocument()
+      })
+    })
+
+    it('должен выполнять пинг в инспекторе SNI', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({ type: 'opaque' })
+      mockPost.mockImplementation((url: string) => {
+        if (url === '/domains/ping') {
+          return Promise.resolve({
+            data: { reachable: true, latencyMs: 20, protocol: 'TLSv1.3' },
+          })
+        }
+        return Promise.resolve({ data: {} })
+      })
+
+      setupMockGet()
+      renderDomainsPage()
+
+      const catalogTab = await screen.findByText('Каталог профилей маскировки')
+      fireEvent.click(catalogTab)
+
+      const pingSniBtn = await screen.findByText('Пинг SNI')
+      fireEvent.click(pingSniBtn)
+
+      await waitFor(() => {
+        expect(screen.getByText('Проверка доступности (Dual-Probe)')).toBeInTheDocument()
+        expect(screen.getByText('Из вашей сети (РФ / Провайдер)')).toBeInTheDocument()
+        expect(screen.getByText('С сервера VPS (Handshake)')).toBeInTheDocument()
+      })
+    })
+  })
 })
 

@@ -44,6 +44,7 @@ import {
   Search,
   Language,
   Settings,
+  Speed,
 } from '@mui/icons-material';
 import api from '../api';
 import { getApiErrorMessage, getApiErrorStatus } from '../utils/errorHandlers';
@@ -55,6 +56,10 @@ import {
   resolveClientSniProfile,
   getProfileThemeColor,
 } from '../utils/sniProfiles';
+import {
+  pingDomainCombined,
+  CombinedDomainPingResult,
+} from '../utils/domainPing';
 
 interface Domain {
   id: number;
@@ -132,6 +137,17 @@ export default function DomainsPage() {
   // Pagination state
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
+
+  // Ping states per domain
+  const [pingStates, setPingStates] = useState<
+    Record<string, { checking?: boolean; result?: CombinedDomainPingResult }>
+  >({});
+  const [isBatchPinging, setIsBatchPinging] = useState(false);
+
+  // Live Inspector Ping state
+  const [isInspectorPinging, setIsInspectorPinging] = useState(false);
+  const [inspectorPingResult, setInspectorPingResult] =
+    useState<CombinedDomainPingResult | null>(null);
 
   // Scanner state
   const [scanCapabilities, setScanCapabilities] = useState<ScanCapabilities | null>(null);
@@ -686,6 +702,186 @@ export default function DomainsPage() {
     return resolveClientSniProfile(testerInput);
   }, [testerInput]);
 
+  const handlePingDomain = useCallback(async (domainName: string) => {
+    if (!domainName) return;
+    setPingStates((prev) => ({
+      ...prev,
+      [domainName]: { ...prev[domainName], checking: true },
+    }));
+
+    try {
+      const result = await pingDomainCombined(domainName);
+      setPingStates((prev) => ({
+        ...prev,
+        [domainName]: { checking: false, result },
+      }));
+    } catch {
+      setPingStates((prev) => ({
+        ...prev,
+        [domainName]: {
+          checking: false,
+          result: {
+            domain: domainName,
+            browser: { reachable: false, latencyMs: 0, error: 'Ошибка пинга' },
+            vps: { reachable: false, latencyMs: 0, error: 'Ошибка пинга' },
+          },
+        },
+      }));
+    }
+  }, []);
+
+  const handlePingAllDomains = useCallback(async () => {
+    if (domains.length === 0 || isBatchPinging) return;
+    setIsBatchPinging(true);
+
+    const domainsToPing = filteredDomains.map((d) => d.name);
+    const chunkSize = 3;
+    for (let i = 0; i < domainsToPing.length; i += chunkSize) {
+      const chunk = domainsToPing.slice(i, i + chunkSize);
+      await Promise.allSettled(chunk.map((d) => handlePingDomain(d)));
+    }
+
+    setIsBatchPinging(false);
+    setSnackbar({
+      open: true,
+      type: 'success',
+      message: 'Проверка доступности доменов завершена',
+    });
+  }, [domains, filteredDomains, isBatchPinging, handlePingDomain]);
+
+  const handlePingTester = useCallback(async () => {
+    if (!testerInput.trim() || isInspectorPinging) return;
+    setIsInspectorPinging(true);
+    setInspectorPingResult(null);
+
+    try {
+      const res = await pingDomainCombined(testerInput.trim());
+      setInspectorPingResult(res);
+    } catch {
+      setSnackbar({
+        open: true,
+        type: 'error',
+        message: 'Ошибка при проверке доступности',
+      });
+    } finally {
+      setIsInspectorPinging(false);
+    }
+  }, [testerInput, isInspectorPinging]);
+
+  const renderPingBadge = (domainName: string) => {
+    const entry = pingStates[domainName];
+
+    if (entry?.checking) {
+      return <CircularProgress size={16} sx={{ mx: 0.5 }} />;
+    }
+
+    if (!entry?.result) {
+      return (
+        <Tooltip title="Проверить доступность (из РФ и с VPS)">
+          <IconButton
+            size="small"
+            onClick={() => handlePingDomain(domainName)}
+            aria-label={`Пинг ${domainName}`}
+          >
+            <Speed fontSize="small" sx={{ color: 'text.secondary' }} />
+          </IconButton>
+        </Tooltip>
+      );
+    }
+
+    const { browser, vps } = entry.result;
+
+    if (browser.reachable && vps.reachable) {
+      return (
+        <Tooltip
+          title={`Доступен! РФ: ${browser.latencyMs} мс • VPS: ${vps.latencyMs} мс (${vps.protocol || 'TLS'}). Нажмите для повторного пинга.`}
+        >
+          <Chip
+            size="small"
+            icon={<Check sx={{ fontSize: '13px !important' }} />}
+            label={`РФ: ${browser.latencyMs}мс`}
+            color="success"
+            variant="outlined"
+            onClick={() => handlePingDomain(domainName)}
+            sx={{
+              height: 22,
+              fontSize: '0.72rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              borderColor: 'success.main',
+            }}
+          />
+        </Tooltip>
+      );
+    }
+
+    if (!browser.reachable && vps.reachable) {
+      return (
+        <Tooltip
+          title={`Блокируется в вашей сети (ТСПУ). С VPS доступен (${vps.latencyMs} мс). Нажмите для повторного пинга.`}
+        >
+          <Chip
+            size="small"
+            label="Блок в РФ"
+            color="error"
+            variant="filled"
+            onClick={() => handlePingDomain(domainName)}
+            sx={{
+              height: 22,
+              fontSize: '0.72rem',
+              fontWeight: 700,
+              cursor: 'pointer',
+              backgroundColor: 'error.main',
+              color: '#fff',
+            }}
+          />
+        </Tooltip>
+      );
+    }
+
+    if (browser.reachable && !vps.reachable) {
+      return (
+        <Tooltip
+          title={`Доступен в РФ (${browser.latencyMs} мс), но не отвечает с VPS (${vps.error || 'таймаут'}).`}
+        >
+          <Chip
+            size="small"
+            label="Сбой VPS"
+            color="warning"
+            variant="outlined"
+            onClick={() => handlePingDomain(domainName)}
+            sx={{
+              height: 22,
+              fontSize: '0.72rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          />
+        </Tooltip>
+      );
+    }
+
+    return (
+      <Tooltip
+        title={`Недоступен (${browser.error || 'Таймаут'}). Нажмите для повторного пинга.`}
+      >
+        <Chip
+          size="small"
+          label="Недоступен"
+          color="error"
+          variant="outlined"
+          onClick={() => handlePingDomain(domainName)}
+          sx={{
+            height: 22,
+            fontSize: '0.72rem',
+            fontWeight: 600,
+            cursor: 'pointer',
+          }}
+        />
+      </Tooltip>
+    );
+  };
+
   return (
     <Box sx={{ maxWidth: 1200, mx: 'auto', pb: 4 }}>
       {/* Header section with overline and badges */}
@@ -1078,6 +1274,15 @@ export default function DomainsPage() {
                 <Button
                   variant="outlined"
                   size="small"
+                  startIcon={isBatchPinging ? <CircularProgress size={16} /> : <Speed />}
+                  onClick={handlePingAllDomains}
+                  disabled={isBatchPinging}
+                >
+                  {isBatchPinging ? 'Проверка...' : 'Пинг всех'}
+                </Button>
+                <Button
+                  variant="outlined"
+                  size="small"
                   startIcon={<Download />}
                   onClick={handleExportMainDomains}
                 >
@@ -1118,6 +1323,7 @@ export default function DomainsPage() {
                       }}
                       secondaryAction={
                         <Stack direction="row" spacing={0.5} alignItems="center">
+                          {renderPingBadge(d.name)}
                           <Tooltip title="Инспекция параметров маскировки Reality">
                             <IconButton
                               size="small"
@@ -1247,8 +1453,20 @@ export default function DomainsPage() {
               fullWidth
               placeholder="Введите SNI (например, swdist.apple.com, dl.google.com, mydomain.org)"
               value={testerInput}
-              onChange={(e) => setTesterInput(e.target.value)}
+              onChange={(e) => {
+                setTesterInput(e.target.value);
+                setInspectorPingResult(null);
+              }}
             />
+            <Button
+              variant="outlined"
+              startIcon={isInspectorPinging ? <CircularProgress size={16} /> : <Speed />}
+              sx={{ whiteSpace: 'nowrap', px: 2 }}
+              onClick={handlePingTester}
+              disabled={isInspectorPinging || !testerInput.trim()}
+            >
+              {isInspectorPinging ? 'Проверка...' : 'Пинг SNI'}
+            </Button>
             <Button
               variant="contained"
               startIcon={<Add />}
@@ -1365,6 +1583,105 @@ export default function DomainsPage() {
                   </Typography>
                 </Box>
               </Box>
+
+              {/* Dual Probe Ping Diagnostics */}
+              {inspectorPingResult && (
+                <Box
+                  sx={{
+                    mt: 2,
+                    pt: 2,
+                    borderTop: '1px dashed',
+                    borderColor: 'divider',
+                  }}
+                >
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      fontWeight: 700,
+                      textTransform: 'uppercase',
+                      letterSpacing: 0.5,
+                      color: 'text.secondary',
+                      display: 'block',
+                      mb: 1,
+                    }}
+                  >
+                    Проверка доступности (Dual-Probe)
+                  </Typography>
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
+                    <Box
+                      sx={{
+                        flex: 1,
+                        p: 1.5,
+                        borderRadius: 1,
+                        backgroundColor: inspectorPingResult.browser.reachable
+                          ? 'rgba(46, 125, 50, 0.12)'
+                          : 'rgba(211, 47, 47, 0.12)',
+                        border: '1px solid',
+                        borderColor: inspectorPingResult.browser.reachable
+                          ? 'success.main'
+                          : 'error.main',
+                      }}
+                    >
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                        <Box
+                          sx={{
+                            width: 8,
+                            height: 8,
+                            borderRadius: '50%',
+                            backgroundColor: inspectorPingResult.browser.reachable
+                              ? 'success.main'
+                              : 'error.main',
+                          }}
+                        />
+                        <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                          Из вашей сети (РФ / Провайдер)
+                        </Typography>
+                      </Box>
+                      <Typography variant="caption" color="text.secondary">
+                        {inspectorPingResult.browser.reachable
+                          ? `Доступен (${inspectorPingResult.browser.latencyMs} мс). ТСПУ не блокирует.`
+                          : `Заблокирован в РФ (${inspectorPingResult.browser.error || 'Сброс/таймаут соединения'}).`}
+                      </Typography>
+                    </Box>
+
+                    <Box
+                      sx={{
+                        flex: 1,
+                        p: 1.5,
+                        borderRadius: 1,
+                        backgroundColor: inspectorPingResult.vps.reachable
+                          ? 'rgba(46, 125, 50, 0.12)'
+                          : 'rgba(211, 47, 47, 0.12)',
+                        border: '1px solid',
+                        borderColor: inspectorPingResult.vps.reachable
+                          ? 'success.main'
+                          : 'error.main',
+                      }}
+                    >
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                        <Box
+                          sx={{
+                            width: 8,
+                            height: 8,
+                            borderRadius: '50%',
+                            backgroundColor: inspectorPingResult.vps.reachable
+                              ? 'success.main'
+                              : 'error.main',
+                          }}
+                        />
+                        <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                          С сервера VPS (Handshake)
+                        </Typography>
+                      </Box>
+                      <Typography variant="caption" color="text.secondary">
+                        {inspectorPingResult.vps.reachable
+                          ? `Доступен (${inspectorPingResult.vps.latencyMs} мс, ${inspectorPingResult.vps.protocol || 'TLS'}).`
+                          : `Не отвечает (${inspectorPingResult.vps.error || 'Ошибка TLS'}).`}
+                      </Typography>
+                    </Box>
+                  </Stack>
+                </Box>
+              )}
             </Paper>
           )}
         </Paper>

@@ -1347,11 +1347,17 @@ export class RotationService implements OnModuleInit {
 
         let clients: Array<Record<string, unknown>> = [];
         try {
-          const settings =
+          const rawSettings: unknown =
             typeof raw.settings === 'string'
               ? JSON.parse(raw.settings)
               : raw.settings;
-          clients = Array.isArray(settings?.clients) ? settings.clients : [];
+          const parsedSettings =
+            typeof rawSettings === 'object' && rawSettings !== null
+              ? (rawSettings as { clients?: unknown })
+              : null;
+          clients = Array.isArray(parsedSettings?.clients)
+            ? (parsedSettings.clients as Array<Record<string, unknown>>)
+            : [];
         } catch {
           continue;
         }

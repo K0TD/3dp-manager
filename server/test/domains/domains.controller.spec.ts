@@ -25,6 +25,8 @@ describe('DomainsController', () => {
     removeAll: jest.fn(),
     getCatalogProfiles: jest.fn(),
     resolveProfile: jest.fn(),
+    pingDomain: jest.fn(),
+    pingDomains: jest.fn(),
   };
 
   const mockDomainScannerService = {
@@ -123,6 +125,42 @@ describe('DomainsController', () => {
 
       expect(result).toEqual(mockProfile);
       expect(domainsService.resolveProfile).toHaveBeenCalledWith('');
+    });
+  });
+
+  describe('ping', () => {
+    it('должен пинговать один домен', async () => {
+      const mockResult = {
+        domain: 'swdist.apple.com',
+        reachable: true,
+        latencyMs: 45,
+      };
+      mockDomainsService.pingDomain.mockResolvedValue(mockResult);
+
+      const result = await controller.ping({ domain: 'swdist.apple.com' });
+
+      expect(result).toEqual(mockResult);
+      expect(domainsService.pingDomain).toHaveBeenCalledWith(
+        'swdist.apple.com',
+      );
+    });
+
+    it('должен пинговать список доменов, если передан массив', async () => {
+      const mockResults = [
+        { domain: 'swdist.apple.com', reachable: true, latencyMs: 45 },
+        { domain: 'speedtest.net', reachable: false, latencyMs: 3000 },
+      ];
+      mockDomainsService.pingDomains.mockResolvedValue(mockResults);
+
+      const result = await controller.ping({
+        domains: ['swdist.apple.com', 'speedtest.net'],
+      });
+
+      expect(result).toEqual(mockResults);
+      expect(domainsService.pingDomains).toHaveBeenCalledWith([
+        'swdist.apple.com',
+        'speedtest.net',
+      ]);
     });
   });
 

@@ -230,6 +230,32 @@ describe('DomainsService', () => {
     });
   });
 
+  describe('pingDomain', () => {
+    it('должен возвращать ошибку при пустом или некорректном домене', async () => {
+      const res = await service.pingDomain('');
+      expect(res.reachable).toBe(false);
+      expect(res.error).toBe('Некорректный домен');
+    });
+
+    it('должен очищать домен от протокола и слэшей', async () => {
+      const res = await service.pingDomain('https://');
+      expect(res.reachable).toBe(false);
+      expect(res.error).toBe('Некорректный домен');
+    });
+  });
+
+  describe('pingDomains', () => {
+    it('должен безопасно обрабатывать пустой массив доменов', async () => {
+      const res = await service.pingDomains([]);
+      expect(res).toEqual([]);
+    });
+
+    it('должен безопасно обрабатывать undefined', async () => {
+      const res = await service.pingDomains(undefined as unknown as string[]);
+      expect(res).toEqual([]);
+    });
+  });
+
   describe('findAllUnpaginated', () => {
     it('должен вернуть все домены без пагинации', async () => {
       const mockDomains = [
