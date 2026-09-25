@@ -216,12 +216,69 @@ export function resolveClientSniProfile(rawSni?: string | null): SniProfile {
   };
 }
 
-export function getProfileThemeColor(category?: string): {
+export function getProfileThemeColor(
+  category?: string,
+  isDark = true,
+): {
   color: string;
   bgDark: string;
   border: string;
 } {
-  switch ((category || '').toLowerCase()) {
+  const cat = (category || '').toLowerCase();
+  if (!isDark) {
+    switch (cat) {
+      case 'apple':
+        return {
+          color: '#0284c7',
+          bgDark: 'rgba(2, 132, 199, 0.08)',
+          border: 'rgba(2, 132, 199, 0.28)',
+        };
+      case 'microsoft':
+        return {
+          color: '#2563eb',
+          bgDark: 'rgba(37, 99, 235, 0.08)',
+          border: 'rgba(37, 99, 235, 0.28)',
+        };
+      case 'google':
+        return {
+          color: '#059669',
+          bgDark: 'rgba(5, 150, 105, 0.08)',
+          border: 'rgba(5, 150, 105, 0.28)',
+        };
+      case 'samsung':
+        return {
+          color: '#7c3aed',
+          bgDark: 'rgba(124, 58, 237, 0.08)',
+          border: 'rgba(124, 58, 237, 0.28)',
+        };
+      case 'speedtest':
+        return {
+          color: '#d97706',
+          bgDark: 'rgba(217, 119, 6, 0.08)',
+          border: 'rgba(217, 119, 6, 0.28)',
+        };
+      case 'nvidia':
+        return {
+          color: '#4d7c0f',
+          bgDark: 'rgba(77, 124, 15, 0.08)',
+          border: 'rgba(77, 124, 15, 0.28)',
+        };
+      case 'linux':
+        return {
+          color: '#ea580c',
+          bgDark: 'rgba(234, 88, 12, 0.08)',
+          border: 'rgba(234, 88, 12, 0.28)',
+        };
+      default:
+        return {
+          color: '#475569',
+          bgDark: 'rgba(71, 85, 105, 0.08)',
+          border: 'rgba(71, 85, 105, 0.28)',
+        };
+    }
+  }
+
+  switch (cat) {
     case 'apple':
       return {
         color: '#53d8ff',

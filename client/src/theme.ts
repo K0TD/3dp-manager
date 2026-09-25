@@ -31,7 +31,7 @@ export const getDesignTokens = (mode: PaletteMode) => {
       overline: { fontWeight: 700, letterSpacing: '0.14em', fontSize: '0.68rem' },
       button: { textTransform: 'none' as const, fontWeight: 700 },
     },
-    shape: { borderRadius: 10 },
+    shape: { borderRadius: 14 },
     components: {
       MuiCssBaseline: {
         styleOverrides: {
@@ -56,8 +56,17 @@ export const getDesignTokens = (mode: PaletteMode) => {
       MuiButton: {
         defaultProps: { disableElevation: true },
         styleOverrides: {
-          root: { borderRadius: 7, minHeight: 40, paddingInline: 16 },
+          root: { borderRadius: 11, minHeight: 40, paddingInline: 17 },
         },
+      },
+      MuiIconButton: {
+        styleOverrides: { root: { borderRadius: 11 } },
+      },
+      MuiChip: {
+        styleOverrides: { root: { borderRadius: 9, fontWeight: 600 } },
+      },
+      MuiOutlinedInput: {
+        styleOverrides: { root: { borderRadius: 11 } },
       },
       MuiListItemButton: {
         styleOverrides: {
@@ -92,7 +101,7 @@ export const getDesignTokens = (mode: PaletteMode) => {
         },
       },
       MuiDialog: {
-        styleOverrides: { paper: { backgroundImage: 'none' } },
+        styleOverrides: { paper: { backgroundImage: 'none', borderRadius: 20 } },
       },
     },
   };

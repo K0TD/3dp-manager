@@ -228,7 +228,10 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                     : 1260,
               border: 1,
               borderColor: 'divider',
-              borderRadius: 1,
+              borderRadius: '16px',
+              backgroundColor: 'action.hover',
+              transition: 'border-color .18s ease',
+              '&:focus-within': { borderColor: 'primary.main' },
             }}
           >
             <Stack sx={{ width: 40, flexShrink: 0 }} alignItems="center" spacing={0.25}>

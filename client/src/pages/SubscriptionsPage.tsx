@@ -46,6 +46,7 @@ import { copyToClipboard } from '../utils/copyToClipboard';
 import { Logger } from '../utils/logger';
 import type { NodeRecord } from '../types/node';
 import { InboundsEditor } from '../components/InboundsEditor';
+import { WorkspaceHeader } from '../components/WorkspaceHeader';
 import { parseDefaultInboundsSetting } from '../utils/inboundUtils';
 
 interface Subscription {
@@ -643,15 +644,16 @@ export default function SubscriptionsPage() {
   };
 
   return (
-    <Box>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 3 }}>
-        <Typography variant={isMobile ? 'h5' : 'h4'}>Подписки</Typography>
-        <Button variant="contained" startIcon={<Add />} onClick={handleOpenCreate}>
-          {dataLoading ? 'Загрузка…' : 'Создать'}
-        </Button>
-      </Box>
+    <Box className="workspace-page">
+      <WorkspaceHeader
+        eyebrow="КОНТУР ПОДКЛЮЧЕНИЙ"
+        title="Подписки"
+        description="Подключения, ссылки и ротация в одном месте."
+        meta={<Chip size="small" variant="outlined" label={`Подписок: ${subs.length}`} />}
+        action={<Button variant="contained" startIcon={<Add />} onClick={handleOpenCreate} disabled={dataLoading}>{dataLoading ? 'Загрузка…' : 'Создать'}</Button>}
+      />
 
-      <Paper sx={{ p: 2, mb: 3 }}>
+      <Paper className="workspace-panel workspace-toolbar" sx={{ mb: 3 }}>
         <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems={{ xs: 'stretch', md: 'center' }}>
           <Box>
             <Typography variant="subtitle2" color="text.secondary">Статус ротации</Typography>
@@ -665,7 +667,7 @@ export default function SubscriptionsPage() {
             />
           </Box>
           <Tooltip title={rotationSettings.rotation_status === 'stopped' ? 'Возобновить ротацию' : 'Поставить на паузу'}>
-            <IconButton onClick={toggleRotationService} size="small">
+            <IconButton onClick={toggleRotationService} size="small" aria-label={rotationSettings.rotation_status === 'stopped' ? 'Возобновить ротацию' : 'Поставить ротацию на паузу'}>
               {rotationSettings.rotation_status === 'stopped' ? <PlayCircleFilled fontSize="large" /> : <PauseCircleFilled fontSize="large" />}
             </IconButton>
           </Tooltip>
@@ -692,8 +694,8 @@ export default function SubscriptionsPage() {
         </Stack>
       </Paper>
 
-      <Paper sx={{ overflowX: 'auto' }}>
-        <Table>
+      <Paper className="workspace-panel workspace-table" sx={{ overflowX: 'auto' }}>
+        <Table sx={{ minWidth: 760 }}>
           <TableHead>
             <TableRow>
               <TableCell>Имя</TableCell>
@@ -707,7 +709,7 @@ export default function SubscriptionsPage() {
             {subs.map((sub) => (
               <TableRow key={sub.id}>
                 <TableCell sx={{ fontWeight: 700 }}>{sub.name}</TableCell>
-                <TableCell sx={{ fontFamily: 'monospace' }}>{sub.uuid}</TableCell>
+                <TableCell><Typography variant="body2" noWrap title={sub.uuid} sx={{ fontFamily: 'monospace', maxWidth: 260 }}>{sub.uuid}</Typography></TableCell>
                 <TableCell>
                   <Stack direction="row" spacing={1} alignItems="center">
                     <span>{sub.inbounds?.length || 0}</span>
@@ -725,6 +727,7 @@ export default function SubscriptionsPage() {
                 </TableCell>
                 <TableCell>
                   <Checkbox
+                    inputProps={{ 'aria-label': `Авторотация ${sub.name}` }}
                     checked={sub.isAutoRotationEnabled ?? true}
                     onChange={(e) => handleToggleAutoRotation(sub.id, e.target.checked)}
                     color="primary"
@@ -733,15 +736,15 @@ export default function SubscriptionsPage() {
                 <TableCell align="right">
                   {!isMobile && (
                     <>
-                      <IconButton color="primary" onClick={() => handleCopyLink(sub.uuid)} title="Копировать ссылку">
+                      <IconButton color="primary" onClick={() => handleCopyLink(sub.uuid)} title="Копировать ссылку" aria-label={`Копировать ссылку ${sub.name}`}>
                         <ContentCopy />
                       </IconButton>
-                      <IconButton color="primary" onClick={() => window.open(getSubscriptionUrl(sub.uuid), '_blank')} title="Открыть подписку">
+                      <IconButton color="primary" onClick={() => window.open(getSubscriptionUrl(sub.uuid), '_blank')} title="Открыть подписку" aria-label={`Открыть подписку ${sub.name}`}>
                         <OpenInNew />
                       </IconButton>
                     </>
                   )}
-                  <IconButton onClick={(e) => openActionMenuFor(e, sub)}><MoreVert /></IconButton>
+                  <IconButton aria-label={`Действия с подпиской ${sub.name}`} onClick={(e) => openActionMenuFor(e, sub)}><MoreVert /></IconButton>
                 </TableCell>
               </TableRow>
             ))}

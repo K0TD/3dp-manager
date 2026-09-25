@@ -42,6 +42,7 @@ import { RoutingPresetsDialog } from '../features/nodes/RoutingPresetsDialog';
 import type { NodeAuthType, NodePayload, NodeRecord } from '../types/node';
 import { getApiErrorMessage } from '../utils/errorHandlers';
 import { FlagIcon, FlagOptionLabel } from '../utils/flags';
+import { WorkspaceHeader } from '../components/WorkspaceHeader';
 
 const emptyForm: NodePayload = {
   name: '',
@@ -289,22 +290,17 @@ export default function NodesPage() {
   };
 
   return (
-    <Box>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 3, gap: 2 }}>
-        <Box>
-          <Typography variant="h4">Ноды</Typography>
-        </Box>
-        <Box>
-          <Stack direction="row" spacing={1}>
-            <Button startIcon={<Add />} variant="contained" onClick={openCreate}>
-              Добавить
-            </Button>
-          </Stack>
-        </Box>
-      </Box>
+    <Box className="workspace-page">
+      <WorkspaceHeader
+        eyebrow="ИНФРАСТРУКТУРА"
+        title="Ноды"
+        description="Доступность серверов, версии панелей и параметры подключений."
+        meta={<Chip size="small" variant="outlined" label={`Нод: ${nodes.length}`} />}
+        action={<Button startIcon={<Add />} variant="contained" onClick={openCreate}>Добавить</Button>}
+      />
 
-      <Paper sx={{ overflowX: 'auto' }}>
-        <Table>
+      <Paper className="workspace-panel workspace-table" sx={{ overflowX: 'auto' }}>
+        <Table sx={{ minWidth: 1100 }}>
           <TableHead>
             <TableRow>
               <TableCell>Название</TableCell>
@@ -321,7 +317,7 @@ export default function NodesPage() {
               <TableRow key={node.id}>
                 <TableCell>
                   <Stack direction="row" spacing={1} alignItems="center">
-                    <IconButton size="small" onClick={() => nodesApi.setMain(node.id).then(loadNodes)} title={node.isMain ? '' : 'Сделать основной'}>
+                    <IconButton size="small" onClick={() => nodesApi.setMain(node.id).then(loadNodes)} title={node.isMain ? 'Основная нода' : 'Сделать основной'} aria-label={node.isMain ? `${node.name} — основная нода` : `Сделать ${node.name} основной нодой`}>
                       {node.isMain ? <Star color="warning" /> : <StarBorder />}
                     </IconButton>
                     <Typography fontWeight={700}>{node.name}</Typography>
@@ -331,7 +327,7 @@ export default function NodesPage() {
                   <FlagIcon flag={node.flag} />
                 </TableCell>
                 <TableCell>{node.ip || '-'}</TableCell>
-                <TableCell>{node.url}</TableCell>
+                <TableCell><Typography variant="body2" noWrap title={node.url} sx={{ maxWidth: 260 }}>{node.url}</Typography></TableCell>
                 <TableCell>{node.authType}</TableCell>
                 <TableCell>
                   <Stack direction="row" spacing={0.75} flexWrap="wrap">
@@ -368,10 +364,10 @@ export default function NodesPage() {
                     aria-label={`Быстрые настройки ${node.name}`} disabled={node.healthStatus === 'deleting'}>
                     <Settings />
                   </IconButton>
-                  <IconButton onClick={() => openEdit(node)}>
+                  <IconButton onClick={() => openEdit(node)} aria-label={`Редактировать ${node.name}`}>
                     <Edit />
                   </IconButton>
-                  <IconButton color="error" onClick={() => setDeleteTarget(node)}>
+                  <IconButton color="error" onClick={() => setDeleteTarget(node)} aria-label={`Удалить ${node.name}`}>
                     <Delete />
                   </IconButton>
                 </TableCell>

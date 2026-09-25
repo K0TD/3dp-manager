@@ -26,14 +26,13 @@ import {
   TableRow,
   TextField,
   Typography,
-  useMediaQuery,
-  useTheme,
 } from '@mui/material';
 import { Add, CheckCircle, Delete, Dns, Error, Terminal } from '@mui/icons-material';
 import api from '../api';
 import { getApiErrorMessage } from '../utils/errorHandlers';
 import { Logger } from '../utils/logger';
 import type { NodeRecord } from '../types/node';
+import { WorkspaceHeader } from '../components/WorkspaceHeader';
 
 interface Tunnel {
   id: number;
@@ -80,8 +79,6 @@ export default function TunnelsPage() {
     onConfirm: () => {},
   });
 
-  const theme = useTheme();
-  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const mainNode = useMemo(() => nodes.find((node) => node.isMain), [nodes]);
 
   const loadData = useCallback(async () => {
@@ -222,15 +219,17 @@ export default function TunnelsPage() {
   };
 
   return (
-    <Box>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 3 }}>
-        <Typography variant={isMobile ? 'h5' : 'h4'}>Relay серверы</Typography>
-        <Box><Button variant="contained" startIcon={<Add />} disabled={dataLoading} onClick={openCreate}>{dataLoading ? 'Загрузка…' : 'Добавить'}</Button></Box>
-        
-      </Box>
+    <Box className="workspace-page">
+      <WorkspaceHeader
+        eyebrow="МАРШРУТЫ"
+        title="Relay серверы"
+        description="Серверы перенаправления и состояние соединений."
+        meta={<Chip size="small" variant="outlined" label={`Relay: ${tunnels.length}`} />}
+        action={<Button variant="contained" startIcon={<Add />} disabled={dataLoading} onClick={openCreate}>{dataLoading ? 'Загрузка…' : 'Добавить'}</Button>}
+      />
 
-      <Paper sx={{ overflowX: 'auto' }}>
-        <Table>
+      <Paper className="workspace-panel workspace-table" sx={{ overflowX: 'auto' }}>
+        <Table sx={{ minWidth: 760 }}>
           <TableHead>
             <TableRow>
               <TableCell>Название</TableCell>
@@ -243,7 +242,7 @@ export default function TunnelsPage() {
           <TableBody>
             {tunnels.map((tunnel) => (
               <TableRow key={tunnel.id}>
-                <TableCell>{tunnel.name}</TableCell>
+                <TableCell sx={{ fontWeight: 700 }}>{tunnel.name}</TableCell>
                 <TableCell>{tunnel.node?.name || '-'}</TableCell>
                 <TableCell>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -271,7 +270,7 @@ export default function TunnelsPage() {
                       Установить
                     </Button>
                   )}
-                  <IconButton color="error" disabled={loadingId !== null} onClick={() => handleDelete(tunnel)}>
+                  <IconButton color="error" disabled={loadingId !== null} onClick={() => handleDelete(tunnel)} aria-label={`Удалить relay ${tunnel.name}`}>
                     <Delete />
                   </IconButton>
                 </TableCell>

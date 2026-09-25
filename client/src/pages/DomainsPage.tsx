@@ -58,8 +58,8 @@ import {
 } from '../utils/sniProfiles';
 import {
   pingDomainCombined,
-  CombinedDomainPingResult,
 } from '../utils/domainPing';
+import type { CombinedDomainPingResult } from '../utils/domainPing';
 
 interface Domain {
   id: number;
@@ -117,6 +117,7 @@ export default function DomainsPage() {
   const emptyDomainsNotified = useRef(false);
   const [totalCount, setTotalCount] = useState(0);
   const theme = useTheme();
+  const isDark = theme.palette.mode === 'dark';
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
 
   // Active Tab: 0 = Whitelist, 1 = Masking Profiles Catalog
@@ -1098,7 +1099,7 @@ export default function DomainsPage() {
                     <List dense>
                       {scanCandidates.map((d) => {
                         const prof = resolveClientSniProfile(d);
-                        const style = getProfileThemeColor(prof.category);
+                        const style = getProfileThemeColor(prof.category, isDark);
                         return (
                           <ListItem
                             key={d}
@@ -1306,7 +1307,7 @@ export default function DomainsPage() {
             <List sx={{ p: 0 }}>
               {filteredDomains.map((d, index) => {
                 const profile = d.profile || resolveClientSniProfile(d.name);
-                const style = getProfileThemeColor(profile.category);
+                const style = getProfileThemeColor(profile.category, isDark);
                 const isCopied = copiedDomain === d.name;
 
                 return (
@@ -1447,7 +1448,15 @@ export default function DomainsPage() {
             паспортом маскировки Reality и сгенерированные пути запросов.
           </Typography>
 
-          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} sx={{ mb: 2.5 }}>
+          <Box
+            sx={{
+              display: 'flex',
+              flexDirection: { xs: 'column', md: 'row' },
+              gap: 1.5,
+              alignItems: 'stretch',
+              mb: 2.5,
+            }}
+          >
             <TextField
               size="small"
               fullWidth
@@ -1457,45 +1466,81 @@ export default function DomainsPage() {
                 setTesterInput(e.target.value);
                 setInspectorPingResult(null);
               }}
+              InputProps={{
+                startAdornment: <Language sx={{ fontSize: 18, color: 'text.secondary', mr: 1 }} />,
+              }}
+              sx={{
+                flex: '1 1 auto',
+                '& .MuiOutlinedInput-root': { height: 40, borderRadius: 1.5 },
+              }}
             />
-            <Button
-              variant="outlined"
-              startIcon={isInspectorPinging ? <CircularProgress size={16} /> : <Speed />}
-              sx={{ whiteSpace: 'nowrap', px: 2 }}
-              onClick={handlePingTester}
-              disabled={isInspectorPinging || !testerInput.trim()}
-            >
-              {isInspectorPinging ? 'Проверка...' : 'Пинг SNI'}
-            </Button>
-            <Button
-              variant="contained"
-              startIcon={<Add />}
-              sx={{ whiteSpace: 'nowrap', px: 2 }}
-              onClick={() => {
-                if (testerInput.trim()) {
-                  api
-                    .post('/domains', { name: testerInput.trim() })
-                    .then(() => {
-                      setSnackbar({
-                        open: true,
-                        type: 'success',
-                        message: `Домен ${testerInput.trim()} добавлен в белый список!`,
-                      });
-                      loadDomains();
-                    })
-                    .catch((e) => {
-                      setSnackbar({
-                        open: true,
-                        type: 'error',
-                        message: getApiErrorMessage(e, 'Ошибка добавления'),
-                      });
-                    });
-                }
+            <Box
+              sx={{
+                display: 'flex',
+                gap: 1,
+                flexWrap: { xs: 'wrap', sm: 'nowrap' },
+                flexShrink: 0,
               }}
             >
-              Добавить в белый список
-            </Button>
-          </Stack>
+              <Button
+                variant="outlined"
+                startIcon={isInspectorPinging ? <CircularProgress size={16} /> : <Speed />}
+                onClick={handlePingTester}
+                disabled={isInspectorPinging || !testerInput.trim()}
+                sx={{
+                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
+                  minWidth: { xs: '100%', sm: 'auto' },
+                  px: 2,
+                  height: 40,
+                  borderRadius: 1.5,
+                }}
+              >
+                {isInspectorPinging ? 'Проверка...' : 'Пинг SNI'}
+              </Button>
+              <Tooltip title="Добавить проверенный домен в белый список">
+                <span>
+                  <Button
+                    variant="contained"
+                    startIcon={<Add />}
+                    onClick={() => {
+                      if (testerInput.trim()) {
+                        api
+                          .post('/domains', { name: testerInput.trim() })
+                          .then(() => {
+                            setSnackbar({
+                              open: true,
+                              type: 'success',
+                              message: `Домен ${testerInput.trim()} добавлен в белый список!`,
+                            });
+                            loadDomains();
+                          })
+                          .catch((e) => {
+                            setSnackbar({
+                              open: true,
+                              type: 'error',
+                              message: getApiErrorMessage(e, 'Ошибка добавления'),
+                            });
+                          });
+                      }
+                    }}
+                    disabled={!testerInput.trim()}
+                    sx={{
+                      whiteSpace: 'nowrap',
+                      flexShrink: 0,
+                      minWidth: { xs: '100%', sm: 'auto' },
+                      px: 2.5,
+                      height: 40,
+                      borderRadius: 1.5,
+                      fontWeight: 650,
+                    }}
+                  >
+                    В белый список
+                  </Button>
+                </span>
+              </Tooltip>
+            </Box>
+          </Box>
 
           {/* Tester Result Box */}
           {liveTestedProfile && (
@@ -1504,8 +1549,8 @@ export default function DomainsPage() {
               sx={{
                 p: 2,
                 borderRadius: 1.5,
-                backgroundColor: 'rgba(15, 26, 31, 0.6)',
-                borderColor: getProfileThemeColor(liveTestedProfile.category).border,
+                backgroundColor: isDark ? 'rgba(15, 26, 31, 0.6)' : 'background.default',
+                borderColor: getProfileThemeColor(liveTestedProfile.category, isDark).border,
               }}
             >
               <Box
@@ -1528,9 +1573,9 @@ export default function DomainsPage() {
                     sx={{
                       fontSize: '0.75rem',
                       fontWeight: 600,
-                      color: getProfileThemeColor(liveTestedProfile.category).color,
-                      backgroundColor: getProfileThemeColor(liveTestedProfile.category).bgDark,
-                      border: `1px solid ${getProfileThemeColor(liveTestedProfile.category).border}`,
+                      color: getProfileThemeColor(liveTestedProfile.category, isDark).color,
+                      backgroundColor: getProfileThemeColor(liveTestedProfile.category, isDark).bgDark,
+                      border: `1px solid ${getProfileThemeColor(liveTestedProfile.category, isDark).border}`,
                     }}
                   />
                 </Box>
@@ -1544,7 +1589,15 @@ export default function DomainsPage() {
                   gap: 1.5,
                 }}
               >
-                <Box sx={{ p: 1, borderRadius: 1, backgroundColor: 'action.hover' }}>
+                <Box
+                  sx={{
+                    p: 1.25,
+                    borderRadius: 1,
+                    backgroundColor: isDark ? 'action.hover' : 'background.paper',
+                    border: '1px solid',
+                    borderColor: 'divider',
+                  }}
+                >
                   <Typography variant="caption" color="text.secondary" display="block">
                     TLS Fingerprint (uTLS)
                   </Typography>
@@ -1556,7 +1609,15 @@ export default function DomainsPage() {
                   </Typography>
                 </Box>
 
-                <Box sx={{ p: 1, borderRadius: 1, backgroundColor: 'action.hover' }}>
+                <Box
+                  sx={{
+                    p: 1.25,
+                    borderRadius: 1,
+                    backgroundColor: isDark ? 'action.hover' : 'background.paper',
+                    border: '1px solid',
+                    borderColor: 'divider',
+                  }}
+                >
                   <Typography variant="caption" color="text.secondary" display="block">
                     Reality SpiderX Path
                   </Typography>
@@ -1565,7 +1626,15 @@ export default function DomainsPage() {
                   </Typography>
                 </Box>
 
-                <Box sx={{ p: 1, borderRadius: 1, backgroundColor: 'action.hover' }}>
+                <Box
+                  sx={{
+                    p: 1.25,
+                    borderRadius: 1,
+                    backgroundColor: isDark ? 'action.hover' : 'background.paper',
+                    border: '1px solid',
+                    borderColor: 'divider',
+                  }}
+                >
                   <Typography variant="caption" color="text.secondary" display="block">
                     XHTTP Path
                   </Typography>
@@ -1574,7 +1643,15 @@ export default function DomainsPage() {
                   </Typography>
                 </Box>
 
-                <Box sx={{ p: 1, borderRadius: 1, backgroundColor: 'action.hover' }}>
+                <Box
+                  sx={{
+                    p: 1.25,
+                    borderRadius: 1,
+                    backgroundColor: isDark ? 'action.hover' : 'background.paper',
+                    border: '1px solid',
+                    borderColor: 'divider',
+                  }}
+                >
                   <Typography variant="caption" color="text.secondary" display="block">
                     Padding Range
                   </Typography>
@@ -1614,8 +1691,8 @@ export default function DomainsPage() {
                         p: 1.5,
                         borderRadius: 1,
                         backgroundColor: inspectorPingResult.browser.reachable
-                          ? 'rgba(46, 125, 50, 0.12)'
-                          : 'rgba(211, 47, 47, 0.12)',
+                          ? (isDark ? 'rgba(86, 214, 154, 0.12)' : 'rgba(22, 123, 80, 0.08)')
+                          : (isDark ? 'rgba(255, 123, 123, 0.12)' : 'rgba(180, 35, 47, 0.08)'),
                         border: '1px solid',
                         borderColor: inspectorPingResult.browser.reachable
                           ? 'success.main'
@@ -1650,8 +1727,8 @@ export default function DomainsPage() {
                         p: 1.5,
                         borderRadius: 1,
                         backgroundColor: inspectorPingResult.vps.reachable
-                          ? 'rgba(46, 125, 50, 0.12)'
-                          : 'rgba(211, 47, 47, 0.12)',
+                          ? (isDark ? 'rgba(86, 214, 154, 0.12)' : 'rgba(22, 123, 80, 0.08)')
+                          : (isDark ? 'rgba(255, 123, 123, 0.12)' : 'rgba(180, 35, 47, 0.08)'),
                         border: '1px solid',
                         borderColor: inspectorPingResult.vps.reachable
                           ? 'success.main'
@@ -1703,7 +1780,7 @@ export default function DomainsPage() {
           }}
         >
           {catalogProfiles.map((cp) => {
-            const style = getProfileThemeColor(cp.category);
+            const style = getProfileThemeColor(cp.category, isDark);
             return (
               <Paper
                 key={cp.id}
@@ -1845,9 +1922,9 @@ export default function DomainsPage() {
                   size="small"
                   label={inspectedDomain.profile.profileName || inspectedDomain.profile.category}
                   sx={{
-                    color: getProfileThemeColor(inspectedDomain.profile.category).color,
-                    backgroundColor: getProfileThemeColor(inspectedDomain.profile.category).bgDark,
-                    border: `1px solid ${getProfileThemeColor(inspectedDomain.profile.category).border}`,
+                    color: getProfileThemeColor(inspectedDomain.profile.category, isDark).color,
+                    backgroundColor: getProfileThemeColor(inspectedDomain.profile.category, isDark).bgDark,
+                    border: `1px solid ${getProfileThemeColor(inspectedDomain.profile.category, isDark).border}`,
                     fontWeight: 600,
                   }}
                 />

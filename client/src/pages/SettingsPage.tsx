@@ -15,6 +15,7 @@ import {
 import api from '../api';
 import { Logger } from '../utils/logger';
 import { InboundsEditor } from '../components/InboundsEditor';
+import { WorkspaceHeader } from '../components/WorkspaceHeader';
 import type { NodeRecord } from '../types/node';
 import type { CountryOption, Domain, InboundConfigUI, Tunnel } from '../types/inbound';
 import {
@@ -244,16 +245,18 @@ export default function SettingsPage() {
   };
 
   return (
-    <Stack spacing={3}>
-      <Box className="page-heading">
-        <Box>
-          <Typography variant="overline" color="primary">SYSTEM SETTINGS</Typography>
-          <Typography variant="h3">Настройки</Typography>
-        </Box>
-      </Box>
+    <Stack spacing={3} className="workspace-page">
+      <WorkspaceHeader
+        eyebrow="ПАРАМЕТРЫ СИСТЕМЫ"
+        title="Настройки"
+        description="Профиль, шаблоны подключений и перенос конфигурации."
+      />
 
-      <Paper className="console-panel" sx={{ maxWidth: 760 }}>
-        <Typography variant="h6">Профиль панели 3dp-manager</Typography>
+      <Paper className="workspace-panel workspace-settings-section" sx={{ maxWidth: 760 }}>
+        <Stack direction="row" alignItems="baseline" justifyContent="space-between" spacing={2}>
+          <Typography variant="h6">Профиль панели 3dp-manager</Typography>
+          <Typography variant="overline" className="workspace-section-index">01 / 03</Typography>
+        </Stack>
         <Divider sx={{ my: 2 }} />
         <Stack spacing={2}>
           <TextField
@@ -278,8 +281,11 @@ export default function SettingsPage() {
         </Stack>
       </Paper>
 
-      <Paper className="console-panel" sx={{ maxWidth: 1200 }}>
-        <Typography variant="overline" color="primary">SUBSCRIPTION DEFAULTS</Typography>
+      <Paper className="workspace-panel workspace-settings-section" sx={{ maxWidth: 1200 }}>
+        <Stack direction="row" alignItems="baseline" justifyContent="space-between" spacing={2}>
+          <Typography variant="overline" color="primary">SUBSCRIPTION DEFAULTS</Typography>
+          <Typography variant="overline" className="workspace-section-index">02 / 03</Typography>
+        </Stack>
         <Typography variant="h5" sx={{ mt: 0.5 }}>Стандартные инбаунды подписок</Typography>
         <Typography color="text.secondary" sx={{ mt: 1, mb: 2 }}>
           Настройте инбаунды по умолчанию, которые будут автоматически появляться при создании новой подписки. Можно добавлять инбаунды с разных нод и настраивать их параметры.
@@ -307,8 +313,11 @@ export default function SettingsPage() {
         />
       </Paper>
 
-      <Paper className="console-panel" sx={{ maxWidth: 760 }}>
-        <Typography variant="overline" color="primary">PORTABLE BACKUP</Typography>
+      <Paper className="workspace-panel workspace-settings-section" sx={{ maxWidth: 760 }}>
+        <Stack direction="row" alignItems="baseline" justifyContent="space-between" spacing={2}>
+          <Typography variant="overline" color="primary">PORTABLE BACKUP</Typography>
+          <Typography variant="overline" className="workspace-section-index">03 / 03</Typography>
+        </Stack>
         <Typography variant="h5" sx={{ mt: 0.5 }}>Перенос панели</Typography>
         <Typography color="text.secondary" sx={{ mt: 1, mb: 2 }}>
           Архив содержит подписки, UUID, настройки, ноды и реквизиты relay. Домен и TLS на новом сервере настраиваются заново.
