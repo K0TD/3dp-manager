@@ -27,6 +27,16 @@ export class DomainsController {
     return this.domainsService.createMany(body.domains);
   }
 
+  @Get('profiles')
+  getProfiles() {
+    return this.domainsService.getCatalogProfiles();
+  }
+
+  @Get('resolve-profile')
+  resolveProfile(@Query('sni') sni?: string) {
+    return this.domainsService.resolveProfile(sni || '');
+  }
+
   @Get('scan/capabilities')
   scanCapabilities() {
     return this.domainScannerService.getCapabilities();

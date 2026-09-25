@@ -23,6 +23,8 @@ describe('DomainsController', () => {
     findOne: jest.fn(),
     remove: jest.fn(),
     removeAll: jest.fn(),
+    getCatalogProfiles: jest.fn(),
+    resolveProfile: jest.fn(),
   };
 
   const mockDomainScannerService = {
@@ -82,6 +84,45 @@ describe('DomainsController', () => {
 
       expect(result).toEqual(mockResult);
       expect(domainsService.createMany).toHaveBeenCalledWith(body.domains);
+    });
+  });
+
+  describe('getProfiles', () => {
+    it('должен вернуть каталог профилей маскировки', () => {
+      const mockCatalog = {
+        profiles: [{ id: 'apple', name: 'Apple CDN' }],
+        defaultProfile: { fingerprint: 'chrome' },
+      };
+      mockDomainsService.getCatalogProfiles.mockReturnValue(mockCatalog);
+
+      const result = controller.getProfiles();
+
+      expect(result).toEqual(mockCatalog);
+      expect(domainsService.getCatalogProfiles).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('resolveProfile', () => {
+    it('должен вернуть разрешенный профиль для заданного SNI', () => {
+      const mockProfile = { sni: 'swdist.apple.com', fingerprint: 'safari' };
+      mockDomainsService.resolveProfile.mockReturnValue(mockProfile);
+
+      const result = controller.resolveProfile('swdist.apple.com');
+
+      expect(result).toEqual(mockProfile);
+      expect(domainsService.resolveProfile).toHaveBeenCalledWith(
+        'swdist.apple.com',
+      );
+    });
+
+    it('должен безопасно обрабатывать пустой или undefined SNI', () => {
+      const mockProfile = { sni: '', fingerprint: 'chrome' };
+      mockDomainsService.resolveProfile.mockReturnValue(mockProfile);
+
+      const result = controller.resolveProfile(undefined);
+
+      expect(result).toEqual(mockProfile);
+      expect(domainsService.resolveProfile).toHaveBeenCalledWith('');
     });
   });
 

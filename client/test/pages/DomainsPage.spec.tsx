@@ -620,4 +620,142 @@ describe('DomainsPage', () => {
       })
     })
   })
+
+  describe('Профили маскировки SNI и каталог Reality', () => {
+    it('должен отображать бейдж профиля маскировки для домена в белом списке', async () => {
+      setupMockGet({
+        domains: {
+          data: [
+            {
+              id: 1,
+              name: 'swdist.apple.com',
+              profile: {
+                sni: 'swdist.apple.com',
+                category: 'Apple',
+                fingerprint: 'safari',
+                spiderX: '/content/downloads/',
+              },
+            },
+          ],
+          total: 1,
+        },
+      })
+
+      renderDomainsPage()
+
+      await waitFor(() => {
+        expect(screen.getAllByText('swdist.apple.com').length).toBeGreaterThan(0)
+        expect(screen.getByText('Apple • safari')).toBeInTheDocument()
+      })
+    })
+
+    it('должен переключаться на вкладку каталога профилей маскировки', async () => {
+      setupMockGet()
+      renderDomainsPage()
+
+      const catalogTab = await screen.findByText('Каталог профилей маскировки')
+      fireEvent.click(catalogTab)
+
+      await waitFor(() => {
+        expect(screen.getByText('Инспектор маскировки (Live SNI Tester)')).toBeInTheDocument()
+        expect(screen.getByText('Готовые паспорта маскировки (Reality Profiles)')).toBeInTheDocument()
+      })
+    })
+
+    it('должен отображать карточки профилей в каталоге (Apple, Microsoft, Google)', async () => {
+      setupMockGet()
+      renderDomainsPage()
+
+      const catalogTab = await screen.findByText('Каталог профилей маскировки')
+      fireEvent.click(catalogTab)
+
+      await waitFor(() => {
+        expect(screen.getAllByText('Apple CDN & Services').length).toBeGreaterThan(0)
+        expect(screen.getAllByText('Microsoft & Azure Edge').length).toBeGreaterThan(0)
+        expect(screen.getAllByText('Google CDN & Omaha Update').length).toBeGreaterThan(0)
+      })
+    })
+
+    it('должен позволять вводить домен в Live SNI Inspector и отображать параметры маскировки', async () => {
+      setupMockGet()
+      renderDomainsPage()
+
+      const catalogTab = await screen.findByText('Каталог профилей маскировки')
+      fireEvent.click(catalogTab)
+
+      const inspectorInput = await screen.findByPlaceholderText(
+        'Введите SNI (например, swdist.apple.com, dl.google.com, mydomain.org)'
+      )
+      fireEvent.change(inspectorInput, { target: { value: 'dl.google.com' } })
+
+      await waitFor(() => {
+        expect(screen.getAllByText('Google CDN & Omaha Update').length).toBeGreaterThan(0)
+        expect(screen.getAllByText('/service/update2/').length).toBeGreaterThan(0)
+      })
+    })
+
+    it('должен открывать и закрывать модальное окно инспекции параметров домена', async () => {
+      setupMockGet({
+        domains: {
+          data: [
+            {
+              id: 1,
+              name: 'swdist.apple.com',
+              profile: {
+                sni: 'swdist.apple.com',
+                category: 'Apple',
+                fingerprint: 'safari',
+                spiderX: '/content/downloads/',
+                xhttpPath: '/download/updates/',
+                xPaddingBytes: '500-1500',
+              },
+            },
+          ],
+          total: 1,
+        },
+      })
+
+      renderDomainsPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('swdist.apple.com')).toBeInTheDocument()
+      })
+
+      const infoButton = await screen.findByTestId('icon-Info')
+      fireEvent.click(infoButton)
+
+      await waitFor(() => {
+        expect(screen.getByText('Паспорт маскировки Reality')).toBeInTheDocument()
+        expect(screen.getByText('Путь протокола XHTTP:')).toBeInTheDocument()
+      })
+
+      const closeButton = screen.getByText('Закрыть')
+      fireEvent.click(closeButton)
+
+      await waitFor(() => {
+        expect(screen.queryByText('Паспорт маскировки Reality')).not.toBeInTheDocument()
+      })
+    })
+
+    it('должен пакетно добавлять проверенные домены из карточки профиля', async () => {
+      setupMockGet()
+      mockPost.mockResolvedValue({ data: { count: 3 } })
+
+      renderDomainsPage()
+
+      const catalogTab = await screen.findByText('Каталог профилей маскировки')
+      fireEvent.click(catalogTab)
+
+      const addButtons = await screen.findAllByText('Добавить проверенные домены')
+      expect(addButtons.length).toBeGreaterThan(0)
+      fireEvent.click(addButtons[0])
+
+      await waitFor(() => {
+        expect(mockPost).toHaveBeenCalledWith('/domains/upload', {
+          domains: expect.any(Array),
+        })
+      })
+    })
+  })
 })
+

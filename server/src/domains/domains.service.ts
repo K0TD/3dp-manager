@@ -2,6 +2,13 @@ import { BadRequestException, Injectable, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Domain } from './entities/domain.entity';
+import {
+  resolveSniProfile,
+  SNI_PROFILE_RULES,
+  DEFAULT_SNI_PROFILE,
+  SniProfile,
+  SniProfileRule,
+} from '../inbounds/sni-profiles';
 
 @Injectable()
 export class DomainsService implements OnModuleInit {
@@ -61,10 +68,29 @@ export class DomainsService implements OnModuleInit {
       order: { id: 'DESC' },
     });
 
+    const enriched = result.map((d) => ({
+      ...d,
+      profile: resolveSniProfile(d.name),
+    }));
+
     return {
-      data: result,
+      data: enriched,
       total: total,
     };
+  }
+
+  getCatalogProfiles(): {
+    profiles: readonly SniProfileRule[];
+    defaultProfile: typeof DEFAULT_SNI_PROFILE;
+  } {
+    return {
+      profiles: SNI_PROFILE_RULES,
+      defaultProfile: DEFAULT_SNI_PROFILE,
+    };
+  }
+
+  resolveProfile(sni: string): SniProfile {
+    return resolveSniProfile(sni);
   }
 
   async findAllUnpaginated(): Promise<Domain[]> {

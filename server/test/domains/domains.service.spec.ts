@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/unbound-method */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment */
 
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
@@ -175,7 +176,18 @@ describe('DomainsService', () => {
       const result = await service.findAll(1, 10);
 
       expect(result).toEqual({
-        data: mockDomains,
+        data: [
+          expect.objectContaining({
+            id: 1,
+            name: 'ya.ru',
+            profile: expect.any(Object),
+          }),
+          expect.objectContaining({
+            id: 2,
+            name: 'vk.com',
+            profile: expect.any(Object),
+          }),
+        ],
         total: 100,
       });
       expect(repo.findAndCount).toHaveBeenCalledWith({
@@ -195,6 +207,26 @@ describe('DomainsService', () => {
         skip: 0,
         order: { id: 'DESC' },
       });
+    });
+  });
+
+  describe('getCatalogProfiles', () => {
+    it('должен возвращать правила профилей и дефолтный профиль', () => {
+      const catalog = service.getCatalogProfiles();
+      expect(catalog.profiles.length).toBeGreaterThan(0);
+      expect(catalog.defaultProfile).toBeDefined();
+      const apple = catalog.profiles.find((p) => p.id === 'apple');
+      expect(apple).toBeDefined();
+      expect(apple?.profile.fingerprint).toBe('safari');
+    });
+  });
+
+  describe('resolveProfile', () => {
+    it('должен разрешать профиль по переданному SNI', () => {
+      const profile = service.resolveProfile('swdist.apple.com');
+      expect(profile.fingerprint).toBe('safari');
+      expect(profile.spiderX).toBe('/content/downloads/');
+      expect(profile.xhttpPath).toBe('/download/updates/');
     });
   });
 
