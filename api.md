@@ -632,6 +632,8 @@
 
 Последние фоновые операции и результат по каждой ноде.
 
+В `results[]` возвращаются `subscriptionId`, `subscriptionName`, нода и сообщение об ошибке. Для новых ошибок поле `details` содержит этап (`phase`), конфигурации (`inbounds`: `configId`, протокол, порт, ID инбаунда панели, TLS-имя и пути сертификата/ключа) и, если найден, `blockingInbound` с подпиской-владельцем. Текст ошибки сохраняется до 16 КБ; содержимое ключей и токены не включаются. Старые операции могут не содержать `details`.
+
 ### GET `/api/rotation/operations/:id`
 
 Состояние отдельной операции: `queued`, `running`, `succeeded`, `partial` или `failed`.
@@ -669,6 +671,12 @@ GET /bus/abc-123-def
 - `User-Agent: Mozilla/...` → возвращает HTML с QR
 - `User-Agent: v2rayN/...` → возвращает plain text Base64
 
+**Query Parameters:**
+- `format`: `base64` | `html` | `wireguard` | `amneziawg`
+- `index`: номер конфигурации выбранного формата с нуля (для `wireguard`/`amneziawg`).
+
+`format=wireguard&index=0` скачивает первый профиль WireGuard `.conf`. HTML показывает QR-коды и настройки HTTP/SOCKS/mixed. Эти подключения исключены из обычной Base64-выдачи. Ответы подписки используют `Cache-Control: no-store`.
+
 **Response (Base64):**
 ```
 vless://abc123...
@@ -697,7 +705,8 @@ vmess://xyz789...
 **Public** — без токена.
 
 **Query Parameters:**
-- `format` (опционально): `base64` | `html`
+- `format` (опционально): `base64` | `html` | `wireguard` | `amneziawg`
+- `index` (опционально): номер конфигурации с нуля для `wireguard`/`amneziawg`
 
 **URL:**
 ```
@@ -723,8 +732,9 @@ GET /bus/abc-123-def/1
   inboundsConfig: Array<{
     configId: string;
     type: 'vless-tcp-reality' | 'vless-xhttp-reality' | 'vless-grpc-reality' |
-      'vless-ws' | 'vless-tcp-tls' | 'vless-ws-tls' | 'hysteria2-udp' |
-      'vmess-tcp' | 'shadowsocks-tcp' | 'trojan-tcp-reality' | 'amneziawg' | 'custom';
+      'vless-ws' | 'vless-tcp-tls' | 'vless-ws-tls' | 'vless-xhttp-tls' | 'hysteria2-udp' |
+      'vmess-tcp' | 'shadowsocks-tcp' | 'trojan-tcp-reality' | 'mtproto-faketls' |
+      'amneziawg' | 'wireguard' | 'mixed' | 'http' | 'socks' | 'custom';
     port?: number | 'random';
     sni?: string;
   }>;
@@ -738,13 +748,16 @@ GET /bus/abc-123-def/1
 ```typescript
 {
   id: number;
-  type: 'vless' | 'vmess' | 'shadowsocks' | 'hysteria2' | 'trojan' | 'custom';
+  type: 'vless' | 'vmess' | 'shadowsocks' | 'hysteria2' | 'trojan' |
+    'mtproto' | 'amneziawg' | 'wireguard' | 'mixed' | 'http' | 'socks' | 'custom';
   port: number | string;
   sni?: string;
   link: string;
   configId?: string;
   position: number;
   transport?: 'tcp' | 'websocket' | 'grpc' | 'xhttp';
+  connection?: { type: 'mixed' | 'http' | 'socks'; host: string; port: number; username: string; password: string };
+  wireguardConfig?: string;
 }
 ```
 

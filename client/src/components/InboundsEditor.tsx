@@ -14,11 +14,19 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material';
-import { Add, ArrowDownward, ArrowUpward, Delete, Remove, Restore } from '@mui/icons-material';
+import {
+  Add,
+  ArrowDownward,
+  ArrowUpward,
+  Delete,
+  Remove,
+  Restore,
+} from '@mui/icons-material';
 import type { NodeRecord } from '../types/node';
 import {
   CERTIFICATE_TYPES,
   CONNECTION_OPTIONS,
+  PERSISTENT_INBOUND_TYPES,
   type CountryOption,
   type Domain,
   type InboundConfigUI,
@@ -104,7 +112,7 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
         next.keyFile = '';
       }
 
-      if (field === 'type' && value === 'amneziawg') {
+      if (field === 'type' && PERSISTENT_INBOUND_TYPES.has(value)) {
         next.sni = '';
         next.certificateMode = undefined;
         next.tlsServerName = undefined;
@@ -130,7 +138,8 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
       }
 
       if (field === 'type' && value !== 'custom' && !next.nodeId) {
-        const defaultNode = nodes.find((n) => n.isMain)?.id || nodes[0]?.id || '';
+        const defaultNode =
+          nodes.find((n) => n.isMain)?.id || nodes[0]?.id || '';
         next.nodeId = defaultNode;
         next.flag = getNodeFlag(next.nodeId, nodes);
       }
@@ -173,7 +182,10 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
 
   const addInbound = () => {
     if (inbounds.length >= maxInbounds) return;
-    onChange([...inbounds, createInboundTemplate('vless-tcp-reality', nodes, domains)]);
+    onChange([
+      ...inbounds,
+      createInboundTemplate('vless-tcp-reality', nodes, domains),
+    ]);
   };
 
   const removeInbound = (id?: string) => {
@@ -192,40 +204,43 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
 
   return (
     <Box>
-      {inbounds.some((inbound) => inbound.type === 'amneziawg') && (
+      {inbounds.some((inbound) =>
+        PERSISTENT_INBOUND_TYPES.has(inbound.type),
+      ) && (
         <Alert severity="info" sx={{ mb: 2 }}>
-          AmneziaWG не участвует в общей ротации. Для замены удалите инбаунд, сохраните подписку,
-          затем откройте её, добавьте AWG заново и сохраните. Новый AWG создаётся при сохранении.
+          WireGuard, AmneziaWG и HTTP/SOCKS/mixed создаются при сохранении и не
+          участвуют в общей ротации. Для замены удалите инбаунд, сохраните
+          подписку, затем добавьте его заново и сохраните.
         </Alert>
       )}
-      {showDisabledAlert && inbounds.some((i) => i.enabled === false || i.disabledReason) && (
-        <Alert severity="warning" sx={{ mb: 2 }}>
-          Внимание: некоторые конфигурации были отключены (удалена нода). При сохранении они будут автоматически активированы на выбранных нодах.
-        </Alert>
-      )}
+      {showDisabledAlert &&
+        inbounds.some((i) => i.enabled === false || i.disabledReason) && (
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            Внимание: некоторые конфигурации были отключены (удалена нода). При
+            сохранении они будут автоматически активированы на выбранных нодах.
+          </Alert>
+        )}
 
       <Typography variant="h6" sx={{ mb: 2 }}>
         Инбаунды ({inbounds.length}/{maxInbounds})
       </Typography>
 
-      <Box sx={{ maxHeight: '52vh', overflow: 'auto', pr: 1 }}>
+      <Box sx={{ display: 'grid', gap: 2 }}>
         {inbounds.map((inbound, index) => (
           <Box
             key={inbound.id}
             sx={{
-              display: 'flex',
-              alignItems: 'flex-start',
+              display: 'grid',
+              gridTemplateColumns: {
+                xs: 'minmax(0, 1fr)',
+                sm: 'repeat(2, minmax(0, 1fr))',
+                lg: 'repeat(3, minmax(0, 1fr))',
+                xl: 'repeat(6, minmax(0, 1fr))',
+              },
+              alignItems: 'start',
               gap: 2,
-              mb: 2,
-              p: 2,
-              flexWrap: 'nowrap',
-              width: 'fit-content',
-              minWidth:
-                inbound.type === 'custom'
-                  ? 780
-                  : CERTIFICATE_TYPES.has(inbound.type)
-                    ? 1540
-                    : 1260,
+              p: { xs: 1.5, sm: 2 },
+              minWidth: 0,
               border: 1,
               borderColor: 'divider',
               borderRadius: '16px',
@@ -234,8 +249,21 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
               '&:focus-within': { borderColor: 'primary.main' },
             }}
           >
-            <Stack sx={{ width: 40, flexShrink: 0 }} alignItems="center" spacing={0.25}>
-              <Typography sx={{ fontWeight: 'bold' }}>#{index + 1}</Typography>
+            <Stack
+              direction="row"
+              sx={{ gridColumn: '1 / -1', minWidth: 0 }}
+              alignItems="center"
+              spacing={0.5}
+            >
+              <Typography sx={{ fontWeight: 'bold', mr: 1 }}>
+                #{index + 1}
+              </Typography>
+              <Chip
+                size="small"
+                label={inbound.name || inbound.type}
+                sx={{ maxWidth: '60%' }}
+              />
+              <Box sx={{ flex: 1 }} />
               <Tooltip title="Переместить вверх">
                 <span>
                   <IconButton
@@ -260,6 +288,14 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                   </IconButton>
                 </span>
               </Tooltip>
+              <IconButton
+                color="error"
+                size="small"
+                aria-label={`Удалить инбаунд ${index + 1}`}
+                onClick={() => removeInbound(inbound.id)}
+              >
+                <Delete fontSize="small" />
+              </IconButton>
             </Stack>
 
             {inbound.disabledReason && (
@@ -268,21 +304,31 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                   size="small"
                   color="warning"
                   label={inbound.disabledReason}
-                  sx={{ alignSelf: 'center', flexShrink: 0 }}
+                  sx={{
+                    alignSelf: 'center',
+                    maxWidth: '100%',
+                    gridColumn: '1 / -1',
+                  }}
                 />
               </Tooltip>
             )}
 
-            <FormControl size="small" sx={{ width: 185, flexShrink: 0 }}>
+            <FormControl size="small" sx={{ width: '100%', minWidth: 0 }}>
               <InputLabel>Тип</InputLabel>
               <Select
                 value={inbound.type}
                 label="Тип"
-                disabled={inbound.awgLocked}
-                onChange={(e) => handleInboundChange(inbound.id, 'type', e.target.value)}
+                disabled={inbound.awgLocked || inbound.persistentLocked}
+                onChange={(e) =>
+                  handleInboundChange(inbound.id, 'type', e.target.value)
+                }
               >
                 {CONNECTION_OPTIONS.map((option) => {
-                  const supported = isInboundSupported(option, inbound.nodeId, nodes);
+                  const supported = isInboundSupported(
+                    option,
+                    inbound.nodeId,
+                    nodes,
+                  );
                   return (
                     <MenuItem key={option} value={option} disabled={!supported}>
                       {option}
@@ -299,18 +345,22 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                 label="Ссылка на подключение"
                 placeholder="vless://..."
                 value={inbound.link || ''}
-                onChange={(e) => handleInboundChange(inbound.id, 'link', e.target.value)}
-                sx={{ width: 460, flexShrink: 0 }}
+                onChange={(e) =>
+                  handleInboundChange(inbound.id, 'link', e.target.value)
+                }
+                sx={{ width: '100%', minWidth: 0, gridColumn: '1 / -1' }}
               />
             ) : (
               <>
-                <FormControl size="small" sx={{ width: 170, flexShrink: 0 }}>
+                <FormControl size="small" sx={{ width: '100%', minWidth: 0 }}>
                   <InputLabel>Нода</InputLabel>
                   <Select
                     value={inbound.nodeId || ''}
                     label="Нода"
-                    disabled={inbound.awgLocked}
-                    onChange={(e) => handleInboundChange(inbound.id, 'nodeId', e.target.value)}
+                    disabled={inbound.awgLocked || inbound.persistentLocked}
+                    onChange={(e) =>
+                      handleInboundChange(inbound.id, 'nodeId', e.target.value)
+                    }
                   >
                     <MenuItem value="">Основная нода</MenuItem>
                     {nodes.map((node) => (
@@ -322,45 +372,70 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                   </Select>
                 </FormControl>
 
-                <FormControl size="small" sx={{ width: 170, flexShrink: 0 }}>
+                <FormControl size="small" sx={{ width: '100%', minWidth: 0 }}>
                   <InputLabel>Relay</InputLabel>
                   <Select
                     value={inbound.relayServerId || ''}
                     label="Relay"
-                    disabled={inbound.awgLocked}
-                    onChange={(e) => handleInboundChange(inbound.id, 'relayServerId', e.target.value)}
+                    disabled={inbound.awgLocked || inbound.persistentLocked}
+                    onChange={(e) =>
+                      handleInboundChange(
+                        inbound.id,
+                        'relayServerId',
+                        e.target.value,
+                      )
+                    }
                   >
                     <MenuItem value="">Без relay</MenuItem>
-                    {getRelayOptions(inbound.nodeId, tunnels, nodes).map((tunnel) => (
-                      <MenuItem key={tunnel.id} value={tunnel.id.toString()}>
-                        {tunnel.name}
-                      </MenuItem>
-                    ))}
+                    {getRelayOptions(inbound.nodeId, tunnels, nodes).map(
+                      (tunnel) => (
+                        <MenuItem key={tunnel.id} value={tunnel.id.toString()}>
+                          {tunnel.name}
+                        </MenuItem>
+                      ),
+                    )}
                   </Select>
                 </FormControl>
 
-                <FormControl size="small" sx={{ width: 170, flexShrink: 0 }}>
+                <FormControl size="small" sx={{ width: '100%', minWidth: 0 }}>
                   <InputLabel>Флаг</InputLabel>
                   <Select
                     value={inbound.flag || getNodeFlag(inbound.nodeId, nodes)}
                     label="Флаг"
-                    onChange={(e) => handleInboundChange(inbound.id, 'flag', e.target.value)}
+                    onChange={(e) =>
+                      handleInboundChange(inbound.id, 'flag', e.target.value)
+                    }
                     renderValue={(value) => (
                       <FlagOptionLabel
                         flag={value}
-                        label={countries.find((country) => country.emoji === value)?.name || 'Флаг'}
+                        label={
+                          countries.find((country) => country.emoji === value)
+                            ?.name || 'Флаг'
+                        }
                       />
                     )}
                   >
                     <MenuItem value="">Без флага</MenuItem>
-                    {inbound.flag && !countries.some((c) => c.emoji === inbound.flag) && (
-                      <MenuItem key={inbound.flag} value={inbound.flag} sx={{ display: 'none' }}>
-                        <FlagOptionLabel flag={inbound.flag} label={inbound.flag} />
-                      </MenuItem>
-                    )}
+                    {inbound.flag &&
+                      !countries.some((c) => c.emoji === inbound.flag) && (
+                        <MenuItem
+                          key={inbound.flag}
+                          value={inbound.flag}
+                          sx={{ display: 'none' }}
+                        >
+                          <FlagOptionLabel
+                            flag={inbound.flag}
+                            label={inbound.flag}
+                          />
+                        </MenuItem>
+                      )}
                     {countries.map((country) => (
                       <MenuItem key={country.code} value={country.emoji}>
-                        <FlagOptionLabel flag={country.emoji} code={country.code} label={country.name} />
+                        <FlagOptionLabel
+                          flag={country.emoji}
+                          code={country.code}
+                          label={country.name}
+                        />
                       </MenuItem>
                     ))}
                   </Select>
@@ -370,30 +445,64 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                   size="small"
                   label="Название"
                   value={inbound.name || ''}
-                  onChange={(e) => handleInboundChange(inbound.id, 'name', e.target.value)}
-                  sx={{ width: 180, flexShrink: 0 }}
+                  onChange={(e) =>
+                    handleInboundChange(inbound.id, 'name', e.target.value)
+                  }
+                  sx={{ width: '100%', minWidth: 0 }}
                 />
 
                 <TextField
                   size="small"
                   label="Порт"
-                  disabled={inbound.awgLocked}
+                  disabled={inbound.awgLocked || inbound.persistentLocked}
                   placeholder="random или порт"
                   value={inbound.port}
-                  onChange={(e) => handleInboundChange(inbound.id, 'port', e.target.value)}
+                  onChange={(e) =>
+                    handleInboundChange(inbound.id, 'port', e.target.value)
+                  }
                   error={!!portErrors[inbound.id]}
                   helperText={portErrors[inbound.id] || ''}
-                  sx={{ width: 150, flexShrink: 0 }}
+                  sx={{ width: '100%', minWidth: 0 }}
                 />
 
                 {CERTIFICATE_TYPES.has(inbound.type) && (
-                  <>
-                    <FormControl size="small" sx={{ width: 190, flexShrink: 0 }}>
+                  <Box
+                    sx={{
+                      gridColumn: '1 / -1',
+                      display: 'grid',
+                      gap: 2,
+                      pt: 2,
+                      borderTop: 1,
+                      borderColor: 'divider',
+                      gridTemplateColumns: {
+                        xs: 'minmax(0, 1fr)',
+                        sm: 'repeat(2, minmax(0, 1fr))',
+                        lg: 'repeat(4, minmax(0, 1fr))',
+                      },
+                    }}
+                  >
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
+                      sx={{ gridColumn: '1 / -1' }}
+                    >
+                      TLS · сертификат выбранной ноды
+                    </Typography>
+                    <FormControl
+                      size="small"
+                      sx={{ width: '100%', minWidth: 0 }}
+                    >
                       <InputLabel>TLS-сертификат</InputLabel>
                       <Select
                         value={inbound.certificateMode || 'node'}
                         label="TLS-сертификат"
-                        onChange={(e) => handleInboundChange(inbound.id, 'certificateMode', e.target.value)}
+                        onChange={(e) =>
+                          handleInboundChange(
+                            inbound.id,
+                            'certificateMode',
+                            e.target.value,
+                          )
+                        }
                       >
                         <MenuItem value="node">Сертификат ноды</MenuItem>
                         <MenuItem value="custom">Свой сертификат</MenuItem>
@@ -409,8 +518,14 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                           : getNodeAddress(inbound.nodeId, nodes)
                       }
                       disabled={inbound.certificateMode !== 'custom'}
-                      onChange={(e) => handleInboundChange(inbound.id, 'tlsServerName', e.target.value)}
-                      sx={{ width: 220, flexShrink: 0 }}
+                      onChange={(e) =>
+                        handleInboundChange(
+                          inbound.id,
+                          'tlsServerName',
+                          e.target.value,
+                        )
+                      }
+                      sx={{ width: '100%', minWidth: 0 }}
                     />
 
                     {inbound.certificateMode === 'custom' ? (
@@ -419,52 +534,90 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                           size="small"
                           label="Сертификат"
                           value={inbound.certificateFile || ''}
-                          onChange={(e) => handleInboundChange(inbound.id, 'certificateFile', e.target.value)}
-                          sx={{ width: 320, flexShrink: 0 }}
+                          onChange={(e) =>
+                            handleInboundChange(
+                              inbound.id,
+                              'certificateFile',
+                              e.target.value,
+                            )
+                          }
+                          sx={{ width: '100%', minWidth: 0 }}
                         />
                         <TextField
                           size="small"
                           label="Приватный ключ"
                           value={inbound.keyFile || ''}
-                          onChange={(e) => handleInboundChange(inbound.id, 'keyFile', e.target.value)}
-                          sx={{ width: 320, flexShrink: 0 }}
+                          onChange={(e) =>
+                            handleInboundChange(
+                              inbound.id,
+                              'keyFile',
+                              e.target.value,
+                            )
+                          }
+                          sx={{ width: '100%', minWidth: 0 }}
                         />
                       </>
                     ) : (
-                      <Tooltip
-                        title={
-                          getSelectedNode(inbound.nodeId, nodes)?.capabilities?.autoTlsCertificate
-                            ? `Пути получены из 3x-ui: ${getSelectedNode(inbound.nodeId, nodes)?.webCertificateFile || 'сертификат панели'}`
-                            : '3x-ui не вернул пути сертификата. Проверьте ноду или выберите свой сертификат.'
-                        }
-                      >
-                        <Chip
-                          size="small"
-                          variant="outlined"
-                          color={
-                            getSelectedNode(inbound.nodeId, nodes)?.capabilities?.autoTlsCertificate === false
-                              ? 'warning'
-                              : 'success'
+                      <Box sx={{ gridColumn: '1 / -1', minWidth: 0 }}>
+                        <Tooltip
+                          title={
+                            getSelectedNode(inbound.nodeId, nodes)?.capabilities
+                              ?.autoTlsCertificate
+                              ? `Пути получены из 3x-ui: ${getSelectedNode(inbound.nodeId, nodes)?.webCertificateFile || 'сертификат панели'}`
+                              : '3x-ui не вернул пути сертификата. Проверьте ноду или выберите свой сертификат.'
                           }
-                          label="TLS панели ноды"
-                          sx={{ alignSelf: 'center', flexShrink: 0 }}
-                        />
-                      </Tooltip>
+                        >
+                          <Chip
+                            size="small"
+                            variant="outlined"
+                            color={
+                              getSelectedNode(inbound.nodeId, nodes)
+                                ?.capabilities?.autoTlsCertificate === true
+                                ? 'success'
+                                : 'warning'
+                            }
+                            label="TLS панели ноды"
+                            sx={{
+                              alignSelf: 'center',
+                              maxWidth: '100%',
+                              gridColumn: '1 / -1',
+                            }}
+                          />
+                        </Tooltip>
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          display="block"
+                          sx={{ mt: 1, overflowWrap: 'anywhere' }}
+                        >
+                          {getSelectedNode(inbound.nodeId, nodes)
+                            ?.webCertificateFile ||
+                            'Путь сертификата не получен'}
+                        </Typography>
+                      </Box>
                     )}
-                  </>
+                  </Box>
                 )}
 
                 {hasSni(inbound.type) && (
-                  <FormControl size="small" sx={{ width: 190, flexShrink: 0 }}>
+                  <FormControl size="small" sx={{ width: '100%', minWidth: 0 }}>
                     <InputLabel id={`${inbound.id}-sni-label`}>
-                      {inbound.type === 'mtproto-faketls' ? 'FakeTLS SNI' : 'SNI'}
+                      {inbound.type === 'mtproto-faketls'
+                        ? 'FakeTLS SNI'
+                        : 'SNI'}
                     </InputLabel>
                     <Select
                       id={`${inbound.id}-sni`}
                       labelId={`${inbound.id}-sni-label`}
                       value={inbound.sni}
-                      label={inbound.type === 'mtproto-faketls' ? 'FakeTLS SNI' : 'SNI'}
-                      onChange={(e) => handleInboundChange(inbound.id, 'sni', e.target.value)}
+                      label={
+                        inbound.type === 'mtproto-faketls'
+                          ? 'FakeTLS SNI'
+                          : 'SNI'
+                      }
+                      onChange={(e) =>
+                        handleInboundChange(inbound.id, 'sni', e.target.value)
+                      }
                     >
                       <MenuItem value="random">
                         {inbound.type === 'mtproto-faketls'
@@ -481,19 +634,18 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                 )}
               </>
             )}
-
-            <IconButton
-              color="primary"
-              onClick={() => removeInbound(inbound.id)}
-              sx={{ mt: 0.5, flexShrink: 0 }}
-            >
-              <Delete />
-            </IconButton>
           </Box>
         ))}
       </Box>
 
-      <Stack direction="row" spacing={1} useFlexGap sx={{ mt: 2 }} alignItems="center" flexWrap="wrap">
+      <Stack
+        direction="row"
+        spacing={1}
+        useFlexGap
+        sx={{ mt: 2 }}
+        alignItems="center"
+        flexWrap="wrap"
+      >
         <Button
           variant="outlined"
           size="small"

@@ -15,6 +15,8 @@ import {
   CertificateMode,
   INBOUND_TYPES,
   InboundType,
+  PERSISTENT_INBOUND_TYPES,
+  panelInboundProtocol,
 } from './inbound-config.constants';
 import { supportsInboundType } from '../nodes/node-capabilities';
 import {
@@ -23,6 +25,11 @@ import {
 } from '../inbounds/mtproto-faketls';
 import { isSafeAbsoluteRemotePath } from '../inbounds/tls-config';
 import { Domain } from '../domains/entities/domain.entity';
+import {
+  isProxyProtocol,
+  proxyConnectionFromLink,
+  wireguardConfigFromLink,
+} from '../inbounds/connection-profiles';
 import { RotationService } from '../rotation/rotation.service';
 import { SubscriptionLockService } from './subscription-lock.service';
 
@@ -60,6 +67,14 @@ export class SubscriptionsService {
           (inbound) => inbound.status === InboundStatus.Active,
         ),
       );
+      for (const inbound of subscription.inbounds) {
+        if (isProxyProtocol(inbound.protocol))
+          inbound.connection =
+            proxyConnectionFromLink(inbound.link) ?? undefined;
+        if (inbound.protocol === 'wireguard')
+          inbound.wireguardConfig =
+            wireguardConfigFromLink(inbound.link) ?? undefined;
+      }
     }
     return subscriptions;
   }
@@ -83,7 +98,7 @@ export class SubscriptionsService {
 
     return this.subscriptionLock.run(sub.id, async () => {
       const saved = await this.subRepo.save(sub);
-      return this.provisionAmnezia(saved);
+      return this.provisionPersistentInbounds(saved);
     });
   }
 
@@ -101,7 +116,7 @@ export class SubscriptionsService {
       return null;
     }
 
-    this.validateAmneziaChanges(sub, dto);
+    this.validatePersistentChanges(sub, dto);
 
     // Пустое имя не обновляется — защита от случайной очистки
     if (dto.name && dto.name.trim().length > 0) {
@@ -134,25 +149,25 @@ export class SubscriptionsService {
 
     if (!nextConfigs) return this.subRepo.save(sub);
 
-    const desiredAwgIds = new Set(
+    const desiredPersistentIds = new Set(
       nextConfigs
-        .filter((config) => config.type === 'amneziawg')
+        .filter((config) => PERSISTENT_INBOUND_TYPES.has(config.type))
         .map((config) => config.configId),
     );
-    const removedAwg = (sub.inbounds || []).filter(
+    const removedPersistent = (sub.inbounds || []).filter(
       (inbound) =>
-        inbound.protocol === 'amneziawg' &&
+        PERSISTENT_INBOUND_TYPES.has(inbound.protocol) &&
         inbound.status === InboundStatus.Active &&
         inbound.configId &&
-        !desiredAwgIds.has(inbound.configId),
+        !desiredPersistentIds.has(inbound.configId),
     );
     const saved = await this.subRepo.manager.transaction(
       async (entityManager) => {
         const savedSubscription = await entityManager.save(Subscription, sub);
-        if (removedAwg.length) {
+        if (removedPersistent.length) {
           await entityManager.update(
             Inbound,
-            { id: In(removedAwg.map((inbound) => inbound.id)) },
+            { id: In(removedPersistent.map((inbound) => inbound.id)) },
             {
               status: InboundStatus.PendingCleanup,
               nextCleanupAt: new Date(),
@@ -164,9 +179,10 @@ export class SubscriptionsService {
       },
     );
     saved.inbounds = (saved.inbounds || []).filter(
-      (inbound) => !removedAwg.some((removed) => removed.id === inbound.id),
+      (inbound) =>
+        !removedPersistent.some((removed) => removed.id === inbound.id),
     );
-    return this.provisionAmnezia(saved);
+    return this.provisionPersistentInbounds(saved);
   }
 
   async remove(id: string) {
@@ -200,52 +216,58 @@ export class SubscriptionsService {
     return this.subRepo.remove(sub);
   }
 
-  private async provisionAmnezia(sub: Subscription) {
+  private async provisionPersistentInbounds(sub: Subscription) {
     if (
-      !(sub.inboundsConfig || []).some((config) => config.type === 'amneziawg')
+      !(sub.inboundsConfig || []).some((config) =>
+        PERSISTENT_INBOUND_TYPES.has(config.type),
+      )
     )
       return sub;
     try {
-      const awgProvisioning = await this.rotationService.provisionAmnezia(sub);
-      return { ...sub, awgProvisioning };
+      const awgProvisioning =
+        await this.rotationService.provisionPersistentInbounds(sub);
+      return { ...sub, inboundProvisioning: awgProvisioning, awgProvisioning };
     } catch {
+      const failedProvisioning = {
+        status: 'failed' as const,
+        message:
+          'Не удалось завершить создание подключения. Повторите сохранение подписки.',
+      };
       return {
         ...sub,
-        awgProvisioning: {
-          status: 'failed' as const,
-          message:
-            'Не удалось завершить создание AWG. Повторите сохранение подписки.',
-        },
+        inboundProvisioning: failedProvisioning,
+        awgProvisioning: failedProvisioning,
       };
     }
   }
 
-  private validateAmneziaChanges(
+  private validatePersistentChanges(
     sub: Subscription,
     dto: UpdateSubscriptionDto,
   ) {
     if (!dto.inboundsConfig && !('nodeId' in dto) && !('relayServerId' in dto))
       return;
-    const activeAwg = (sub.inbounds || []).filter(
+    const activePersistent = (sub.inbounds || []).filter(
       (inbound) =>
-        inbound.protocol === 'amneziawg' &&
+        PERSISTENT_INBOUND_TYPES.has(inbound.protocol) &&
         inbound.status === InboundStatus.Active,
     );
     const oldConfigs = sub.inboundsConfig || [];
     const nextConfigs = dto.inboundsConfig ?? oldConfigs;
-    for (const inbound of activeAwg) {
+    for (const inbound of activePersistent) {
       const matches = oldConfigs.filter(
         (config) =>
-          config.configId === inbound.configId && config.type === 'amneziawg',
+          config.configId === inbound.configId &&
+          panelInboundProtocol(config.type) === inbound.protocol,
       );
       if (
         !inbound.configId ||
         matches.length !== 1 ||
-        activeAwg.filter((item) => item.configId === inbound.configId)
+        activePersistent.filter((item) => item.configId === inbound.configId)
           .length !== 1
       ) {
         throw new BadRequestException(
-          'AWG не связан однозначно с конфигурацией. Существующее подключение сохранено; исправьте связь configId.',
+          'Инбаунд не связан однозначно с конфигурацией. Существующее подключение сохранено; исправьте связь configId.',
         );
       }
       const previous = matches[0];
@@ -265,33 +287,33 @@ export class SubscriptionsService {
         ('relayServerId' in dto ? dto.relayServerId : sub.relayServerId) ||
         undefined;
       if (
-        next.type !== 'amneziawg' ||
+        next.type !== previous.type ||
         String(next.port || 'random') !== String(previous.port || 'random') ||
         nextNode !== previousNode ||
         nextRelay !== previousRelay
       ) {
         throw new BadRequestException(
-          'Чтобы изменить AWG, удалите инбаунд, сохраните подписку, затем добавьте AWG заново и сохраните.',
+          `Чтобы изменить ${inbound.protocol === 'amneziawg' ? 'AWG' : inbound.protocol}, удалите инбаунд, сохраните подписку, затем добавьте его заново и сохраните.`,
         );
       }
     }
-    // A new row cannot replace an active AWG in the same save operation.
-    const removed = activeAwg.some(
+    // Replacing a persistent connection requires saving its removal first.
+    const removed = activePersistent.some(
       (inbound) =>
         !nextConfigs.some((config) => config.configId === inbound.configId),
     );
     const added = nextConfigs.some(
       (config) =>
-        config.type === 'amneziawg' &&
+        PERSISTENT_INBOUND_TYPES.has(config.type) &&
         !oldConfigs.some(
           (previous) =>
-            previous.type === 'amneziawg' &&
+            PERSISTENT_INBOUND_TYPES.has(previous.type) &&
             previous.configId === config.configId,
         ),
     );
     if (removed && added) {
       throw new BadRequestException(
-        'Сначала сохраните удаление AWG, затем откройте подписку и добавьте новый AWG.',
+        'Сначала сохраните удаление постоянного подключения, затем откройте подписку и добавьте новое.',
       );
     }
   }
@@ -382,9 +404,7 @@ export class SubscriptionsService {
     // When changing node in an already created inbound, reset certificate to the target node
     const nodeChanged = Boolean(
       existingConfig &&
-      existingConfig.nodeId &&
-      config.nodeId &&
-      existingConfig.nodeId !== config.nodeId,
+      (existingConfig.nodeId || undefined) !== (config.nodeId || undefined),
     );
     const certificateMode = isCertificateInbound
       ? nodeChanged
@@ -394,13 +414,17 @@ export class SubscriptionsService {
     return {
       ...config,
       configId: config.configId || uuidv4(),
-      sni: config.sni?.trim() || undefined,
-      certificateMode,
-      tlsServerName: isCertificateInbound
-        ? nodeChanged
+      sni:
+        isCertificateInbound || PERSISTENT_INBOUND_TYPES.has(config.type)
           ? undefined
-          : config.tlsServerName?.trim() || this.legacyTlsServerName(config)
-        : undefined,
+          : config.sni?.trim() || undefined,
+      certificateMode,
+      tlsServerName:
+        certificateMode === 'custom'
+          ? nodeChanged
+            ? undefined
+            : config.tlsServerName?.trim() || this.legacyTlsServerName(config)
+          : undefined,
       certificateFile:
         certificateMode === 'custom'
           ? config.certificateFile?.trim() || undefined

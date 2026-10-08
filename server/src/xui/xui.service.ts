@@ -28,12 +28,16 @@ import type {
 } from '../nodes/routing/routing-presets';
 import {
   XuiApiError,
+  XuiRuntimeError,
+  inboundDiagnostic,
   asRecord,
   jsonObject,
   mergeCookies,
   normalizeInbound,
   responsePayload,
   safePanelMessage,
+  verifyInboundAccess,
+  verifyTlsIdentity,
 } from './xui-contract';
 
 export type XuiConnectionError = 'auth' | 'network' | 'api';
@@ -265,7 +269,7 @@ export class XuiService {
     const err = error as AxiosError<{ msg?: string }>;
     if (err.response)
       return err.response.data?.msg
-        ? safePanelMessage(err.response.data.msg)
+        ? safePanelMessage(err.response.data.msg, 16384)
         : `3x-ui returned HTTP ${err.response.status}`;
     return /timeout|aborted|cancel/i.test(err.message || '')
       ? 'Connection timed out'
@@ -366,14 +370,8 @@ export class XuiService {
           'Saved inbound identity, protocol or enabled state does not match',
         );
       }
-      const clients = jsonObject(saved.settings, 'settings').clients;
-      if (
-        !Array.isArray(clients) ||
-        !clients.length ||
-        clients.some((c: unknown) => asRecord(c)?.enable === false)
-      ) {
-        throw new XuiApiError('Saved inbound has no enabled clients');
-      }
+      verifyInboundAccess(saved);
+      verifyTlsIdentity(config, saved);
       created.inbound = saved;
       return created;
     } catch (error) {
@@ -525,6 +523,43 @@ export class XuiService {
     }
   }
 
+  async assertXrayHealthy(node: Node): Promise<void> {
+    await this.authenticatedRequest(node, async (api) => {
+      const status = jsonObject(
+        responsePayload((await api.get('/panel/api/server/status')).data),
+        'server status',
+      );
+      const xray = jsonObject(status.xray, 'Xray status');
+      if (xray.state === 'running' && !xray.errorMsg) return;
+      const message = safePanelMessage(
+        xray.errorMsg || `Xray state: ${xray.state}`,
+        16384,
+      );
+      const tag =
+        typeof xray.errorMsg === 'string'
+          ? xray.errorMsg.match(/\btag\s+["']?([^\s"'>]+)/)?.[1]
+          : undefined;
+      let inbound;
+      if (tag) {
+        try {
+          const list = responsePayload(
+            (await api.get('/panel/api/inbounds/list')).data,
+          );
+          if (Array.isArray(list)) {
+            const raw = list.find((value) => asRecord(value)?.tag === tag);
+            if (raw) inbound = inboundDiagnostic(normalizeInbound(raw));
+          }
+        } catch {
+          /* Preserve the startup error if diagnostics are unavailable. */
+        }
+      }
+      throw new XuiRuntimeError(
+        `Создание остановлено: Xray ноды уже неисправен. ${message}`,
+        inbound,
+      );
+    });
+  }
+
   async waitForXray(node?: Node): Promise<void> {
     await this.authenticatedRequest(node, async (api) => {
       const deadline = Date.now() + 10_000;
@@ -543,7 +578,7 @@ export class XuiService {
         const xray = jsonObject(status.xray, 'Xray status');
         if (xray.state === 'running' && !xray.errorMsg) return;
         message = xray.errorMsg
-          ? safePanelMessage(xray.errorMsg)
+          ? safePanelMessage(xray.errorMsg, 16384)
           : `Xray state: ${typeof xray.state === 'string' ? xray.state : 'unknown'}`;
         if (attempt < 5)
           await new Promise((resolve) =>

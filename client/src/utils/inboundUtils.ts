@@ -46,7 +46,8 @@ export const getRelayOptions = (
   );
 
 export const hasSni = (type: string): boolean =>
-  !CERTIFICATE_TYPES.has(type) && type !== 'amneziawg';
+  !CERTIFICATE_TYPES.has(type) &&
+  !['amneziawg', 'wireguard', 'mixed', 'http', 'socks', 'custom'].includes(type);
 
 export const isListedSni = (sni: string, domains: Domain[]): boolean => {
   const normalizedSni = sni.trim().toLowerCase();

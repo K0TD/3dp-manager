@@ -12,10 +12,28 @@ export const INBOUND_TYPES = [
   'trojan-tcp-reality',
   'mtproto-faketls',
   'amneziawg',
+  'wireguard',
+  'mixed',
+  'http',
+  'socks',
   'custom',
 ] as const;
 
 export type InboundType = (typeof INBOUND_TYPES)[number];
+
+// These clients import credentials once, rather than refreshing a subscription.
+export const PERSISTENT_INBOUND_TYPES = new Set<string>([
+  'amneziawg',
+  'wireguard',
+  'mixed',
+  'http',
+  'socks',
+]);
+
+export function panelInboundProtocol(type: string): string {
+  // Modern 3x-ui exposes SOCKS through its combined SOCKS/HTTP listener.
+  return type === 'socks' ? 'mixed' : type;
+}
 
 export const VLESS_TLS_TYPES = new Set<InboundType>([
   'vless-tcp-tls',

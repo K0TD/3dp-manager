@@ -49,6 +49,7 @@ describe('RotationService resilient generations', () => {
     update: jest.fn(),
   };
   const xuiService = {
+    assertXrayHealthy: jest.fn(),
     getNewX25519Cert: jest.fn(),
     getWebCertificateFiles: jest.fn(),
     addInbound: jest.fn(),
@@ -235,10 +236,10 @@ describe('RotationService resilient generations', () => {
           subscription: sub,
           node: { ...node, password: 'panel-secret' },
         });
-      expect(await service.provisionAmnezia(sub)).toEqual({
+      expect(await service.provisionPersistentInbounds(sub)).toEqual({
         status: 'succeeded',
       });
-      expect(await service.provisionAmnezia(sub)).toEqual({
+      expect(await service.provisionPersistentInbounds(sub)).toEqual({
         status: 'succeeded',
       });
       expect(create).toHaveBeenCalledTimes(1);
@@ -264,10 +265,10 @@ describe('RotationService resilient generations', () => {
           configId: 'second-awg',
           status: InboundStatus.Staged,
         });
-      expect(await service.provisionAmnezia(sub)).toMatchObject({
+      expect(await service.provisionPersistentInbounds(sub)).toMatchObject({
         status: 'failed',
       });
-      expect(await service.provisionAmnezia(sub)).toMatchObject({
+      expect(await service.provisionPersistentInbounds(sub)).toMatchObject({
         status: 'succeeded',
       });
       expect(create).toHaveBeenCalledTimes(2);
@@ -283,7 +284,7 @@ describe('RotationService resilient generations', () => {
     it('preserves ambiguous legacy AWG without generating a replacement', async () => {
       const sub = subscription();
       sub.inbounds[0].configId = undefined;
-      expect(await service.provisionAmnezia(sub)).toMatchObject({
+      expect(await service.provisionPersistentInbounds(sub)).toMatchObject({
         status: 'failed',
       });
       expect(xuiService.addInbound).not.toHaveBeenCalled();

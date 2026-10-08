@@ -47,13 +47,28 @@ import { Logger } from '../utils/logger';
 import type { NodeRecord } from '../types/node';
 import { InboundsEditor } from '../components/InboundsEditor';
 import { WorkspaceHeader } from '../components/WorkspaceHeader';
-import { parseDefaultInboundsSetting } from '../utils/inboundUtils';
+import { hasSni, parseDefaultInboundsSetting } from '../utils/inboundUtils';
+import { PERSISTENT_INBOUND_TYPES } from '../types/inbound';
 
 interface Subscription {
   id: string;
   name: string;
   uuid: string;
-  inbounds: Array<{ protocol?: string; configId?: string; nodeId?: string; relayServerId?: number }>;
+  inbounds: Array<{
+    protocol?: string;
+    configId?: string;
+    nodeId?: string;
+    relayServerId?: number;
+    link?: string;
+    connection?: {
+      type: string;
+      host: string;
+      port: number;
+      username: string;
+      password: string;
+    };
+    wireguardConfig?: string;
+  }>;
   inboundsConfig?: InboundConfigUI[];
   isAutoRotationEnabled?: boolean;
 }
@@ -85,6 +100,7 @@ interface InboundConfigUI {
   enabled?: boolean;
   disabledReason?: string;
   awgLocked?: boolean;
+  persistentLocked?: boolean;
 }
 
 interface Domain {
@@ -108,7 +124,9 @@ const CERTIFICATE_TYPES = new Set([
 
 const getSubscriptionUrl = (uuid: string) => {
   const path = `/bus/${uuid}`;
-  return typeof window !== 'undefined' ? `${window.location.origin}${path}` : path;
+  return typeof window !== 'undefined'
+    ? `${window.location.origin}${path}`
+    : path;
 };
 
 export default function SubscriptionsPage() {
@@ -127,7 +145,9 @@ export default function SubscriptionsPage() {
   const [portErrors, setPortErrors] = useState<Record<string, string>>({});
   const [linksOpen, setLinksOpen] = useState(false);
   const [currentLinks, setCurrentLinks] = useState<string[]>([]);
-  const [createdSubscriptionId, setCreatedSubscriptionId] = useState<string | null>(null);
+  const [createdSubscriptionId, setCreatedSubscriptionId] = useState<
+    string | null
+  >(null);
   const [rotationLoading, setRotationLoading] = useState(false);
   const [dataLoading, setDataLoading] = useState(true);
   const [rotationSettings, setRotationSettings] = useState({
@@ -135,7 +155,9 @@ export default function SubscriptionsPage() {
     rotation_status: 'active',
     last_rotation_timestamp: '',
   });
-  const [defaultInboundsSetting, setDefaultInboundsSetting] = useState<string | undefined>();
+  const [defaultInboundsSetting, setDefaultInboundsSetting] = useState<
+    string | undefined
+  >();
   const [snackbar, setSnackbar] = useState({
     open: false,
     type: 'success' as 'success' | 'error',
@@ -155,15 +177,21 @@ export default function SubscriptionsPage() {
 
   const loadSubs = useCallback(async () => {
     try {
-      const [subsRes, tunnelsRes, nodesRes, domainsRes, countriesRes, settingsRes] =
-        await Promise.all([
-          api.get('/subscriptions'),
-          api.get('/tunnels'),
-          api.get<NodeRecord[]>('/nodes'),
-          api.get('/domains/all'),
-          api.get<CountryOption[]>('/settings/countries'),
-          api.get('/settings'),
-        ]);
+      const [
+        subsRes,
+        tunnelsRes,
+        nodesRes,
+        domainsRes,
+        countriesRes,
+        settingsRes,
+      ] = await Promise.all([
+        api.get('/subscriptions'),
+        api.get('/tunnels'),
+        api.get<NodeRecord[]>('/nodes'),
+        api.get('/domains/all'),
+        api.get<CountryOption[]>('/settings/countries'),
+        api.get('/settings'),
+      ]);
 
       setSubs(Array.isArray(subsRes.data) ? subsRes.data : []);
       setTunnels(
@@ -174,7 +202,9 @@ export default function SubscriptionsPage() {
       setNodes(Array.isArray(nodesRes.data) ? nodesRes.data : []);
       setDomains(
         Array.isArray(domainsRes.data)
-          ? domainsRes.data.filter((domain: Domain) => domain.isEnabled !== false)
+          ? domainsRes.data.filter(
+              (domain: Domain) => domain.isEnabled !== false,
+            )
           : [],
       );
       setCountries(Array.isArray(countriesRes.data) ? countriesRes.data : []);
@@ -196,7 +226,9 @@ export default function SubscriptionsPage() {
     nodes.find((node) => node.isMain)?.id || nodes[0]?.id || '';
 
   const getNodeAddress = (nodeId?: string) => {
-    const node = nodes.find((item) => item.id === (nodeId || getDefaultNodeId()));
+    const node = nodes.find(
+      (item) => item.id === (nodeId || getDefaultNodeId()),
+    );
     if (!node) return '';
     if (node.domain) return node.domain;
     if (node.ip) return node.ip;
@@ -209,10 +241,8 @@ export default function SubscriptionsPage() {
   };
 
   const getNodeFlag = (nodeId?: string) =>
-    nodes.find((node) => node.id === (nodeId || getDefaultNodeId()))?.flag || '';
-
-  const hasSni = (type: string) =>
-    !CERTIFICATE_TYPES.has(type) && type !== 'amneziawg';
+    nodes.find((node) => node.id === (nodeId || getDefaultNodeId()))?.flag ||
+    '';
 
   const isListedSni = (sni: string) => {
     const normalizedSni = sni.trim().toLowerCase();
@@ -240,7 +270,8 @@ export default function SubscriptionsPage() {
   };
 
   const isValidPort = (value: string) =>
-    value === 'random' || (/^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= 65535);
+    value === 'random' ||
+    (/^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= 65535);
 
   const createInbound = (type = 'vless-tcp-reality'): InboundConfigUI => {
     const nodeId = getDefaultNodeId();
@@ -256,7 +287,9 @@ export default function SubscriptionsPage() {
       flag: getNodeFlag(nodeId),
       name: '',
       certificateMode: CERTIFICATE_TYPES.has(type) ? 'node' : undefined,
-      tlsServerName: CERTIFICATE_TYPES.has(type) ? getNodeAddress(nodeId) : undefined,
+      tlsServerName: CERTIFICATE_TYPES.has(type)
+        ? getNodeAddress(nodeId)
+        : undefined,
       certificateFile: '',
       keyFile: '',
     };
@@ -264,11 +297,19 @@ export default function SubscriptionsPage() {
 
   const handleOpenCreate = () => {
     if (nodes.length === 0) {
-      setSnackbar({ open: true, type: 'error', message: 'Создайте хотя бы одну ноду!' });
+      setSnackbar({
+        open: true,
+        type: 'error',
+        message: 'Создайте хотя бы одну ноду!',
+      });
       return;
     }
     if (domains.length === 0) {
-      setSnackbar({ open: true, type: 'error', message: 'Создайте хотя бы один домен!' });
+      setSnackbar({
+        open: true,
+        type: 'error',
+        message: 'Создайте хотя бы один домен!',
+      });
       return;
     }
 
@@ -299,21 +340,28 @@ export default function SubscriptionsPage() {
     setName(sub.name);
     setInbounds(
       (sub.inboundsConfig || []).map((item) => {
-        const activeAwg = sub.inbounds?.find((inbound) => inbound.protocol === 'amneziawg' && inbound.configId === item.configId);
-        const nodeId = item.nodeId || activeAwg?.nodeId || getDefaultNodeId();
+        const activePersistent = sub.inbounds?.find(
+          (inbound) =>
+            PERSISTENT_INBOUND_TYPES.has(inbound.protocol || '') &&
+            inbound.configId === item.configId,
+        );
+        const nodeId =
+          item.nodeId || activePersistent?.nodeId || getDefaultNodeId();
         const certificateMode =
           item.certificateMode === 'custom' ? 'custom' : 'node';
         const configId = item.configId || crypto.randomUUID();
         return {
           id: configId,
           configId,
-          awgLocked: Boolean(activeAwg),
+          persistentLocked: Boolean(activePersistent),
           type: item.type || 'vless-tcp-reality',
           port: item.port ? item.port.toString() : 'random',
           sni: inboundSni(item.type || '', item.sni),
           link: item.link || '',
           nodeId,
-          relayServerId: item.relayServerId ? item.relayServerId.toString() : '',
+          relayServerId: item.relayServerId
+            ? item.relayServerId.toString()
+            : '',
           flag: item.flag || getNodeFlag(nodeId),
           name: item.name || '',
           enabled: item.enabled,
@@ -323,7 +371,9 @@ export default function SubscriptionsPage() {
             : undefined,
           tlsServerName: CERTIFICATE_TYPES.has(item.type)
             ? item.tlsServerName ||
-              (item.sni && item.sni !== 'random' ? item.sni : getNodeAddress(nodeId))
+              (item.sni && item.sni !== 'random'
+                ? item.sni
+                : getNodeAddress(nodeId))
             : undefined,
           certificateFile:
             CERTIFICATE_TYPES.has(item.type) && certificateMode === 'custom'
@@ -342,12 +392,15 @@ export default function SubscriptionsPage() {
 
   const handleSave = async () => {
     if (saving) return;
-    const nextPortErrors = inbounds.reduce<Record<string, string>>((acc, inbound) => {
-      if (inbound.type !== 'custom' && !isValidPort(inbound.port)) {
-        acc[inbound.id] = 'Порт: число 1-65535 или random';
-      }
-      return acc;
-    }, {});
+    const nextPortErrors = inbounds.reduce<Record<string, string>>(
+      (acc, inbound) => {
+        if (inbound.type !== 'custom' && !isValidPort(inbound.port)) {
+          acc[inbound.id] = 'Порт: число 1-65535 или random';
+        }
+        return acc;
+      },
+      {},
+    );
     setPortErrors(nextPortErrors);
 
     if (Object.keys(nextPortErrors).length > 0) {
@@ -359,14 +412,17 @@ export default function SubscriptionsPage() {
       return;
     }
     if (!name.trim()) {
-      setSnackbar({ open: true, type: 'error', message: 'Введите имя подписки' });
+      setSnackbar({
+        open: true,
+        type: 'error',
+        message: 'Введите имя подписки',
+      });
       return;
     }
     if (
       inbounds.some(
         (inbound) =>
-          inbound.type === 'mtproto-faketls' &&
-          !isListedSni(inbound.sni),
+          inbound.type === 'mtproto-faketls' && !isListedSni(inbound.sni),
       )
     ) {
       setSnackbar({
@@ -383,7 +439,8 @@ export default function SubscriptionsPage() {
           ? !inbound.tlsServerName?.trim() ||
             !inbound.certificateFile?.trim() ||
             !inbound.keyFile?.trim()
-          : getSelectedNode(inbound.nodeId)?.capabilities?.autoTlsCertificate === false),
+          : getSelectedNode(inbound.nodeId)?.capabilities
+              ?.autoTlsCertificate === false),
     );
     if (invalidTls) {
       setSnackbar({
@@ -421,7 +478,10 @@ export default function SubscriptionsPage() {
           : {
               configId: inbound.configId,
               type: inbound.type,
-              port: inbound.port === 'random' ? 'random' : parseInt(inbound.port, 10),
+              port:
+                inbound.port === 'random'
+                  ? 'random'
+                  : parseInt(inbound.port, 10),
               sni: hasSni(inbound.type) ? inbound.sni : undefined,
               nodeId: inbound.nodeId || undefined,
               relayServerId: inbound.relayServerId
@@ -437,11 +497,13 @@ export default function SubscriptionsPage() {
                 ? inbound.tlsServerName?.trim() || undefined
                 : undefined,
               certificateFile:
-                CERTIFICATE_TYPES.has(inbound.type) && inbound.certificateMode === 'custom'
+                CERTIFICATE_TYPES.has(inbound.type) &&
+                inbound.certificateMode === 'custom'
                   ? inbound.certificateFile?.trim() || undefined
                   : undefined,
               keyFile:
-                CERTIFICATE_TYPES.has(inbound.type) && inbound.certificateMode === 'custom'
+                CERTIFICATE_TYPES.has(inbound.type) &&
+                inbound.certificateMode === 'custom'
                   ? inbound.keyFile?.trim() || undefined
                   : undefined,
             },
@@ -453,25 +515,40 @@ export default function SubscriptionsPage() {
       let awgProvisioning: { status: string; message?: string } | undefined;
       if (editingId) {
         const res = await api.put(`/subscriptions/${editingId}`, payload);
-        awgProvisioning = res.data?.awgProvisioning;
+        awgProvisioning =
+          res.data?.inboundProvisioning || res.data?.awgProvisioning;
       } else {
-        const res = await api.post<{ id?: string; awgProvisioning?: { status: string; message?: string } }>('/subscriptions', payload);
-        setCreatedSubscriptionId(inbounds.some((inbound) => inbound.type !== 'amneziawg') ? res.data?.id || null : null);
-        awgProvisioning = res.data?.awgProvisioning;
+        const res = await api.post<{
+          id?: string;
+          inboundProvisioning?: { status: string; message?: string };
+          awgProvisioning?: { status: string; message?: string };
+        }>('/subscriptions', payload);
+        setCreatedSubscriptionId(
+          inbounds.some(
+            (inbound) => !PERSISTENT_INBOUND_TYPES.has(inbound.type),
+          )
+            ? res.data?.id || null
+            : null,
+        );
+        awgProvisioning =
+          res.data?.inboundProvisioning || res.data?.awgProvisioning;
       }
       setOpen(false);
       loadSubs();
       setSnackbar({
         open: true,
         type: awgProvisioning?.status === 'failed' ? 'error' : 'success',
-        message: awgProvisioning?.status === 'failed'
-          ? `Настройки сохранены, но создание AWG не завершено: ${awgProvisioning.message || ''} Повторите сохранение подписки.`
-          : editingId ? 'Подписка обновлена' : 'Подписка создана',
+        message:
+          awgProvisioning?.status === 'failed'
+            ? `Настройки сохранены, но создание подключений не завершено: ${awgProvisioning.message || ''} Повторите сохранение подписки.`
+            : editingId
+              ? 'Подписка обновлена'
+              : 'Подписка создана',
       });
     } catch (error: unknown) {
       const message =
-        (error as { response?: { data?: { message?: string } } })?.response?.data?.message ||
-        'Произошла ошибка при сохранении';
+        (error as { response?: { data?: { message?: string } } })?.response
+          ?.data?.message || 'Произошла ошибка при сохранении';
       setSnackbar({ open: true, type: 'error', message });
     } finally {
       setSaving(false);
@@ -487,12 +564,19 @@ export default function SubscriptionsPage() {
       onConfirm: async () => {
         await api.delete(`/subscriptions/${id}`);
         loadSubs();
-        setSnackbar({ open: true, type: 'success', message: 'Подписка удалена' });
+        setSnackbar({
+          open: true,
+          type: 'success',
+          message: 'Подписка удалена',
+        });
       },
     });
   };
 
-  const handleToggleAutoRotation = async (subscriptionId: string, enabled: boolean) => {
+  const handleToggleAutoRotation = async (
+    subscriptionId: string,
+    enabled: boolean,
+  ) => {
     try {
       await api.put('/subscriptions/bulk-auto-rotation', {
         subscriptionIds: [subscriptionId],
@@ -500,7 +584,9 @@ export default function SubscriptionsPage() {
       });
       setSubs((prev) =>
         prev.map((sub) =>
-          sub.id === subscriptionId ? { ...sub, isAutoRotationEnabled: enabled } : sub,
+          sub.id === subscriptionId
+            ? { ...sub, isAutoRotationEnabled: enabled }
+            : sub,
         ),
       );
       setSnackbar({
@@ -510,8 +596,8 @@ export default function SubscriptionsPage() {
       });
     } catch (error: unknown) {
       const message =
-        (error as { response?: { data?: { message?: string } } })?.response?.data?.message ||
-        'Ошибка обновления';
+        (error as { response?: { data?: { message?: string } } })?.response
+          ?.data?.message || 'Ошибка обновления';
       setSnackbar({ open: true, type: 'error', message });
       loadSubs();
     }
@@ -541,13 +627,15 @@ export default function SubscriptionsPage() {
   };
 
   const toggleRotationService = async () => {
-    const nextStatus = rotationSettings.rotation_status === 'stopped' ? 'active' : 'stopped';
+    const nextStatus =
+      rotationSettings.rotation_status === 'stopped' ? 'active' : 'stopped';
     const nextSettings = { ...rotationSettings, rotation_status: nextStatus };
     await saveRotationSettings(nextSettings);
     setSnackbar({
       open: true,
       type: 'success',
-      message: nextStatus === 'active' ? 'Ротация включена' : 'Ротация остановлена',
+      message:
+        nextStatus === 'active' ? 'Ротация включена' : 'Ротация остановлена',
     });
   };
 
@@ -562,7 +650,11 @@ export default function SubscriptionsPage() {
       return;
     }
     await saveRotationSettings(rotationSettings);
-    setSnackbar({ open: true, type: 'success', message: 'Интервал ротации сохранен' });
+    setSnackbar({
+      open: true,
+      type: 'success',
+      message: 'Интервал ротации сохранен',
+    });
   };
 
   const rotateAllNow = () => {
@@ -603,22 +695,42 @@ export default function SubscriptionsPage() {
     if (rotationSettings.rotation_status === 'stopped') return 'Пауза';
     if (!rotationSettings.last_rotation_timestamp) return 'Ожидание';
     const interval = parseInt(rotationSettings.rotation_interval, 10) || 30;
-    return new Date(Number(rotationSettings.last_rotation_timestamp) + interval * 60000).toLocaleString(
-      'ru-RU',
-      { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' },
-    );
+    return new Date(
+      Number(rotationSettings.last_rotation_timestamp) + interval * 60000,
+    ).toLocaleString('ru-RU', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
   };
 
   const showLinks = (sub: Subscription) => {
-    const links = sub.inbounds?.map((item) => (item as { link?: string }).link)
-      .filter((link): link is string => Boolean(link)) || [];
-    setCurrentLinks(links.length ? links : ['Нет активных ссылок (ждите ротации)']);
+    const links =
+      sub.inbounds
+        ?.map((item) => {
+          if (item.wireguardConfig) return item.wireguardConfig;
+          if (item.connection) {
+            const connection = item.connection;
+            return `${connection.type.toUpperCase()}\nСервер: ${connection.host}\nПорт: ${connection.port}\nЛогин: ${connection.username}\nПароль: ${connection.password}`;
+          }
+          return item.link;
+        })
+        .filter((link): link is string => Boolean(link)) || [];
+    setCurrentLinks(
+      links.length ? links : ['Нет активных ссылок (ждите ротации)'],
+    );
     setLinksOpen(true);
   };
 
   const handleCopyLink = async (uuid: string) => {
     await copyToClipboard(getSubscriptionUrl(uuid));
-    setSnackbar({ open: true, type: 'success', message: 'Ссылка на подписку скопирована' });
+    setSnackbar({
+      open: true,
+      type: 'success',
+      message: 'Ссылка на подписку скопирована',
+    });
   };
 
   const handleGenerateCreatedSubscription = async () => {
@@ -633,7 +745,10 @@ export default function SubscriptionsPage() {
     loadSubs();
   };
 
-  const openActionMenuFor = (event: React.MouseEvent<HTMLButtonElement>, sub: Subscription) => {
+  const openActionMenuFor = (
+    event: React.MouseEvent<HTMLButtonElement>,
+    sub: Subscription,
+  ) => {
     setMenuAnchorEl(event.currentTarget);
     setActiveSub(sub);
   };
@@ -649,52 +764,132 @@ export default function SubscriptionsPage() {
         eyebrow="КОНТУР ПОДКЛЮЧЕНИЙ"
         title="Подписки"
         description="Подключения, ссылки и ротация в одном месте."
-        meta={<Chip size="small" variant="outlined" label={`Подписок: ${subs.length}`} />}
-        action={<Button variant="contained" startIcon={<Add />} onClick={handleOpenCreate} disabled={dataLoading}>{dataLoading ? 'Загрузка…' : 'Создать'}</Button>}
+        meta={
+          <Chip
+            size="small"
+            variant="outlined"
+            label={`Подписок: ${subs.length}`}
+          />
+        }
+        action={
+          <Button
+            variant="contained"
+            startIcon={<Add />}
+            onClick={handleOpenCreate}
+            disabled={dataLoading}
+          >
+            {dataLoading ? 'Загрузка…' : 'Создать'}
+          </Button>
+        }
       />
 
       <Paper className="workspace-panel workspace-toolbar" sx={{ mb: 3 }}>
-        <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems={{ xs: 'stretch', md: 'center' }}>
+        <Stack
+          direction={{ xs: 'column', md: 'row' }}
+          spacing={2}
+          alignItems={{ xs: 'stretch', md: 'center' }}
+        >
           <Box>
-            <Typography variant="subtitle2" color="text.secondary">Статус ротации</Typography>
+            <Typography variant="subtitle2" color="text.secondary">
+              Статус ротации
+            </Typography>
             <Chip
-              icon={rotationSettings.rotation_status === 'stopped' ? <PauseCircleFilled /> : <PlayCircleFilled />}
-              label={rotationSettings.rotation_status === 'stopped' ? 'Остановлена' : 'Активна'}
-              color={rotationSettings.rotation_status === 'stopped' ? 'warning' : 'success'}
+              icon={
+                rotationSettings.rotation_status === 'stopped' ? (
+                  <PauseCircleFilled />
+                ) : (
+                  <PlayCircleFilled />
+                )
+              }
+              label={
+                rotationSettings.rotation_status === 'stopped'
+                  ? 'Остановлена'
+                  : 'Активна'
+              }
+              color={
+                rotationSettings.rotation_status === 'stopped'
+                  ? 'warning'
+                  : 'success'
+              }
               size="small"
               variant="outlined"
               sx={{ mt: 1 }}
             />
           </Box>
-          <Tooltip title={rotationSettings.rotation_status === 'stopped' ? 'Возобновить ротацию' : 'Поставить на паузу'}>
-            <IconButton onClick={toggleRotationService} size="small" aria-label={rotationSettings.rotation_status === 'stopped' ? 'Возобновить ротацию' : 'Поставить ротацию на паузу'}>
-              {rotationSettings.rotation_status === 'stopped' ? <PlayCircleFilled fontSize="large" /> : <PauseCircleFilled fontSize="large" />}
+          <Tooltip
+            title={
+              rotationSettings.rotation_status === 'stopped'
+                ? 'Возобновить ротацию'
+                : 'Поставить на паузу'
+            }
+          >
+            <IconButton
+              onClick={toggleRotationService}
+              size="small"
+              aria-label={
+                rotationSettings.rotation_status === 'stopped'
+                  ? 'Возобновить ротацию'
+                  : 'Поставить ротацию на паузу'
+              }
+            >
+              {rotationSettings.rotation_status === 'stopped' ? (
+                <PlayCircleFilled fontSize="large" />
+              ) : (
+                <PauseCircleFilled fontSize="large" />
+              )}
             </IconButton>
           </Tooltip>
-          <Divider flexItem orientation={isMobile ? 'horizontal' : 'vertical'} />
+          <Divider
+            flexItem
+            orientation={isMobile ? 'horizontal' : 'vertical'}
+          />
           <Box>
-            <Typography variant="subtitle2" color="text.secondary">Последняя генерация</Typography>
-            <Typography variant="body2" sx={{ mt: 1 }}>{formatRotationDate(rotationSettings.last_rotation_timestamp)}</Typography>
+            <Typography variant="subtitle2" color="text.secondary">
+              Последняя генерация
+            </Typography>
+            <Typography variant="body2" sx={{ mt: 1 }}>
+              {formatRotationDate(rotationSettings.last_rotation_timestamp)}
+            </Typography>
           </Box>
           <Box>
-            <Typography variant="subtitle2" color="text.secondary">Следующая генерация</Typography>
-            <Typography variant="body2" sx={{ mt: 1 }}>{getNextRotationDate()}</Typography>
+            <Typography variant="subtitle2" color="text.secondary">
+              Следующая генерация
+            </Typography>
+            <Typography variant="body2" sx={{ mt: 1 }}>
+              {getNextRotationDate()}
+            </Typography>
           </Box>
           <TextField
             label="Интервал, мин"
             type="number"
             size="small"
             value={rotationSettings.rotation_interval}
-            onChange={(e) => setRotationSettings((prev) => ({ ...prev, rotation_interval: e.target.value }))}
+            onChange={(e) =>
+              setRotationSettings((prev) => ({
+                ...prev,
+                rotation_interval: e.target.value,
+              }))
+            }
             sx={{ width: { xs: '100%', md: 150 } }}
           />
           <Box sx={{ flexGrow: 1 }} />
-          <Button variant="outlined" onClick={saveRotationInterval}>Сохранить интервал</Button>
-          <Button variant="contained" disabled={rotationLoading} onClick={rotateAllNow}>Обновить все</Button>
+          <Button variant="outlined" onClick={saveRotationInterval}>
+            Сохранить интервал
+          </Button>
+          <Button
+            variant="contained"
+            disabled={rotationLoading}
+            onClick={rotateAllNow}
+          >
+            Обновить все
+          </Button>
         </Stack>
       </Paper>
 
-      <Paper className="workspace-panel workspace-table" sx={{ overflowX: 'auto' }}>
+      <Paper
+        className="workspace-panel workspace-table"
+        sx={{ overflowX: 'auto' }}
+      >
         <Table sx={{ minWidth: 760 }}>
           <TableHead>
             <TableRow>
@@ -709,7 +904,16 @@ export default function SubscriptionsPage() {
             {subs.map((sub) => (
               <TableRow key={sub.id}>
                 <TableCell sx={{ fontWeight: 700 }}>{sub.name}</TableCell>
-                <TableCell><Typography variant="body2" noWrap title={sub.uuid} sx={{ fontFamily: 'monospace', maxWidth: 260 }}>{sub.uuid}</Typography></TableCell>
+                <TableCell>
+                  <Typography
+                    variant="body2"
+                    noWrap
+                    title={sub.uuid}
+                    sx={{ fontFamily: 'monospace', maxWidth: 260 }}
+                  >
+                    {sub.uuid}
+                  </Typography>
+                </TableCell>
                 <TableCell>
                   <Stack direction="row" spacing={1} alignItems="center">
                     <span>{sub.inbounds?.length || 0}</span>
@@ -729,22 +933,41 @@ export default function SubscriptionsPage() {
                   <Checkbox
                     inputProps={{ 'aria-label': `Авторотация ${sub.name}` }}
                     checked={sub.isAutoRotationEnabled ?? true}
-                    onChange={(e) => handleToggleAutoRotation(sub.id, e.target.checked)}
+                    onChange={(e) =>
+                      handleToggleAutoRotation(sub.id, e.target.checked)
+                    }
                     color="primary"
                   />
                 </TableCell>
                 <TableCell align="right">
                   {!isMobile && (
                     <>
-                      <IconButton color="primary" onClick={() => handleCopyLink(sub.uuid)} title="Копировать ссылку" aria-label={`Копировать ссылку ${sub.name}`}>
+                      <IconButton
+                        color="primary"
+                        onClick={() => handleCopyLink(sub.uuid)}
+                        title="Копировать ссылку"
+                        aria-label={`Копировать ссылку ${sub.name}`}
+                      >
                         <ContentCopy />
                       </IconButton>
-                      <IconButton color="primary" onClick={() => window.open(getSubscriptionUrl(sub.uuid), '_blank')} title="Открыть подписку" aria-label={`Открыть подписку ${sub.name}`}>
+                      <IconButton
+                        color="primary"
+                        onClick={() =>
+                          window.open(getSubscriptionUrl(sub.uuid), '_blank')
+                        }
+                        title="Открыть подписку"
+                        aria-label={`Открыть подписку ${sub.name}`}
+                      >
                         <OpenInNew />
                       </IconButton>
                     </>
                   )}
-                  <IconButton aria-label={`Действия с подпиской ${sub.name}`} onClick={(e) => openActionMenuFor(e, sub)}><MoreVert /></IconButton>
+                  <IconButton
+                    aria-label={`Действия с подпиской ${sub.name}`}
+                    onClick={(e) => openActionMenuFor(e, sub)}
+                  >
+                    <MoreVert />
+                  </IconButton>
                 </TableCell>
               </TableRow>
             ))}
@@ -757,22 +980,100 @@ export default function SubscriptionsPage() {
         )}
       </Paper>
 
-      <Menu anchorEl={menuAnchorEl} open={openActionMenu} onClose={closeActionMenu}>
-        {isMobile && activeSub && <MenuItem onClick={() => handleCopyLink(activeSub.uuid)}><ListItemIcon><ContentCopy fontSize="small" color="primary" /></ListItemIcon><ListItemText>Копировать ссылку</ListItemText></MenuItem>}
-        {isMobile && activeSub && <MenuItem onClick={() => window.open(getSubscriptionUrl(activeSub.uuid), '_blank')}><ListItemIcon><OpenInNew fontSize="small" color="primary" /></ListItemIcon><ListItemText>Открыть подписку</ListItemText></MenuItem>}
-        {activeSub && <MenuItem onClick={() => showLinks(activeSub)}><ListItemIcon><LinkIcon fontSize="small" /></ListItemIcon><ListItemText>Показать конфиги</ListItemText></MenuItem>}
-        {activeSub && <MenuItem onClick={() => handleManualRotate(activeSub)}><ListItemIcon><Refresh fontSize="small" color="primary" /></ListItemIcon><ListItemText>Обновить сейчас</ListItemText></MenuItem>}
-        {activeSub && <MenuItem onClick={() => handleOpenEdit(activeSub)}><ListItemIcon><Edit fontSize="small" /></ListItemIcon><ListItemText>Редактировать</ListItemText></MenuItem>}
-        {activeSub && <MenuItem onClick={() => handleDelete(activeSub.id)}><ListItemIcon><Delete fontSize="small" color="error" /></ListItemIcon><ListItemText sx={{ color: 'error.main' }}>Удалить</ListItemText></MenuItem>}
+      <Menu
+        anchorEl={menuAnchorEl}
+        open={openActionMenu}
+        onClose={closeActionMenu}
+      >
+        {isMobile && activeSub && (
+          <MenuItem onClick={() => handleCopyLink(activeSub.uuid)}>
+            <ListItemIcon>
+              <ContentCopy fontSize="small" color="primary" />
+            </ListItemIcon>
+            <ListItemText>Копировать ссылку</ListItemText>
+          </MenuItem>
+        )}
+        {isMobile && activeSub && (
+          <MenuItem
+            onClick={() =>
+              window.open(getSubscriptionUrl(activeSub.uuid), '_blank')
+            }
+          >
+            <ListItemIcon>
+              <OpenInNew fontSize="small" color="primary" />
+            </ListItemIcon>
+            <ListItemText>Открыть подписку</ListItemText>
+          </MenuItem>
+        )}
+        {activeSub && (
+          <MenuItem onClick={() => showLinks(activeSub)}>
+            <ListItemIcon>
+              <LinkIcon fontSize="small" />
+            </ListItemIcon>
+            <ListItemText>Показать конфиги</ListItemText>
+          </MenuItem>
+        )}
+        {activeSub && (
+          <MenuItem onClick={() => handleManualRotate(activeSub)}>
+            <ListItemIcon>
+              <Refresh fontSize="small" color="primary" />
+            </ListItemIcon>
+            <ListItemText>Обновить сейчас</ListItemText>
+          </MenuItem>
+        )}
+        {activeSub && (
+          <MenuItem onClick={() => handleOpenEdit(activeSub)}>
+            <ListItemIcon>
+              <Edit fontSize="small" />
+            </ListItemIcon>
+            <ListItemText>Редактировать</ListItemText>
+          </MenuItem>
+        )}
+        {activeSub && (
+          <MenuItem onClick={() => handleDelete(activeSub.id)}>
+            <ListItemIcon>
+              <Delete fontSize="small" color="error" />
+            </ListItemIcon>
+            <ListItemText sx={{ color: 'error.main' }}>Удалить</ListItemText>
+          </MenuItem>
+        )}
       </Menu>
 
-      <Dialog open={open} onClose={() => setOpen(false)} maxWidth="md" fullWidth disableRestoreFocus>
-        <DialogTitle variant="h5">{editingId ? 'Редактировать подписку' : 'Новая подписка'}</DialogTitle>
-        <DialogContent dividers sx={{ maxHeight: '72vh' }}>
-          <TextField autoFocus margin="dense" label="Имя подписки" fullWidth value={name} onChange={(e) => setName(e.target.value)} sx={{ mb: 2 }} />
+      <Dialog
+        open={open}
+        onClose={() => setOpen(false)}
+        maxWidth={false}
+        fullWidth
+        disableRestoreFocus
+        slotProps={{
+          paper: {
+            sx: {
+              width: { xs: 'calc(100% - 16px)', sm: 'calc(100% - 48px)' },
+              maxWidth: 1800,
+              maxHeight: 'calc(100dvh - 32px)',
+              m: { xs: 1, sm: 3 },
+            },
+          },
+        }}
+      >
+        <DialogTitle variant="h5">
+          {editingId ? 'Редактировать подписку' : 'Новая подписка'}
+        </DialogTitle>
+        <DialogContent dividers sx={{ minHeight: 0, p: { xs: 2, sm: 3 } }}>
+          <TextField
+            autoFocus
+            margin="dense"
+            label="Имя подписки"
+            fullWidth
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            sx={{ mb: 2 }}
+          />
           {inbounds.some((i) => i.enabled === false || i.disabledReason) && (
             <Alert severity="warning" sx={{ mb: 2 }}>
-              Внимание: некоторые конфигурации были отключены (удалена нода). При сохранении подписки они будут автоматически активированы на выбранных нодах.
+              Внимание: некоторые конфигурации были отключены (удалена нода).
+              При сохранении подписки они будут автоматически активированы на
+              выбранных нодах.
             </Alert>
           )}
           <InboundsEditor
@@ -788,43 +1089,103 @@ export default function SubscriptionsPage() {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setOpen(false)}>Отмена</Button>
-          <Button onClick={handleSave} disabled={saving} variant="contained" color="primary">{saving ? 'Сохранение…' : 'Сохранить'}</Button>
+          <Button
+            onClick={handleSave}
+            disabled={saving}
+            variant="contained"
+            color="primary"
+          >
+            {saving ? 'Сохранение…' : 'Сохранить'}
+          </Button>
         </DialogActions>
       </Dialog>
 
-      <Dialog open={linksOpen} onClose={() => setLinksOpen(false)} maxWidth="md" fullWidth>
+      <Dialog
+        open={linksOpen}
+        onClose={() => setLinksOpen(false)}
+        maxWidth="md"
+        fullWidth
+      >
         <DialogTitle>Активные ссылки</DialogTitle>
         <DialogContent>
-          <TextField multiline fullWidth rows={10} value={currentLinks.join('\n\n')} slotProps={{ input: { readOnly: true, sx: { fontFamily: 'monospace', fontSize: 12 } } }} />
+          <TextField
+            multiline
+            fullWidth
+            rows={10}
+            value={currentLinks.join('\n\n')}
+            slotProps={{
+              input: {
+                readOnly: true,
+                sx: { fontFamily: 'monospace', fontSize: 12 },
+              },
+            }}
+          />
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => copyToClipboard(currentLinks.join('\n'))}>Копировать все</Button>
+          <Button onClick={() => copyToClipboard(currentLinks.join('\n'))}>
+            Копировать все
+          </Button>
           <Button onClick={() => setLinksOpen(false)}>Закрыть</Button>
         </DialogActions>
       </Dialog>
 
-      <Dialog open={confirmDialog.open} onClose={() => setConfirmDialog({ ...confirmDialog, open: false })}>
+      <Dialog
+        open={confirmDialog.open}
+        onClose={() => setConfirmDialog({ ...confirmDialog, open: false })}
+      >
         <DialogTitle>Подтверждение</DialogTitle>
-        <DialogContent><Typography>{confirmDialog.title}</Typography></DialogContent>
+        <DialogContent>
+          <Typography>{confirmDialog.title}</Typography>
+        </DialogContent>
         <DialogActions>
-          <Button onClick={() => setConfirmDialog({ ...confirmDialog, open: false })}>Отмена</Button>
-          <Button onClick={() => { confirmDialog.onConfirm(); setConfirmDialog({ ...confirmDialog, open: false }); }} variant="contained" color={confirmDialog.confirmColor}>
+          <Button
+            onClick={() => setConfirmDialog({ ...confirmDialog, open: false })}
+          >
+            Отмена
+          </Button>
+          <Button
+            onClick={() => {
+              confirmDialog.onConfirm();
+              setConfirmDialog({ ...confirmDialog, open: false });
+            }}
+            variant="contained"
+            color={confirmDialog.confirmColor}
+          >
             {confirmDialog.confirmText}
           </Button>
         </DialogActions>
       </Dialog>
 
-      <Dialog open={createdSubscriptionId !== null} onClose={() => setCreatedSubscriptionId(null)}>
+      <Dialog
+        open={createdSubscriptionId !== null}
+        onClose={() => setCreatedSubscriptionId(null)}
+      >
         <DialogTitle>Подписка создана</DialogTitle>
-        <DialogContent><Typography>Сгенерировать подключения сейчас?</Typography></DialogContent>
+        <DialogContent>
+          <Typography>Сгенерировать подключения сейчас?</Typography>
+        </DialogContent>
         <DialogActions>
           <Button onClick={() => setCreatedSubscriptionId(null)}>Нет</Button>
-          <Button onClick={handleGenerateCreatedSubscription} variant="contained">Да</Button>
+          <Button
+            onClick={handleGenerateCreatedSubscription}
+            variant="contained"
+          >
+            Да
+          </Button>
         </DialogActions>
       </Dialog>
 
-      <Snackbar open={snackbar.open} autoHideDuration={6000} onClose={() => setSnackbar({ ...snackbar, open: false })} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
-        <Alert onClose={() => setSnackbar({ ...snackbar, open: false })} severity={snackbar.type} sx={{ width: '100%' }}>
+      <Snackbar
+        open={snackbar.open}
+        autoHideDuration={6000}
+        onClose={() => setSnackbar({ ...snackbar, open: false })}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert
+          onClose={() => setSnackbar({ ...snackbar, open: false })}
+          severity={snackbar.type}
+          sx={{ width: '100%' }}
+        >
           {snackbar.message}
         </Alert>
       </Snackbar>

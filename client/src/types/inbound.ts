@@ -16,6 +16,7 @@ export interface InboundConfigUI {
   enabled?: boolean;
   disabledReason?: string;
   awgLocked?: boolean;
+  persistentLocked?: boolean;
 }
 
 export interface Tunnel {
@@ -53,8 +54,16 @@ export const CONNECTION_OPTIONS = [
   'trojan-tcp-reality',
   'mtproto-faketls',
   'amneziawg',
+  'wireguard',
+  'mixed',
+  'http',
+  'socks',
   'custom',
 ] as const;
+
+export const PERSISTENT_INBOUND_TYPES = new Set([
+  'amneziawg', 'wireguard', 'mixed', 'http', 'socks',
+]);
 
 export const CERTIFICATE_TYPES = new Set([
   'hysteria2-udp',

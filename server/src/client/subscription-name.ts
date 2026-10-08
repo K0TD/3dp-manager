@@ -23,10 +23,13 @@ export function amneziaConfigFileName(
   return `${truncatedName}${suffix}.conf`;
 }
 
-export function attachmentDisposition(fileName: string): string {
+export function attachmentDisposition(
+  fileName: string,
+  fallbackName: 'amneziawg.conf' | 'wireguard.conf' = 'amneziawg.conf',
+): string {
   const encodedFileName = encodeURIComponent(fileName).replace(
     /['()*]/g,
     (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
   );
-  return `attachment; filename="amneziawg.conf"; filename*=UTF-8''${encodedFileName}`;
+  return `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodedFileName}`;
 }

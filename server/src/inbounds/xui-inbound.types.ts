@@ -26,7 +26,16 @@ export interface XuiInboundSettings {
     tgId?: number;
     subId?: string;
     reset?: number;
+    privateKey?: string;
+    publicKey?: string;
+    preSharedKey?: string;
+    allowedIPs?: string[];
+    keepAlive?: number;
   }>;
+  accounts?: Array<{ user: string; pass: string }>;
+  secretKey?: string;
+  dns?: string;
+  mtu?: number;
   decryption?: string;
   encryption?: string;
   fallbacks?: unknown[];

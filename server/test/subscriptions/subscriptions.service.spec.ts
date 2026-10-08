@@ -62,7 +62,7 @@ describe('SubscriptionsService', () => {
   const mockXuiService = {
     deleteInbound: jest.fn(),
   };
-  const mockRotationService = { provisionAmnezia: jest.fn() };
+  const mockRotationService = { provisionPersistentInbounds: jest.fn() };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -102,7 +102,7 @@ describe('SubscriptionsService', () => {
     );
     xuiService = module.get<XuiService>(XuiService);
     mockXuiService.deleteInbound.mockResolvedValue(true);
-    mockRotationService.provisionAmnezia.mockResolvedValue({
+    mockRotationService.provisionPersistentInbounds.mockResolvedValue({
       status: 'succeeded',
     });
   });
@@ -154,7 +154,7 @@ describe('SubscriptionsService', () => {
         isAutoRotationEnabled: false,
         inboundsConfig: [config],
       });
-      expect(mockRotationService.provisionAmnezia).toHaveBeenCalledTimes(1);
+      expect(mockRotationService.provisionPersistentInbounds).toHaveBeenCalledTimes(1);
       expect(result).toMatchObject({
         awgProvisioning: { status: 'succeeded' },
       });
@@ -174,11 +174,11 @@ describe('SubscriptionsService', () => {
           nextCleanupAt: expect.any(Date),
         }),
       );
-      expect(mockRotationService.provisionAmnezia).not.toHaveBeenCalled();
+      expect(mockRotationService.provisionPersistentInbounds).not.toHaveBeenCalled();
       await service.update(subscription.id, {
         inboundsConfig: [{ ...config, configId: 'new-awg-config' }],
       });
-      expect(mockRotationService.provisionAmnezia).toHaveBeenCalledWith(
+      expect(mockRotationService.provisionPersistentInbounds).toHaveBeenCalledWith(
         expect.objectContaining({
           inboundsConfig: [
             expect.objectContaining({ configId: 'new-awg-config' }),
@@ -248,7 +248,7 @@ describe('SubscriptionsService', () => {
     });
 
     it('returns a provisioning error separately from saved settings', async () => {
-      mockRotationService.provisionAmnezia.mockResolvedValueOnce({
+      mockRotationService.provisionPersistentInbounds.mockResolvedValueOnce({
         status: 'failed',
         message: 'Panel offline',
       });

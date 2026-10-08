@@ -18,14 +18,24 @@ import { Tunnel } from '../tunnels/entities/tunnel.entity';
 import { XuiCertificateFiles, XuiService } from '../xui/xui.service';
 import { InboundBuilderService } from '../inbounds/inbound-builder.service';
 import { XuiInboundRaw } from '../inbounds/xui-inbound.types';
-import { isSafeAbsoluteRemotePath } from '../inbounds/tls-config';
+import {
+  isSafeAbsoluteRemotePath,
+  assertManagedCertificateHost,
+} from '../inbounds/tls-config';
 import { normalizeFakeTlsDomain } from '../inbounds/mtproto-faketls';
 import { formatClientEmail } from '../inbounds/client-email';
 import {
   CERTIFICATE_INBOUND_TYPES,
   InboundType,
+  PERSISTENT_INBOUND_TYPES,
+  panelInboundProtocol,
 } from '../subscriptions/inbound-config.constants';
-import { isPortConflict } from '../xui/xui-contract';
+import {
+  isPortConflict,
+  safePanelMessage,
+  XuiRuntimeError,
+  inboundDiagnostic,
+} from '../xui/xui-contract';
 import { supportsInboundType } from '../nodes/node-capabilities';
 import { SubscriptionLockService } from '../subscriptions/subscription-lock.service';
 import { renameAmneziaVpnLink } from '../inbounds/amnezia-vpn-link';
@@ -33,6 +43,7 @@ import {
   RotationNodeResult,
   RotationOperation,
   RotationOperationStatus,
+  RotationInboundDiagnostic,
 } from './entities/rotation-operation.entity';
 
 type InboundConfig = NonNullable<Subscription['inboundsConfig']>[number];
@@ -51,6 +62,7 @@ interface CreateInboundRequest {
   generationId: string;
   realityKeys?: { privateKey: string; publicKey: string } | null;
   nodeCertificate?: XuiCertificateFiles;
+  diagnostics?: RotationInboundDiagnostic[];
 }
 
 interface ResolvedTlsConfig extends XuiCertificateFiles {
@@ -311,12 +323,12 @@ export class RotationService implements OnModuleInit {
   }
 
   /** Called after saving settings, while holding the subscription lock. */
-  async provisionAmnezia(subscription: Subscription) {
+  async provisionPersistentInbounds(subscription: Subscription) {
     const errors: string[] = [];
     const configs = subscription.inboundsConfig || [];
     const active = (subscription.inbounds || []).filter(
       (inbound) =>
-        inbound.protocol === 'amneziawg' &&
+        PERSISTENT_INBOUND_TYPES.has(inbound.protocol) &&
         inbound.status === InboundStatus.Active,
     );
     if (
@@ -326,7 +338,7 @@ export class RotationService implements OnModuleInit {
           configs.filter(
             (config) =>
               config.configId === inbound.configId &&
-              config.type === 'amneziawg',
+              panelInboundProtocol(config.type) === inbound.protocol,
           ).length !== 1 ||
           active.filter((other) => other.configId === inbound.configId)
             .length !== 1,
@@ -335,7 +347,7 @@ export class RotationService implements OnModuleInit {
       return {
         status: 'failed' as const,
         message:
-          'AWG не связан однозначно с конфигурацией. Существующее подключение сохранено; исправьте связь configId.',
+          'Инбаунд не связан однозначно с конфигурацией. Существующее подключение сохранено; исправьте связь configId.',
       };
     }
     const usedPorts = new Set(
@@ -343,17 +355,24 @@ export class RotationService implements OnModuleInit {
     );
     const defaultNode = await this.getDefaultNode();
     for (const [position, config] of configs.entries()) {
-      if (config.type !== 'amneziawg' || config.enabled === false) continue;
+      if (
+        !PERSISTENT_INBOUND_TYPES.has(config.type) ||
+        config.enabled === false
+      )
+        continue;
       const existing = active.find(
         (inbound) => inbound.configId === config.configId,
       );
       if (existing) {
-        const remark = config.name?.trim() || 'amneziawg';
+        const remark = config.name?.trim() || config.type;
         const description = [config.flag, remark].filter(Boolean).join(' ');
         await this.inboundRepo.update(existing.id, {
           position,
           remark,
-          link: renameAmneziaVpnLink(existing.link, description),
+          link:
+            existing.protocol === 'amneziawg'
+              ? renameAmneziaVpnLink(existing.link, description)
+              : existing.link,
         });
         continue;
       }
@@ -364,8 +383,10 @@ export class RotationService implements OnModuleInit {
           subscription,
           defaultNode,
         );
-        if (!node) throw new Error('Для AWG не назначена доступная нода');
+        if (!node)
+          throw new Error('Для подключения не назначена доступная нода');
         this.assertNodeCompatibility(config, node);
+        await this.xuiService.assertXrayHealthy(node);
         staged = await this.createInbound({
           subscription,
           positionedConfig: { config, position },
@@ -377,8 +398,10 @@ export class RotationService implements OnModuleInit {
         if (!staged)
           throw new Error(
             this.xuiService.getLastInboundError(node) ||
-              'Панель отклонила создание AWG',
+              'Панель отклонила создание подключения',
           );
+        if (config.type !== 'amneziawg')
+          await this.xuiService.waitForXray(node);
         await this.inboundRepo.update(staged.id, {
           status: InboundStatus.Active,
         });
@@ -397,7 +420,7 @@ export class RotationService implements OnModuleInit {
       } catch (error) {
         if (staged) await this.queueCleanup([staged]);
         errors.push(
-          `${config.name || 'AmneziaWG'}: ${this.safeMessage(error)}`,
+          `${config.name || config.type}: ${this.safeMessage(error)}`,
         );
       }
     }
@@ -420,7 +443,7 @@ export class RotationService implements OnModuleInit {
       const obsolete = (subscription.inbounds || []).filter(
         (inbound) =>
           inbound.status === InboundStatus.Active &&
-          inbound.protocol !== 'amneziawg',
+          !PERSISTENT_INBOUND_TYPES.has(inbound.protocol),
       );
       await this.queueCleanup(obsolete);
       this.logger.warn(
@@ -442,7 +465,7 @@ export class RotationService implements OnModuleInit {
 
     let configsChanged = false;
     for (const config of allConfigs) {
-      if (config.type === 'amneziawg') continue;
+      if (PERSISTENT_INBOUND_TYPES.has(config.type)) continue;
       if (config.enabled === false) {
         const resolved =
           config.type === 'custom'
@@ -470,14 +493,18 @@ export class RotationService implements OnModuleInit {
     const enabledConfigs = allConfigs
       .map((config, position) => ({ config, position }))
       .filter(
-        ({ config }) => config.enabled !== false && config.type !== 'amneziawg',
+        ({ config }) =>
+          config.enabled !== false &&
+          !PERSISTENT_INBOUND_TYPES.has(config.type),
       );
 
-    if (allConfigs.every((config) => config.type === 'amneziawg')) {
+    if (
+      allConfigs.every((config) => PERSISTENT_INBOUND_TYPES.has(config.type))
+    ) {
       const obsolete = (subscription.inbounds || []).filter(
         (inbound) =>
           inbound.status === InboundStatus.Active &&
-          inbound.protocol !== 'amneziawg',
+          !PERSISTENT_INBOUND_TYPES.has(inbound.protocol),
       );
       await this.queueCleanup(obsolete);
       return [
@@ -485,12 +512,12 @@ export class RotationService implements OnModuleInit {
           subscriptionId: subscription.id,
           subscriptionName: subscription.name,
           nodeId: subscription.nodeId,
-          nodeName: 'AmneziaWG',
+          nodeName: 'Постоянные подключения',
           status: 'succeeded' as const,
           created: 0,
           pendingCleanup: obsolete.length,
           message:
-            'AmneziaWG сохраняется; создание выполняется при сохранении подписки',
+            'Постоянные подключения сохраняются; создание выполняется при сохранении подписки',
         },
       ];
     }
@@ -548,7 +575,7 @@ export class RotationService implements OnModuleInit {
     }
 
     const obsolete = (subscription.inbounds || []).filter((inbound) => {
-      if (inbound.protocol === 'amneziawg') return false;
+      if (PERSISTENT_INBOUND_TYPES.has(inbound.protocol)) return false;
       if (inbound.status !== InboundStatus.Active) return false;
       const key =
         inbound.protocol === 'custom'
@@ -574,6 +601,8 @@ export class RotationService implements OnModuleInit {
     const generationId = uuidv4();
     const created: Inbound[] = [];
     const usedPorts = new Set<number>();
+    const diagnostics: RotationInboundDiagnostic[] = [];
+    let phase = 'Проверка ноды и TLS';
     let realityKeys:
       | Awaited<ReturnType<XuiService['getNewX25519Cert']>>
       | undefined;
@@ -611,6 +640,7 @@ export class RotationService implements OnModuleInit {
 
       for (const positionedConfig of group.configs) {
         const { config } = positionedConfig;
+        phase = `Создание ${config.name || config.type}`;
         if (config.type?.includes('reality') && !realityKeys) {
           this.logger.log(
             `[RotationService] Запрос ключей Reality для ноды «${group.node?.name || 'main'}»...`,
@@ -634,6 +664,7 @@ export class RotationService implements OnModuleInit {
           generationId,
           realityKeys,
           nodeCertificate,
+          diagnostics,
         });
         if (!inbound) {
           const reason =
@@ -673,6 +704,7 @@ export class RotationService implements OnModuleInit {
         );
       }
 
+      phase = 'Проверка запуска Xray';
       if (
         group.node &&
         group.configs.some(
@@ -683,7 +715,7 @@ export class RotationService implements OnModuleInit {
         await this.xuiService.waitForXray(group.node);
 
       const old = (subscription.inbounds || []).filter((inbound) => {
-        if (inbound.protocol === 'amneziawg') return false;
+        if (PERSISTENT_INBOUND_TYPES.has(inbound.protocol)) return false;
         if (inbound.status !== InboundStatus.Active) return false;
         return key === '__custom'
           ? inbound.protocol === 'custom'
@@ -719,6 +751,23 @@ export class RotationService implements OnModuleInit {
       };
     } catch (error) {
       const errMessage = this.safeMessage(error);
+      let blockingInbound;
+      if (error instanceof XuiRuntimeError && error.inbound) {
+        const owner =
+          error.inbound.xuiId && group.node
+            ? await this.inboundRepo
+                .findOne({
+                  where: { xuiId: error.inbound.xuiId, nodeId: group.node.id },
+                  relations: ['subscription'],
+                })
+                .catch(() => null)
+            : null;
+        blockingInbound = {
+          ...error.inbound,
+          subscriptionId: owner?.subscription?.id,
+          subscriptionName: owner?.subscription?.name,
+        };
+      }
       this.logger.error(
         `[RotationService] Сбой ротации для подписки «${subscription.name}» на ноде «${nodeLabel}»: ${errMessage}`,
         error instanceof Error ? error.stack : undefined,
@@ -735,6 +784,30 @@ export class RotationService implements OnModuleInit {
         created: 0,
         pendingCleanup: created.length,
         message: errMessage,
+        details: {
+          phase,
+          inbounds: diagnostics.length
+            ? diagnostics
+            : group.configs.map(({ config }) => ({
+                protocol: config.type,
+                configId: config.configId,
+                name: config.name,
+                serverName:
+                  config.certificateMode === 'custom'
+                    ? config.tlsServerName
+                    : undefined,
+                certificates:
+                  config.certificateMode === 'custom'
+                    ? [
+                        {
+                          certificateFile: config.certificateFile,
+                          keyFile: config.keyFile,
+                        },
+                      ]
+                    : undefined,
+              })),
+          blockingInbound,
+        },
       };
     }
   }
@@ -745,20 +818,34 @@ export class RotationService implements OnModuleInit {
   ): Promise<XuiCertificateFiles | undefined> {
     const configs = positionedConfigs.map(({ config }) => config);
     for (const config of configs) this.assertNodeCompatibility(config, node);
+    if (node) await this.xuiService.assertXrayHealthy(node);
 
     const needsNodeCertificate = configs.some(
       (config) =>
         CERTIFICATE_INBOUND_TYPES.has(config.type as InboundType) &&
         this.getCertificateMode(config) === 'node',
     );
-    if (!needsNodeCertificate) return undefined;
-    if (!node) throw new Error('Для TLS-конфигурации не назначена нода');
-
-    const certificate = await this.xuiService.getWebCertificateFiles(node);
-    if (!certificate) {
-      throw new Error(
-        `Нода «${node.name}» не предоставила сертификат панели через getWebCertFiles`,
-      );
+    let certificate: XuiCertificateFiles | undefined;
+    if (needsNodeCertificate) {
+      if (!node) throw new Error('Для TLS-конфигурации не назначена нода');
+      certificate =
+        (await this.xuiService.getWebCertificateFiles(node)) || undefined;
+      if (!certificate) {
+        throw new Error(
+          `Нода «${node.name}» не предоставила сертификат панели через getWebCertFiles`,
+        );
+      }
+    }
+    for (const config of configs) {
+      if (!CERTIFICATE_INBOUND_TYPES.has(config.type as InboundType)) continue;
+      if (!node) throw new Error('Для TLS-конфигурации не назначена нода');
+      try {
+        this.resolveTlsConfig(config, node, certificate);
+      } catch (error) {
+        throw new Error(
+          `Конфигурация «${config.name || config.type}» (${config.configId || 'без configId'}): ${this.safeMessage(error)}`,
+        );
+      }
     }
     return certificate;
   }
@@ -800,9 +887,12 @@ export class RotationService implements OnModuleInit {
     if (!nodeCertificate) {
       throw new Error(`TLS-сертификат ноды «${node.name}» не получен`);
     }
+    const serverName = this.getNodeTlsServerName(node);
+    assertManagedCertificateHost(nodeCertificate.certificateFile, serverName);
+    assertManagedCertificateHost(nodeCertificate.keyFile, serverName);
     return {
       ...nodeCertificate,
-      serverName: this.getNodeTlsServerName(node),
+      serverName,
     };
   }
 
@@ -827,6 +917,8 @@ export class RotationService implements OnModuleInit {
         'Для собственного TLS нужны корректные абсолютные пути и имя сервера',
       );
     }
+    assertManagedCertificateHost(certificateFile, serverName);
+    assertManagedCertificateHost(keyFile, serverName);
     return { certificateFile, keyFile, serverName };
   }
 
@@ -845,7 +937,11 @@ export class RotationService implements OnModuleInit {
   }
 
   private resolveInboundSni(config: InboundConfig, domains: Domain[]) {
-    if (CERTIFICATE_INBOUND_TYPES.has(config.type as InboundType)) return '';
+    if (
+      CERTIFICATE_INBOUND_TYPES.has(config.type as InboundType) ||
+      PERSISTENT_INBOUND_TYPES.has(config.type)
+    )
+      return '';
     const configuredSni = config.sni?.trim() || '';
     if (configuredSni === 'random') return this.pickDomain(domains);
     if (config.type !== 'mtproto-faketls') return configuredSni;
@@ -936,17 +1032,25 @@ export class RotationService implements OnModuleInit {
             });
     if (!built) throw new Error(`Неизвестный тип inbound: ${config.type}`);
     if (config.name?.trim()) built.remark = config.name.trim();
+    const diagnostic = {
+      ...inboundDiagnostic(built),
+      configId: config.configId,
+      name: config.name,
+    };
+    request.diagnostics?.push(diagnostic);
 
     const randomPort = config.port === 'random' || !config.port;
     let result = await this.xuiService.addInbound(built, node);
     for (let attempt = 1; !result && randomPort && attempt < 3; attempt++) {
       if (!isPortConflict(this.xuiService.getLastInboundError(node))) break;
       built.port = await this.getFreePort(usedPorts);
+      diagnostic.port = built.port;
       usedPorts.add(built.port);
       result = await this.xuiService.addInbound(built, node);
     }
     if (!result) return null;
     const saved = result.inbound;
+    Object.assign(diagnostic, inboundDiagnostic(saved));
     usedPorts.add(saved.port);
     let staged: Inbound;
     try {
@@ -982,6 +1086,7 @@ export class RotationService implements OnModuleInit {
         targetAddress,
         '',
         flag,
+        config.type,
       );
       if (!link)
         throw new Error(`Не удалось сформировать ссылку ${config.type}`);
@@ -1046,6 +1151,14 @@ export class RotationService implements OnModuleInit {
         this.inboundBuilder.buildVmessTcp({ port, uuid, email }),
       'shadowsocks-tcp': () =>
         this.inboundBuilder.buildShadowsocksTcp({ port, uuid, email }),
+      wireguard: () =>
+        this.inboundBuilder.buildWireguardInbound({ port, uuid, email }),
+      mixed: () =>
+        this.inboundBuilder.buildProxyInbound({ port, protocol: 'mixed' }),
+      http: () =>
+        this.inboundBuilder.buildProxyInbound({ port, protocol: 'http' }),
+      socks: () =>
+        this.inboundBuilder.buildProxyInbound({ port, protocol: 'socks' }),
       'mtproto-faketls': () =>
         this.inboundBuilder.buildMtprotoInbound({
           port,
@@ -1586,6 +1699,6 @@ export class RotationService implements OnModuleInit {
   private safeMessage(error: unknown) {
     const message =
       error instanceof Error ? error.message : 'Неизвестная ошибка';
-    return message.replace(/https?:\/\/[^\s]+/g, '[node]').slice(0, 300);
+    return safePanelMessage(message, 16384);
   }
 }

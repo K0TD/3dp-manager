@@ -57,6 +57,7 @@ const SNIFFING_PROTOCOLS = new Set([
   'trojan',
   'shadowsocks',
   'socks',
+  'mixed',
   'http',
   'dokodemo-door',
   'tunnel',

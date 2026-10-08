@@ -9,6 +9,7 @@ import {
 import { Subscription } from '../../subscriptions/entities/subscription.entity';
 import { Node } from '../../nodes/entities/node.entity';
 import { Tunnel } from '../../tunnels/entities/tunnel.entity';
+import type { ProxyConnection } from '../connection-profiles';
 
 export enum InboundStatus {
   Staged = 'staged',
@@ -18,6 +19,10 @@ export enum InboundStatus {
 
 @Entity()
 export class Inbound {
+  // Derived response fields; credentials remain in the existing link column.
+  connection?: ProxyConnection;
+  wireguardConfig?: string;
+
   @PrimaryGeneratedColumn()
   id: number;
 

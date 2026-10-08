@@ -5,6 +5,10 @@ import {
   Button,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Grid,
   LinearProgress,
   Paper,
@@ -24,6 +28,20 @@ import { useNavigate } from 'react-router-dom';
 import api from '../api';
 import type { NodeRecord } from '../types/node';
 import { FlagIcon } from '../utils/flags';
+import { copyToClipboard } from '../utils/copyToClipboard';
+
+interface InboundDiagnostic {
+  xuiId?: number;
+  tag?: string;
+  port?: number;
+  protocol: string;
+  configId?: string;
+  name?: string;
+  serverName?: string;
+  certificates?: Array<{ certificateFile?: string; keyFile?: string }>;
+  subscriptionName?: string;
+  subscriptionId?: string;
+}
 
 interface CleanupItem {
   id: number;
@@ -36,9 +54,16 @@ interface CleanupItem {
 }
 
 interface OperationResult {
+  subscriptionId?: string;
+  subscriptionName?: string;
   nodeName: string;
   status: 'succeeded' | 'preserved' | 'failed';
   message?: string;
+  details?: {
+    phase: string;
+    inbounds: InboundDiagnostic[];
+    blockingInbound?: InboundDiagnostic;
+  };
 }
 
 interface Operation {
@@ -65,18 +90,28 @@ export default function DashboardPage() {
   const [cleanupItems, setCleanupItems] = useState<CleanupItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [selectedOperation, setSelectedOperation] = useState<Operation | null>(
+    null,
+  );
+
+  const operationReport = (operation: Operation) =>
+    JSON.stringify(operation, null, 2);
 
   const load = useCallback(async () => {
     try {
-      const [nodesResponse, subscriptionsResponse, operationsResponse, cleanupResponse] =
-        await Promise.all([
-          api.get<NodeRecord[]>('/nodes'),
-          api
-            .get<{ count: number }>('/subscriptions/count')
-            .catch(() => api.get<unknown[]>('/subscriptions')),
-          api.get<Operation[]>('/rotation/operations'),
-          api.get<CleanupItem[]>('/rotation/cleanup'),
-        ]);
+      const [
+        nodesResponse,
+        subscriptionsResponse,
+        operationsResponse,
+        cleanupResponse,
+      ] = await Promise.all([
+        api.get<NodeRecord[]>('/nodes'),
+        api
+          .get<{ count: number }>('/subscriptions/count')
+          .catch(() => api.get<unknown[]>('/subscriptions')),
+        api.get<Operation[]>('/rotation/operations'),
+        api.get<CleanupItem[]>('/rotation/cleanup'),
+      ]);
       setNodes(nodesResponse.data);
       const subData = subscriptionsResponse.data;
       const count =
@@ -165,18 +200,30 @@ export default function DashboardPage() {
   const recent = useMemo(() => operations.slice(0, 5), [operations]);
 
   if (loading) {
-    return <Box sx={{ display: 'grid', placeItems: 'center', minHeight: 360 }}><CircularProgress /></Box>;
+    return (
+      <Box sx={{ display: 'grid', placeItems: 'center', minHeight: 360 }}>
+        <CircularProgress />
+      </Box>
+    );
   }
 
   return (
     <Stack spacing={3}>
       <Box className="page-heading">
         <Box>
-          <Typography variant="overline" color="primary">CONTROL PLANE</Typography>
+          <Typography variant="overline" color="primary">
+            CONTROL PLANE
+          </Typography>
           <Typography variant="h3">Обзор сети</Typography>
-          <Typography color="text.secondary">Состояние нод, поколений и фоновых операций</Typography>
+          <Typography color="text.secondary">
+            Состояние нод, поколений и фоновых операций
+          </Typography>
         </Box>
-        <Button variant="contained" startIcon={<Autorenew />} onClick={() => navigate('/subscriptions')}>
+        <Button
+          variant="contained"
+          startIcon={<Autorenew />}
+          onClick={() => navigate('/subscriptions')}
+        >
           Управлять подписками
         </Button>
       </Box>
@@ -184,21 +231,48 @@ export default function DashboardPage() {
       {error && <Alert severity="error">{error}</Alert>}
       {unavailable > 0 && (
         <Alert severity="warning" icon={<CloudOff />}>
-          {unavailable} нод недоступны или требуют авторизации. Активные поколения сохранены.
+          {unavailable} нод недоступны или требуют авторизации. Активные
+          поколения сохранены.
         </Alert>
       )}
 
       <Grid container spacing={2}>
         {[
-          { label: 'Ноды онлайн', value: `${online}/${nodes.length}`, icon: <Hub />, tone: 'primary' },
-          { label: 'Подписки', value: subscriptionsCount, icon: <People />, tone: 'success' },
-          { label: 'Ожидают очистки', value: cleanupItems.length, icon: <DeleteSweep />, tone: cleanupItems.length ? 'warning' : 'default' },
-          { label: 'Текущая операция', value: activeOperation ? statusLabel[activeOperation.status] : 'Нет', icon: <Autorenew />, tone: activeOperation ? 'info' : 'default' },
+          {
+            label: 'Ноды онлайн',
+            value: `${online}/${nodes.length}`,
+            icon: <Hub />,
+            tone: 'primary',
+          },
+          {
+            label: 'Подписки',
+            value: subscriptionsCount,
+            icon: <People />,
+            tone: 'success',
+          },
+          {
+            label: 'Ожидают очистки',
+            value: cleanupItems.length,
+            icon: <DeleteSweep />,
+            tone: cleanupItems.length ? 'warning' : 'default',
+          },
+          {
+            label: 'Текущая операция',
+            value: activeOperation
+              ? statusLabel[activeOperation.status]
+              : 'Нет',
+            icon: <Autorenew />,
+            tone: activeOperation ? 'info' : 'default',
+          },
         ].map((item) => (
           <Grid key={item.label} size={{ xs: 12, sm: 6, xl: 3 }}>
             <Paper className="metric-card">
-              <Box className={`metric-icon metric-${item.tone}`}>{item.icon}</Box>
-              <Typography color="text.secondary" variant="body2">{item.label}</Typography>
+              <Box className={`metric-icon metric-${item.tone}`}>
+                {item.icon}
+              </Box>
+              <Typography color="text.secondary" variant="body2">
+                {item.label}
+              </Typography>
               <Typography variant="h4">{item.value}</Typography>
             </Paper>
           </Grid>
@@ -207,10 +281,19 @@ export default function DashboardPage() {
 
       {cleanupItems.length > 0 && (
         <Paper className="console-panel" sx={{ p: 2.5 }}>
-          <Stack direction="row" justifyContent="space-between" alignItems="center" mb={2}>
+          <Stack
+            direction="row"
+            justifyContent="space-between"
+            alignItems="center"
+            mb={2}
+          >
             <Box>
-              <Typography variant="overline" color="warning.main">CLEANUP QUEUE</Typography>
-              <Typography variant="h5">Очередь очистки инбаундов ({cleanupItems.length})</Typography>
+              <Typography variant="overline" color="warning.main">
+                CLEANUP QUEUE
+              </Typography>
+              <Typography variant="h5">
+                Очередь очистки инбаундов ({cleanupItems.length})
+              </Typography>
               <Typography variant="body2" color="text.secondary">
                 Инбаунды старых поколений, ожидающие удаления на нодах
               </Typography>
@@ -241,11 +324,20 @@ export default function DashboardPage() {
               >
                 <Box sx={{ minWidth: 0, flex: 1 }}>
                   <Typography variant="body2" fontWeight={700}>
-                    {item.port ? `Порт ${item.port}` : `ID ${item.id}`} • {(item.protocol || 'TCP').toUpperCase()} {item.remark ? `(${item.remark})` : ''}
+                    {item.port ? `Порт ${item.port}` : `ID ${item.id}`} •{' '}
+                    {(item.protocol || 'TCP').toUpperCase()}{' '}
+                    {item.remark ? `(${item.remark})` : ''}
                   </Typography>
-                  <Typography variant="caption" color="text.secondary" display="block">
-                    Нода: {item.node?.name || 'Не назначена'} • Попыток: {item.cleanupAttempts}
-                    {item.lastCleanupError ? ` • Ошибка: ${item.lastCleanupError}` : ''}
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    display="block"
+                  >
+                    Нода: {item.node?.name || 'Не назначена'} • Попыток:{' '}
+                    {item.cleanupAttempts}
+                    {item.lastCleanupError
+                      ? ` • Ошибка: ${item.lastCleanupError}`
+                      : ''}
                   </Typography>
                 </Box>
                 <Button
@@ -265,38 +357,66 @@ export default function DashboardPage() {
       <Grid container spacing={2}>
         <Grid size={{ xs: 12, lg: 7 }}>
           <Paper className="console-panel">
-            <Stack direction="row" justifyContent="space-between" alignItems="center" mb={2}>
+            <Stack
+              direction="row"
+              justifyContent="space-between"
+              alignItems="center"
+              mb={2}
+            >
               <Box>
                 <Typography variant="overline">NODE RAIL</Typography>
                 <Typography variant="h5">Ноды</Typography>
               </Box>
-              <Button size="small" onClick={() => navigate('/nodes')}>Открыть список</Button>
+              <Button size="small" onClick={() => navigate('/nodes')}>
+                Открыть список
+              </Button>
             </Stack>
             <Stack spacing={1.25}>
               {nodes.map((node) => (
                 <Box className="node-rail" key={node.id}>
-                  <span className={`health-dot health-${node.healthStatus || 'unknown'}`} />
+                  <span
+                    className={`health-dot health-${node.healthStatus || 'unknown'}`}
+                  />
                   <Box sx={{ minWidth: 0, flex: 1 }}>
-                    <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+                    <Stack
+                      direction="row"
+                      spacing={1}
+                      alignItems="center"
+                      sx={{ minWidth: 0 }}
+                    >
                       {node.flag && <FlagIcon flag={node.flag} size={20} />}
-                      <Typography fontWeight={700} noWrap sx={{ minWidth: 0 }}>{node.name}</Typography>
+                      <Typography fontWeight={700} noWrap sx={{ minWidth: 0 }}>
+                        {node.name}
+                      </Typography>
                     </Stack>
-                    <Typography variant="caption" color="text.secondary" noWrap>{node.url}</Typography>
+                    <Typography variant="caption" color="text.secondary" noWrap>
+                      {node.url}
+                    </Typography>
                   </Box>
                   <Typography variant="caption" color="text.secondary">
                     {node.responseTimeMs ? `${node.responseTimeMs} ms` : '—'}
                   </Typography>
-                  <Chip size="small" label={node.healthStatus || 'unknown'} variant="outlined" />
+                  <Chip
+                    size="small"
+                    label={node.healthStatus || 'unknown'}
+                    variant="outlined"
+                  />
                 </Box>
               ))}
-              {!nodes.length && <Typography color="text.secondary">Ноды ещё не добавлены</Typography>}
+              {!nodes.length && (
+                <Typography color="text.secondary">
+                  Ноды ещё не добавлены
+                </Typography>
+              )}
             </Stack>
           </Paper>
         </Grid>
         <Grid size={{ xs: 12, lg: 5 }}>
           <Paper className="console-panel">
             <Typography variant="overline">OPERATION TIMELINE</Typography>
-            <Typography variant="h5" mb={2}>Последние операции</Typography>
+            <Typography variant="h5" mb={2}>
+              Последние операции
+            </Typography>
             <Stack spacing={2}>
               {recent.map((operation) => (
                 <Box key={operation.id} className="operation-row">
@@ -310,7 +430,9 @@ export default function DashboardPage() {
                     )}
                     <Typography
                       fontWeight={700}
-                      color={operation.status === 'failed' ? 'error.main' : undefined}
+                      color={
+                        operation.status === 'failed' ? 'error.main' : undefined
+                      }
                     >
                       {statusLabel[operation.status]}
                     </Typography>
@@ -318,13 +440,22 @@ export default function DashboardPage() {
                   <Typography variant="caption" color="text.secondary">
                     {new Date(operation.createdAt).toLocaleString('ru-RU')}
                   </Typography>
-                  {operation.status === 'running' && <LinearProgress sx={{ mt: 1 }} />}
+                  {operation.status === 'running' && (
+                    <LinearProgress sx={{ mt: 1 }} />
+                  )}
                   {operation.error && (
-                    <Typography variant="caption" color="error.main" display="block" mt={0.5}>
+                    <Typography
+                      variant="caption"
+                      color="error.main"
+                      display="block"
+                      mt={0.5}
+                    >
                       Ошибка: {operation.error}
                     </Typography>
                   )}
-                  {operation.results?.some((item) => item.status !== 'succeeded') && (
+                  {operation.results?.some(
+                    (item) => item.status !== 'succeeded',
+                  ) && (
                     <Box sx={{ mt: 0.5 }}>
                       {operation.results
                         .filter((item) => item.status !== 'succeeded')
@@ -334,19 +465,155 @@ export default function DashboardPage() {
                             variant="caption"
                             color="warning.main"
                             display="block"
+                            sx={{
+                              display: '-webkit-box',
+                              WebkitLineClamp: 2,
+                              WebkitBoxOrient: 'vertical',
+                              overflow: 'hidden',
+                              overflowWrap: 'anywhere',
+                            }}
                           >
-                            {item.nodeName}: {item.message || 'Старые подключения сохранены'}
+                            {item.subscriptionName
+                              ? `${item.subscriptionName} · `
+                              : ''}
+                            {item.nodeName}:{' '}
+                            {item.message || 'Старые подключения сохранены'}
                           </Typography>
                         ))}
                     </Box>
                   )}
+                  <Button
+                    size="small"
+                    onClick={() => setSelectedOperation(operation)}
+                  >
+                    Подробности операции
+                  </Button>
                 </Box>
               ))}
-              {!recent.length && <Typography color="text.secondary">Операций пока нет</Typography>}
+              {!recent.length && (
+                <Typography color="text.secondary">
+                  Операций пока нет
+                </Typography>
+              )}
             </Stack>
           </Paper>
         </Grid>
       </Grid>
+      <Dialog
+        open={Boolean(selectedOperation)}
+        onClose={() => setSelectedOperation(null)}
+        maxWidth="lg"
+        fullWidth
+      >
+        <DialogTitle>Подробности операции</DialogTitle>
+        <DialogContent dividers>
+          {selectedOperation && (
+            <Stack spacing={2}>
+              <Typography variant="caption" color="text.secondary">
+                {selectedOperation.id} ·{' '}
+                {new Date(selectedOperation.createdAt).toLocaleString('ru-RU')}{' '}
+                · {statusLabel[selectedOperation.status]}
+              </Typography>
+              {selectedOperation.error && (
+                <Alert severity="error" sx={{ overflowWrap: 'anywhere' }}>
+                  {selectedOperation.error}
+                </Alert>
+              )}
+              {selectedOperation.results?.map((result, index) => (
+                <Paper
+                  variant="outlined"
+                  key={index}
+                  sx={{ p: 2, minWidth: 0 }}
+                >
+                  <Typography fontWeight={700}>
+                    {result.subscriptionName || 'Подписка не указана'} ·{' '}
+                    {result.nodeName}
+                  </Typography>
+                  {result.subscriptionId && (
+                    <Typography variant="caption" color="text.secondary">
+                      ID подписки: {result.subscriptionId}
+                    </Typography>
+                  )}
+                  {result.details && (
+                    <Typography variant="body2" sx={{ mt: 1 }}>
+                      Этап: {result.details.phase}
+                    </Typography>
+                  )}
+                  {result.message && (
+                    <Box
+                      component="pre"
+                      sx={{
+                        whiteSpace: 'pre-wrap',
+                        overflowWrap: 'anywhere',
+                        fontSize: 13,
+                      }}
+                    >
+                      {result.message}
+                    </Box>
+                  )}
+                  {result.details?.blockingInbound && (
+                    <Alert severity="warning" sx={{ mt: 1 }}>
+                      Запуск блокирует существующий инбаунд{' '}
+                      {result.details.blockingInbound.tag ||
+                        result.details.blockingInbound.xuiId}
+                      . Подписка:{' '}
+                      {result.details.blockingInbound.subscriptionName ||
+                        'не найдена в базе менеджера'}
+                      .
+                    </Alert>
+                  )}
+                  {[
+                    ...(result.details?.blockingInbound
+                      ? [result.details.blockingInbound]
+                      : []),
+                    ...(result.details?.inbounds || []),
+                  ].map((inbound, row) => (
+                    <Box key={row} sx={{ mt: 2, overflowWrap: 'anywhere' }}>
+                      <Typography variant="body2" fontWeight={700}>
+                        {inbound.name || inbound.protocol}
+                        {inbound.port ? ` · порт ${inbound.port}` : ''}
+                        {inbound.xuiId ? ` · ID панели ${inbound.xuiId}` : ''}
+                      </Typography>
+                      {inbound.configId && (
+                        <Typography variant="caption" display="block">
+                          ID конфигурации: {inbound.configId}
+                        </Typography>
+                      )}
+                      {inbound.serverName && (
+                        <Typography variant="body2">
+                          TLS server name: {inbound.serverName}
+                        </Typography>
+                      )}
+                      {inbound.certificates?.map((certificate, certIndex) => (
+                        <Box
+                          key={certIndex}
+                          sx={{ fontFamily: 'monospace', fontSize: 12 }}
+                        >
+                          Сертификат:{' '}
+                          {certificate.certificateFile || 'не указан'}
+                          <br />
+                          Ключ: {certificate.keyFile || 'не указан'}
+                        </Box>
+                      ))}
+                    </Box>
+                  ))}
+                </Paper>
+              ))}
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() =>
+              selectedOperation &&
+              void copyToClipboard(operationReport(selectedOperation))
+            }
+          >
+            Копировать отчёт
+          </Button>
+          <Button onClick={() => setSelectedOperation(null)}>Закрыть</Button>
+        </DialogActions>
+      </Dialog>
     </Stack>
   );
 }

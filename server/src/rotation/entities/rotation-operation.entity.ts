@@ -5,6 +5,12 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import type { XuiInboundDiagnostic } from '../../xui/xui-contract';
+
+export interface RotationInboundDiagnostic extends XuiInboundDiagnostic {
+  configId?: string;
+  name?: string;
+}
 
 export enum RotationOperationStatus {
   Queued = 'queued',
@@ -23,6 +29,14 @@ export interface RotationNodeResult {
   created: number;
   pendingCleanup: number;
   message?: string;
+  details?: {
+    phase: string;
+    inbounds: RotationInboundDiagnostic[];
+    blockingInbound?: XuiInboundDiagnostic & {
+      subscriptionId?: string;
+      subscriptionName?: string;
+    };
+  };
 }
 
 @Entity()

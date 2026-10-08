@@ -34,6 +34,12 @@ import {
   patchAmneziaVpnEndpoint,
   renameAmneziaVpnLink,
 } from '../inbounds/amnezia-vpn-link';
+import {
+  isProxyProtocol,
+  patchConnectionHost,
+  proxyConnectionFromLink,
+  wireguardConfigFromLink,
+} from '../inbounds/connection-profiles';
 
 @Controller()
 export class ClientController {
@@ -63,6 +69,7 @@ export class ClientController {
     if (!sub || !sub.isEnabled) {
       throw new HttpException('Subscription not found', HttpStatus.NOT_FOUND);
     }
+    res.setHeader('Cache-Control', 'no-store');
 
     const previewData = this.buildPreviewData(
       sortInboundsByPosition(sub.inbounds || [])
@@ -79,6 +86,14 @@ export class ClientController {
       return this.sendAmneziaConfig(
         previewData.amneziaLinks,
         requestedIndex,
+        sub.name,
+        res,
+      );
+    }
+    if (req.query.format === 'wireguard') {
+      return this.sendWireguardConfig(
+        previewData.wireguardLinks ?? [],
+        typeof req.query.index === 'string' ? req.query.index : undefined,
         sub.name,
         res,
       );
@@ -137,6 +152,7 @@ export class ClientController {
     if (!sub || !sub.isEnabled) {
       throw new HttpException('Subscription not found', HttpStatus.NOT_FOUND);
     }
+    res.setHeader('Cache-Control', 'no-store');
 
     const previewData = this.buildPreviewData(
       sortInboundsByPosition(sub.inbounds || [])
@@ -161,6 +177,14 @@ export class ClientController {
       return this.sendAmneziaConfig(
         previewData.amneziaLinks,
         requestedIndex,
+        sub.name,
+        res,
+      );
+    }
+    if (req.query.format === 'wireguard') {
+      return this.sendWireguardConfig(
+        previewData.wireguardLinks ?? [],
+        typeof req.query.index === 'string' ? req.query.index : undefined,
         sub.name,
         res,
       );
@@ -199,13 +223,16 @@ export class ClientController {
     currentUrl: string,
     preview: Pick<
       SubscriptionPreviewData,
-      'subscriptionLinks' | 'amneziaLinks'
+      'subscriptionLinks' | 'amneziaLinks' | 'wireguardLinks'
     >,
     cacheKey: string,
   ): Promise<
     Pick<
       SubscriptionPreviewData,
-      'qrDataUrl' | 'amneziaQrDataUrls' | 'amneziaWgQrDataUrls'
+      | 'qrDataUrl'
+      | 'amneziaQrDataUrls'
+      | 'amneziaWgQrDataUrls'
+      | 'wireguardQrDataUrls'
     >
   > {
     let qrDataUrl = '';
@@ -249,7 +276,28 @@ export class ClientController {
       }),
     );
 
-    return { qrDataUrl, amneziaQrDataUrls, amneziaWgQrDataUrls };
+    const wireguardQrDataUrls = await Promise.all(
+      (preview.wireguardLinks ?? []).map(async (link) => {
+        const config = wireguardConfigFromLink(link);
+        if (!config) return '';
+        try {
+          return await QRCode.toDataURL(config, {
+            errorCorrectionLevel: 'L',
+            width: 480,
+            margin: 2,
+          });
+        } catch {
+          this.logger.warn('Unable to generate WireGuard .conf QR code');
+          return '';
+        }
+      }),
+    );
+    return {
+      qrDataUrl,
+      amneziaQrDataUrls,
+      amneziaWgQrDataUrls,
+      wireguardQrDataUrls,
+    };
   }
 
   /** Relay rewriting preserves generated links that cannot be parsed safely. */
@@ -270,6 +318,8 @@ export class ClientController {
       return this.tryPatchTelegramProxyLink(link, newHost);
     if (link.startsWith('vpn://'))
       return this.tryPatchAmneziaWgLink(link, newHost);
+    if (/^(wireguard|mixed|http|socks5):\/\//.test(link))
+      return patchConnectionHost(link, newHost);
 
     return link;
   }
@@ -306,17 +356,36 @@ export class ClientController {
     subscriptionName: string,
   ): Pick<
     SubscriptionPreviewData,
-    'subscriptionLinks' | 'amneziaLinks' | 'telegramProxyLinks'
+    | 'subscriptionLinks'
+    | 'amneziaLinks'
+    | 'telegramProxyLinks'
+    | 'wireguardLinks'
+    | 'proxyConnections'
   > {
     const groupedLinks = {
       subscriptionLinks: [] as string[],
       amneziaLinks: [] as string[],
       telegramProxyLinks: [] as string[],
+      wireguardLinks: [] as string[],
+      proxyConnections: [] as NonNullable<
+        SubscriptionPreviewData['proxyConnections']
+      >,
     };
 
     for (const inbound of inbounds) {
       const link = inbound.link?.trim();
       if (!link) continue;
+
+      if (inbound.protocol === 'wireguard') {
+        if (wireguardConfigFromLink(link))
+          groupedLinks.wireguardLinks.push(link);
+        continue;
+      }
+      if (isProxyProtocol(inbound.protocol || '')) {
+        const connection = proxyConnectionFromLink(link);
+        if (connection) groupedLinks.proxyConnections.push(connection);
+        continue;
+      }
 
       if (
         inbound.protocol === 'amneziawg' &&
@@ -344,6 +413,36 @@ export class ClientController {
 
   private withAmneziaConnectionName(link: string, subscriptionName: string) {
     return renameAmneziaVpnLink(link, subscriptionName);
+  }
+
+  private sendWireguardConfig(
+    links: string[],
+    requestedIndex: string | undefined,
+    subscriptionName: string,
+    res: Response,
+  ) {
+    const index = requestedIndex ?? '0';
+    const configIndex = /^\d+$/.test(index) ? Number(index) : -1;
+    const config = links[configIndex]
+      ? wireguardConfigFromLink(links[configIndex])
+      : null;
+    if (!config)
+      return res
+        .status(HttpStatus.NOT_FOUND)
+        .send('WireGuard config not found');
+    res.setHeader(
+      'Content-Type',
+      'application/x-wireguard-profile; charset=utf-8',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      attachmentDisposition(
+        amneziaConfigFileName(subscriptionName, configIndex, links.length),
+        'wireguard.conf',
+      ),
+    );
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    return res.send(config);
   }
 
   private sendAmneziaConfig(

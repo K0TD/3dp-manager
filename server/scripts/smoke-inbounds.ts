@@ -26,7 +26,7 @@ import { XuiService } from '../src/xui/xui.service';
 import { Node, NodeAuthType } from '../src/nodes/entities/node.entity';
 import { SessionService } from '../src/session/session.service';
 import { Logger } from '@nestjs/common';
-import { safePanelMessage } from '../src/xui/xui-contract';
+import { safePanelMessage, XuiRuntimeError } from '../src/xui/xui-contract';
 
 const runFile = promisify(execFile);
 
@@ -54,6 +54,25 @@ export function outboundFromLink(link: string): Record<string, any> {
   const address = url.hostname.replace(/^\[|\]$/g, '');
   const port = Number(url.port);
   const credential = decodeURIComponent(url.username);
+  if (url.protocol === 'wireguard:') {
+    return {
+      protocol: 'wireguard',
+      settings: {
+        secretKey: p.get('privateKey'),
+        address: p.get('address')?.split(',').map((ip) => ip.trim()),
+        mtu: Number(p.get('mtu')), noKernelTun: true,
+        peers: [{ publicKey: p.get('publicKey'), preSharedKey: p.get('preSharedKey'),
+          endpoint: `${url.hostname}:${port}`, allowedIPs: ['0.0.0.0/0', '::/0'], keepAlive: 25 }],
+      },
+    };
+  }
+  if (['http:', 'socks5:', 'mixed:'].includes(url.protocol)) {
+    return {
+      protocol: url.protocol === 'http:' ? 'http' : 'socks',
+      settings: { servers: [{ address, port: port || 80,
+        users: [{ user: credential, pass: decodeURIComponent(url.password) }] }] },
+    };
+  }
   if (url.protocol === 'ss:') {
     const [method, ...password] = Buffer.from(credential, 'base64url')
       .toString()
@@ -157,7 +176,7 @@ export async function checkTraffic(
   writeFileSync(
     path,
     JSON.stringify({
-      log: { loglevel: 'warning' },
+      log: { loglevel: process.env.SMOKE_DEBUG ? 'debug' : 'warning' },
       inbounds: [
         {
           listen: '127.0.0.1',
@@ -179,7 +198,7 @@ export async function checkTraffic(
   });
   let diagnostics = '';
   const collect = (chunk: Buffer) => {
-    diagnostics = (diagnostics + chunk.toString()).slice(-1500);
+    diagnostics = (diagnostics + chunk.toString()).slice(-6000);
   };
   client.stdout?.on('data', collect);
   client.stderr?.on('data', collect);
@@ -208,9 +227,13 @@ export async function checkTraffic(
       { timeout: 18000 },
     );
   } catch (error) {
+    if (process.env.SMOKE_ARTIFACT_DIR && process.env.SMOKE_DEBUG) {
+      mkdirSync(process.env.SMOKE_ARTIFACT_DIR, { recursive: true, mode: 0o700 });
+      writeFileSync(join(process.env.SMOKE_ARTIFACT_DIR, 'client-debug.log'), diagnostics, { mode: 0o600 });
+    }
     // execFile errors include arguments; only surface the exit code.
     if ((error as any).code)
-      throw new Error(`Proxy HTTPS failed (exit ${(error as any).code})`);
+      throw new Error(`Proxy HTTPS failed (exit ${(error as any).code}): ${safePanelMessage(diagnostics.slice(-300))}`);
     throw error;
   } finally {
     if (!startupError && client.exitCode === null) {
@@ -253,6 +276,19 @@ async function main() {
       xrayState: profile.xrayState,
     }),
   );
+  if (process.env.SMOKE_HEALTH_ONLY) {
+    try {
+      await api.assertXrayHealthy(node);
+      console.log(JSON.stringify({ healthy: true }));
+    } catch (error) {
+      console.log(JSON.stringify({ healthy: false,
+        error: safePanelMessage(error instanceof Error ? error.message : error, 16384),
+        inbound: error instanceof XuiRuntimeError ? error.inbound : undefined,
+      }));
+      process.exitCode = 1;
+    }
+    return;
+  }
   const keys = await api.getNewX25519Cert(node);
   const cert = await api.getWebCertificateFiles(node);
   if (!keys || !cert)
@@ -279,6 +315,10 @@ async function main() {
       builder.buildTrojanRealityTcp({ port, uuid, sni, ...keys }),
     'hysteria2-udp': (port, uuid) =>
       builder.buildHysteria2Inbound({ port, uuid, serverName, ...cert }),
+    wireguard: (port, uuid) => builder.buildWireguardInbound({ port, uuid }),
+    mixed: (port) => builder.buildProxyInbound({ port, protocol: 'mixed' }),
+    http: (port) => builder.buildProxyInbound({ port, protocol: 'http' }),
+    socks: (port) => builder.buildProxyInbound({ port, protocol: 'socks' }),
   };
   const selected =
     process.env.SMOKE_TYPES?.split(',') ||
@@ -303,7 +343,7 @@ async function main() {
       result.port = created.inbound.port;
       if (created.verificationError) throw new Error(created.verificationError);
       await api.waitForXray(node);
-      const link = builder.buildInboundLink(created.inbound, address, '', '');
+      const link = builder.buildInboundLink(created.inbound, address, '', '', type);
       if (process.env.SMOKE_ARTIFACT_DIR) {
         mkdirSync(process.env.SMOKE_ARTIFACT_DIR, {
           recursive: true,
@@ -321,6 +361,13 @@ async function main() {
         process.env.SMOKE_TARGET || 'https://www.cloudflare.com/cdn-cgi/trace',
       );
       result.traffic = true;
+      if (type === 'mixed') {
+        const httpLink = new URL(link);
+        httpLink.protocol = 'http:';
+        await checkTraffic(httpLink.toString(), binary,
+          process.env.SMOKE_TARGET || 'https://www.cloudflare.com/cdn-cgi/trace');
+        result.httpTraffic = true;
+      }
     } catch (error) {
       result.error =
         error instanceof Error ? error.message : 'Smoke check failed';

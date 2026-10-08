@@ -10,6 +10,10 @@ export const CONNECTION_TYPES = [
   'hysteria2-udp',
   'mtproto-faketls',
   'amneziawg',
+  'wireguard',
+  'mixed',
+  'http',
+  'socks',
   'custom',
 ] as const;
 

@@ -2,6 +2,10 @@ import { subscriptionStyles } from './subscription.styles';
 import { amneziaConfigFileName } from '../subscription-name';
 import { amneziaConfigFromLink } from '../../inbounds/amnezia-vpn-link';
 import { amneziaVpnIcon, amneziaWgIcon } from './amnezia-icons';
+import {
+  wireguardConfigFromLink,
+  type ProxyConnection,
+} from '../../inbounds/connection-profiles';
 
 export interface SubscriptionPreviewData {
   currentUrl: string;
@@ -12,6 +16,9 @@ export interface SubscriptionPreviewData {
   amneziaQrDataUrls?: string[];
   amneziaWgQrDataUrls?: string[];
   telegramProxyLinks: string[];
+  wireguardLinks?: string[];
+  wireguardQrDataUrls?: string[];
+  proxyConnections?: ProxyConnection[];
 }
 
 function escapeHtml(rawText: string): string {
@@ -273,6 +280,61 @@ function renderRegularConnections(preview: SubscriptionPreviewData): string {
     </article>`;
 }
 
+function renderWireguardConnections(preview: SubscriptionPreviewData): string {
+  const links = preview.wireguardLinks ?? [];
+  if (!links.length) return '';
+  const actions = links
+    .map((link, index) => {
+      const config = wireguardConfigFromLink(link);
+      if (!config) return '';
+      const url = new URL(preview.currentUrl);
+      url.searchParams.set('format', 'wireguard');
+      url.searchParams.set('index', String(index));
+      const qr = preview.wireguardQrDataUrls?.[index];
+      return `<div class="connection-action">
+      <div class="connection-heading"><strong>WireGuard · ${index + 1}</strong></div>
+      <a class="button button--connect" href="${escapeHtml(url.toString())}">${actionIcon('download')}<span>Скачать .conf</span></a>
+      <button class="button button--ghost copy-special" data-copy="${escapeHtml(config)}">${actionIcon('copy')}<span data-copy-label>Копировать настройки</span></button>
+      <details class="import-details"><summary>${actionIcon('qr')}Настройки и QR-код</summary><div class="import-content">
+        ${qr ? `<div class="qr-frame"><img src="${escapeHtml(qr)}" width="240" height="240" alt="QR-код WireGuard"></div>` : ''}
+        <textarea class="connection-key" rows="10" readonly spellcheck="false">${escapeHtml(config)}</textarea>
+      </div></details></div>`;
+    })
+    .join('');
+  return `<article class="guide" id="wireguard"><p class="eyebrow">VPN-туннель</p><h3>WireGuard</h3>
+    <p class="guide-lead">Скачайте файл и импортируйте его в приложении WireGuard через «+» → «Импорт из файла».</p>
+    <div class="connection-list">${actions}</div></article>`;
+}
+
+function renderProxyConnections(connections: ProxyConnection[]): string {
+  if (!connections.length) return '';
+  const actions = connections
+    .map((connection) => {
+      const label =
+        connection.type === 'mixed'
+          ? 'SOCKS5 / HTTP'
+          : connection.type === 'socks'
+            ? 'SOCKS5'
+            : 'HTTP';
+      const fields = [
+        ['Сервер', connection.host],
+        ['Порт', String(connection.port)],
+        ['Логин', connection.username],
+        ['Пароль', connection.password],
+      ];
+      const text = fields
+        .map(([name, value]) => `${name}: ${value}`)
+        .join('\n');
+      return `<div class="connection-action"><div class="connection-heading"><strong>${label}</strong></div>
+      <dl>${fields.map(([name, value]) => `<dt>${name}</dt><dd><code>${escapeHtml(value)}</code></dd>`).join('')}</dl>
+      <button class="button button--ghost copy-special" data-copy="${escapeHtml(text)}">${actionIcon('copy')}<span data-copy-label>Копировать данные</span></button></div>`;
+    })
+    .join('');
+  return `<article class="guide" id="proxies"><p class="eyebrow">Данные доступа</p><h3>HTTP и SOCKS-прокси</h3>
+    <p class="guide-lead">Введите адрес, порт, логин и пароль в настройках прокси вашего приложения. Mixed принимает SOCKS5 и HTTP на одном порту.</p>
+    <div class="connection-list">${actions}</div></article>`;
+}
+
 /** Генерирует публичное превью подписки и инструкции для специальных подключений. */
 export function generateSubscriptionHtmlWithQr(
   preview: SubscriptionPreviewData,
@@ -281,7 +343,10 @@ export function generateSubscriptionHtmlWithQr(
   const regularCount = preview.subscriptionLinks.length;
   const amneziaCount = preview.amneziaLinks.length;
   const telegramCount = preview.telegramProxyLinks.length;
-  const totalCount = regularCount + amneziaCount + telegramCount;
+  const wireguardCount = preview.wireguardLinks?.length ?? 0;
+  const proxyCount = preview.proxyConnections?.length ?? 0;
+  const totalCount =
+    regularCount + amneziaCount + telegramCount + wireguardCount + proxyCount;
   const hasConnections = totalCount > 0;
   const heroMessage = hasConnections
     ? 'Ваши подключения собраны здесь. Выберите нужное приложение — мы подскажем, что делать дальше.'
@@ -294,7 +359,9 @@ export function generateSubscriptionHtmlWithQr(
   const helpMessage =
     regularCount + amneziaCount > 0
       ? `На этом устройстве скопируйте ссылку или ключ и добавьте в нужное приложение.${hasImportQr ? ' На другом устройстве откройте сканер QR внутри приложения.' : ''}`
-      : 'Нажмите «Добавить в Telegram» и подтвердите открытие приложения. Затем включите предложенный прокси в Telegram.';
+      : wireguardCount + proxyCount > 0
+        ? 'Импортируйте файл WireGuard или введите данные прокси из карточки подключения в вашем приложении.'
+        : 'Нажмите «Добавить в Telegram» и подтвердите открытие приложения. Затем включите предложенный прокси в Telegram.';
   const connectionNavigation = [
     regularCount > 0
       ? `<a href="#vpn">${actionIcon('globe')}<span>VPN-подписка</span><strong>${regularCount}</strong>${actionIcon('arrow')}</a>`
@@ -304,6 +371,12 @@ export function generateSubscriptionHtmlWithQr(
       : '',
     telegramCount > 0
       ? `<a href="#telegram">${actionIcon('telegram')}<span>Telegram Proxy</span><strong>${telegramCount}</strong>${actionIcon('arrow')}</a>`
+      : '',
+    wireguardCount > 0
+      ? `<a href="#wireguard">${actionIcon('shield')}<span>WireGuard</span><strong>${wireguardCount}</strong></a>`
+      : '',
+    proxyCount > 0
+      ? `<a href="#proxies">${actionIcon('globe')}<span>HTTP / SOCKS</span><strong>${proxyCount}</strong></a>`
       : '',
   ].join('');
 
@@ -350,6 +423,7 @@ export function generateSubscriptionHtmlWithQr(
         <header class="section-heading"><div><p class="eyebrow">${hasConnections ? 'Начните здесь' : 'Скоро здесь'}</p><h2 id="connections-title">${hasConnections ? 'Выберите подключение' : 'Подключения появятся здесь'}</h2></div>${hasConnections ? '<p>Каждая карточка — отдельный<br>способ оставаться на связи.</p>' : ''}</header>
         ${renderRegularConnections(preview)}
         ${amneziaCount + telegramCount > 0 ? `<div class="guides">${renderAmneziaGuide(preview.amneziaLinks, preview.currentUrl, preview.subscriptionName, preview.amneziaQrDataUrls ?? [], preview.amneziaWgQrDataUrls ?? [])}${renderTelegramGuide(preview.telegramProxyLinks)}</div>` : ''}
+        ${wireguardCount + proxyCount > 0 ? `<div class="guides">${renderWireguardConnections(preview)}${renderProxyConnections(preview.proxyConnections ?? [])}</div>` : ''}
         ${hasConnections ? '' : `<div class="empty-state"><span class="empty-icon">${actionIcon('globe')}</span><h3>Немного терпения</h3><p>Когда появятся активные подключения, здесь будут ссылки и инструкции для настройки.</p><a class="button button--ghost" href="${escapeHtml(preview.currentUrl)}">Обновить страницу${actionIcon('arrow')}</a></div>`}
       </section>
       ${hasConnections ? `<aside class="help-strip"><span class="help-icon">${actionIcon('help')}</span><div><h2>Подключаетесь впервые?</h2><p>${helpMessage}</p></div></aside>` : ''}

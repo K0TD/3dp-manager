@@ -89,7 +89,7 @@ describe('SubscriptionsPage', () => {
     fireEvent.click(await screen.findByTestId('icon-MoreVert'))
     fireEvent.click(await screen.findByText('Редактировать'))
     fireEvent.click(await screen.findByText('Сохранить'))
-    expect(await screen.findByText(/Настройки сохранены, но создание AWG не завершено: Panel offline/)).toBeInTheDocument()
+    expect(await screen.findByText(/Настройки сохранены, но создание подключений не завершено: Panel offline/)).toBeInTheDocument()
   })
 
   describe('Рендеринг', () => {

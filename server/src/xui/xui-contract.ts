@@ -1,4 +1,5 @@
 import { XuiInboundRaw } from './xui.types';
+import { isProxyProtocol } from '../inbounds/connection-profiles';
 
 export class XuiApiError extends Error {
   constructor(
@@ -9,12 +10,83 @@ export class XuiApiError extends Error {
   }
 }
 
-export function safePanelMessage(value: unknown): string {
+export interface XuiInboundDiagnostic {
+  xuiId?: number;
+  tag?: string;
+  port?: number;
+  protocol: string;
+  serverName?: string;
+  certificates?: Array<{ certificateFile?: string; keyFile?: string }>;
+}
+
+export class XuiRuntimeError extends XuiApiError {
+  constructor(
+    message: string,
+    readonly inbound?: XuiInboundDiagnostic,
+  ) {
+    super(message);
+  }
+}
+
+export function inboundDiagnostic(
+  inbound: XuiInboundRaw,
+): XuiInboundDiagnostic {
+  const stream = jsonObject(inbound.streamSettings, 'streamSettings', true);
+  const tls = asRecord(stream.tlsSettings);
+  return {
+    xuiId: inbound.id,
+    tag: typeof inbound.tag === 'string' ? inbound.tag : undefined,
+    port: inbound.port,
+    protocol: inbound.protocol,
+    serverName:
+      typeof tls?.serverName === 'string' ? tls.serverName : undefined,
+    certificates: Array.isArray(tls?.certificates)
+      ? tls.certificates.map((value) => {
+          const cert = asRecord(value);
+          return {
+            certificateFile:
+              typeof cert?.certificateFile === 'string'
+                ? cert.certificateFile
+                : undefined,
+            keyFile:
+              typeof cert?.keyFile === 'string' ? cert.keyFile : undefined,
+          };
+        })
+      : undefined,
+  };
+}
+
+export function verifyTlsIdentity(
+  expected: XuiInboundRaw,
+  saved: XuiInboundRaw,
+): void {
+  const stream = jsonObject(expected.streamSettings, 'streamSettings', true);
+  const savedStream = jsonObject(saved.streamSettings, 'streamSettings', true);
+  if (stream.security !== 'tls' && savedStream.security !== 'tls') return;
+  const original = inboundDiagnostic(expected);
+  const actual = inboundDiagnostic(saved);
+  if (
+    stream.security !== savedStream.security ||
+    original.serverName !== actual.serverName ||
+    JSON.stringify(original.certificates) !==
+      JSON.stringify(actual.certificates)
+  ) {
+    throw new XuiApiError(
+      'Панель изменила TLS-имя или пути сертификата; подключение не опубликовано',
+    );
+  }
+}
+
+export function safePanelMessage(value: unknown, maxLength = 300): string {
   return (typeof value === 'string' ? value : 'Invalid 3x-ui response')
     .replace(/https?:\/\/\S+/g, '[panel]')
-    .replace(/[A-Za-z0-9_+/=-]{32,}/g, '[redacted]')
+    .replace(/[A-Za-z0-9_+/=-]{32,}/g, (token) =>
+      /^\/(?:etc|root|var|usr|opt|run|home|tmp)\//.test(token)
+        ? token
+        : '[redacted]',
+    )
     .replace(/[\r\n]+/g, ' ')
-    .slice(0, 300);
+    .slice(0, maxLength);
 }
 
 export function responsePayload(data: unknown): unknown {
@@ -24,7 +96,7 @@ export function responsePayload(data: unknown): unknown {
     (data as { success?: unknown }).success !== true
   ) {
     const msg = (data as { msg?: unknown })?.msg;
-    throw new XuiApiError(safePanelMessage(msg));
+    throw new XuiApiError(safePanelMessage(msg, 16384));
   }
   return (data as { obj?: unknown }).obj;
 }
@@ -67,6 +139,45 @@ export function normalizeInbound(value: unknown): XuiInboundRaw {
     ),
     sniffing: JSON.stringify(jsonObject(raw.sniffing, 'sniffing', true)),
   };
+}
+
+export function verifyInboundAccess(inbound: XuiInboundRaw): void {
+  const settings = jsonObject(inbound.settings, 'settings');
+  if (isProxyProtocol(inbound.protocol)) {
+    const accounts = settings.accounts;
+    if (
+      (inbound.protocol !== 'http' && settings.auth !== 'password') ||
+      !Array.isArray(accounts) ||
+      !accounts.length ||
+      accounts.some((account) => {
+        const entry = asRecord(account);
+        return (
+          typeof entry?.user !== 'string' ||
+          !entry.user ||
+          typeof entry?.pass !== 'string' ||
+          !entry.pass
+        );
+      })
+    )
+      throw new XuiApiError('Saved proxy has no authenticated accounts');
+    return;
+  }
+  const clients = settings.clients;
+  if (
+    !Array.isArray(clients) ||
+    !clients.length ||
+    clients.some(
+      (client) => !asRecord(client) || asRecord(client)?.enable === false,
+    )
+  )
+    throw new XuiApiError('Saved inbound has no enabled clients');
+  if (
+    inbound.protocol === 'mtproto' &&
+    (settings.routeThroughXray !== true ||
+      !Number.isInteger(settings.routeXrayPort) ||
+      Number(settings.routeXrayPort) <= 0)
+  )
+    throw new XuiApiError('Panel did not configure the MTProto bridge to Xray');
 }
 
 // Set-Cookie attributes must never become request cookies. A renewed session

@@ -155,7 +155,7 @@ describe('InboundsEditor', () => {
     const selects = screen.getAllByRole('combobox');
     expect(selects.slice(0, 3).every((select) => select.getAttribute('aria-disabled') === 'true')).toBe(true);
     expect(screen.getByLabelText('Название')).not.toBeDisabled();
-    expect(screen.getByText(/AmneziaWG не участвует в общей ротации/)).toBeInTheDocument();
+    expect(screen.getByText(/не участвуют в общей ротации/)).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('icon-Delete').closest('button')!);
     expect(handleChange).toHaveBeenCalledWith([]);
   });

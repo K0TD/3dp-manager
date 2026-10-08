@@ -13,6 +13,8 @@ import {
 } from './mtproto-faketls';
 import { createAmneziaVpnLink } from './amnezia-vpn-link';
 import { resolveSniProfile } from './sni-profiles';
+import { buildProxyLink, buildWireguardLink } from './connection-profiles';
+import { panelInboundProtocol } from '../subscriptions/inbound-config.constants';
 
 interface VlessTlsParams {
   port: number;
@@ -72,7 +74,7 @@ export class InboundBuilderService {
       x?: string;
     };
     if (!privateJwk.d || !publicJwk.x)
-      throw new Error('Не удалось сгенерировать ключи AmneziaWG');
+      throw new Error('Не удалось сгенерировать ключи WireGuard');
     return {
       privateKey: this.base64UrlToBase64(privateJwk.d),
       publicKey: this.base64UrlToBase64(publicJwk.x),
@@ -140,7 +142,13 @@ export class InboundBuilderService {
     const serverKeys = this.generateWireguardKeyPair();
     const clientKeys = this.generateWireguardKeyPair();
     const obfuscation = this.generateAmneziaWgObfuscation();
-    const mtu = Math.min(1360, Math.max(1280, 1420 - obfuscation.s4));
+    const paddingMax = Number(
+      obfuscation.contentPaddingAddition.split('-').at(-1),
+    );
+    const mtu = Math.min(
+      1360,
+      Math.max(1280, 1420 - obfuscation.s4 - paddingMax),
+    );
     return {
       enable: true,
       listen: '0.0.0.0',
@@ -160,7 +168,7 @@ export class InboundBuilderService {
           ipv6Enabled: false,
           ipv6Subnet: '',
           ipv6ExternalInterface: '',
-          routeThroughXray: false,
+          routeThroughXray: true,
           ...obfuscation,
         },
         clients: [
@@ -185,6 +193,92 @@ export class InboundBuilderService {
     };
   }
 
+  buildWireguardInbound(params: {
+    port: number;
+    uuid: string;
+    email?: string;
+  }) {
+    const server = this.generateWireguardKeyPair();
+    const client = this.generateWireguardKeyPair();
+    const peer = {
+      publicKey: client.publicKey,
+      preSharedKey: crypto.randomBytes(32).toString('base64'),
+      allowedIPs: ['10.9.0.2/32', 'fd42:3d70::2/128'],
+      keepAlive: 25,
+      email: params.email ?? params.uuid,
+    };
+    return {
+      enable: true,
+      listen: '0.0.0.0',
+      port: params.port,
+      protocol: 'wireguard',
+      remark: 'wireguard',
+      settings: JSON.stringify({
+        secretKey: server.privateKey,
+        mtu: 1360,
+        noKernelTun: true,
+        address: ['10.9.0.1/32', 'fd42:3d70::1/128'],
+        dns: '1.1.1.1, 8.8.8.8',
+        subnetIp: '10.9.0.0',
+        subnetCidr: 24,
+        // Older panels pass peers straight to the live core before their next
+        // restart. Keep them consistent with clients for both application paths.
+        peers: [{ ...peer, level: 0 }],
+        clients: [
+          {
+            ...client,
+            ...peer,
+            enable: true,
+            limitIp: 0,
+            totalGB: 0,
+            expiryTime: 0,
+            tgId: 0,
+            subId: '',
+            reset: 0,
+          },
+        ],
+      }),
+      streamSettings: '',
+      sniffing: JSON.stringify({
+        enabled: true,
+        destOverride: ['http', 'tls', 'quic'],
+        routeOnly: true,
+        metadataOnly: false,
+      }),
+    };
+  }
+
+  buildProxyInbound(params: {
+    port: number;
+    protocol: 'mixed' | 'http' | 'socks';
+  }) {
+    const accounts = [
+      {
+        user: crypto.randomBytes(8).toString('hex'),
+        pass: crypto.randomBytes(24).toString('base64url'),
+      },
+    ];
+    return {
+      enable: true,
+      listen: '0.0.0.0',
+      port: params.port,
+      protocol: panelInboundProtocol(params.protocol),
+      remark: params.protocol,
+      settings: JSON.stringify(
+        params.protocol === 'http'
+          ? { accounts, allowTransparent: false }
+          : { auth: 'password', accounts, udp: false, ip: '127.0.0.1' },
+      ),
+      streamSettings: '',
+      sniffing: JSON.stringify({
+        enabled: true,
+        destOverride: ['http', 'tls', 'quic'],
+        routeOnly: true,
+        metadataOnly: false,
+      }),
+    };
+  }
+
   buildMtprotoInbound(params: {
     port: number;
     uuid: string;
@@ -205,6 +299,7 @@ export class InboundBuilderService {
       remark: 'mtproto-faketls',
       settings: JSON.stringify({
         fakeTlsDomain,
+        routeThroughXray: true,
         clients: [
           {
             secret,
@@ -863,6 +958,7 @@ export class InboundBuilderService {
     sni: string,
     idOrPass: string,
     flagEmoji: string,
+    connectionType?: string,
   ): string {
     this.flag = flagEmoji;
     const settings = JSON.parse(inbound.settings) as XuiInboundSettings;
@@ -897,6 +993,19 @@ export class InboundBuilderService {
         break;
       case 'amneziawg':
         link = this.buildAmneziaWgLink(inbound, sni, flagEmoji);
+        break;
+      case 'wireguard':
+        link = buildWireguardLink(inbound, sni);
+        break;
+      case 'http':
+      case 'socks':
+      case 'mixed':
+        link = buildProxyLink(
+          connectionType === 'socks'
+            ? { ...inbound, protocol: 'socks' }
+            : inbound,
+          sni,
+        );
         break;
       case 'mtproto':
         link = this.buildMtprotoLink(inbound, sni, idOrPass);
