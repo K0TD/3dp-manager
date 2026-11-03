@@ -41,6 +41,64 @@ describe('InboundBuilderService', () => {
     jest.clearAllMocks();
   });
 
+  it('builds XHTTP GET and carries all extra settings into the link', () => {
+    const inbound = service.buildVlessXhttpGet({
+      port: 8443,
+      uuid: 'client-id',
+      email: 'mail',
+    });
+    const stream = JSON.parse(inbound.streamSettings);
+    expect(stream).toMatchObject({
+      network: 'xhttp',
+      security: 'none',
+      xhttpSettings: { mode: 'packet-up', uplinkHTTPMethod: 'GET' },
+    });
+    expect(JSON.parse(inbound.settings).clients[0]).toMatchObject({
+      id: 'client-id',
+      email: 'mail',
+    });
+    expect(JSON.parse(inbound.settings).clients[0]).not.toHaveProperty('tgId');
+    const link = new URL(
+      service.buildInboundLink(inbound, 'relay.example', '', 'flag'),
+    );
+    expect(link.hostname).toBe('relay.example');
+    expect(link.searchParams.get('mode')).toBe('packet-up');
+    expect(link.searchParams.get('path')).toBe(stream.xhttpSettings.path);
+    const { path, host, mode, ...extra } = stream.xhttpSettings;
+    expect(JSON.parse(link.searchParams.get('extra') || '{}')).toEqual(extra);
+  });
+
+  it('preserves existing XHTTP Reality and TLS parameters and includes only additional settings', () => {
+    const params = {
+      port: 443,
+      uuid: 'client-id',
+      sni: 'example.com',
+      privateKey: 'private',
+      publicKey: 'public',
+      serverName: 'example.com',
+      certificateFile: '/cert',
+      keyFile: '/key',
+    };
+    for (const inbound of [
+      service.buildVlessRealityXhttp(params),
+      service.buildVlessTlsXhttp(params),
+    ]) {
+      const stream = JSON.parse(inbound.streamSettings);
+      const url = new URL(
+        service.buildInboundLink(inbound, 'node.example', '', 'flag'),
+      );
+      expect(url.searchParams.get('path')).toBe(stream.xhttpSettings.path);
+      expect(url.searchParams.get('host')).toBe(stream.xhttpSettings.host);
+      expect(url.searchParams.get('mode')).toBe(stream.xhttpSettings.mode);
+      const { path, host, mode, ...extra } = stream.xhttpSettings;
+      expect(
+        url.searchParams.get('extra')
+          ? JSON.parse(url.searchParams.get('extra') || '{}')
+          : {},
+      ).toEqual(extra);
+    }
+  });
+
   describe('buildVlessRealityTcp', () => {
     const params = {
       port: 443,

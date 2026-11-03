@@ -515,6 +515,18 @@ describe('3x-ui API contracts', () => {
     );
   });
 
+  it.each(['ECONNREFUSED', 'ENOTFOUND', 'ECONNRESET', 'ETIMEDOUT'])(
+    'preserves network error code %s without the original request',
+    async (code) => {
+      api.get.mockRejectedValue(
+        Object.assign(new Error('failed password=secret'), { code }),
+      );
+      const result = await service.checkNodeConnection(tokenNode);
+      expect(result.message).toContain(code);
+      expect(result.message).not.toContain('secret');
+    },
+  );
+
   it('requires a running Xray before activation', async () => {
     await expect(service.waitForXray(tokenNode)).resolves.toBeUndefined();
     api.get.mockResolvedValue({

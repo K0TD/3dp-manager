@@ -34,6 +34,8 @@ import { InitialSchema1700000000000 } from './migrations/1700000000000-initial-s
 import { AddInboundOrder1790000000000 } from './migrations/1790000000000-add-inbound-order';
 import { AddNodeCapabilities1800000000000 } from './migrations/1800000000000-add-node-capabilities';
 import { AddRoutingPresets1810000000000 } from './migrations/1810000000000-add-routing-presets';
+import { AddSubscriptionMetadata1820000000000 } from './migrations/1820000000000-add-subscription-metadata';
+import { AddOperationErrorDetails1830000000000 } from './migrations/1830000000000-add-operation-error-details';
 
 @Module({
   imports: [
@@ -71,6 +73,8 @@ import { AddRoutingPresets1810000000000 } from './migrations/1810000000000-add-r
         AddInboundOrder1790000000000,
         AddNodeCapabilities1800000000000,
         AddRoutingPresets1810000000000,
+        AddSubscriptionMetadata1820000000000,
+        AddOperationErrorDetails1830000000000,
       ],
       synchronize: process.env.DB_SYNCHRONIZE === 'true',
       migrationsRun: process.env.DB_MIGRATIONS_RUN !== 'false',

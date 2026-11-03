@@ -6,6 +6,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import type { XuiInboundDiagnostic } from '../../xui/xui-contract';
+import type { OperationErrorDetails } from '../operation-error';
 
 export interface RotationInboundDiagnostic extends XuiInboundDiagnostic {
   configId?: string;
@@ -29,6 +30,7 @@ export interface RotationNodeResult {
   created: number;
   pendingCleanup: number;
   message?: string;
+  errorDetails?: OperationErrorDetails;
   details?: {
     phase: string;
     inbounds: RotationInboundDiagnostic[];
@@ -55,6 +57,9 @@ export class RotationOperation {
 
   @Column({ type: 'text', nullable: true })
   error?: string;
+
+  @Column({ type: 'simple-json', nullable: true })
+  errorDetails?: OperationErrorDetails | null;
 
   @Column({ type: 'timestamp', nullable: true })
   startedAt?: Date;

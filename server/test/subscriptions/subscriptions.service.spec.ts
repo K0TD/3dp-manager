@@ -111,6 +111,56 @@ describe('SubscriptionsService', () => {
     jest.clearAllMocks();
   });
 
+  it('validates routing profiles on create and update while preserving config IDs', async () => {
+    mockSubRepo.create.mockImplementation((value) => value);
+    mockSubRepo.save.mockImplementation(async (value) => value);
+    const config = {
+      type: 'happ-routing',
+      configId: 'd1c3d3c1-dac0-453f-9284-297ad877ab12',
+      routingProfile: '{}',
+    };
+    const created = await service.create({
+      name: 'Routing',
+      inboundsConfig: [config],
+    });
+    expect(created.inboundsConfig[0]).toMatchObject(config);
+    await expect(
+      service.create({
+        name: 'Invalid',
+        inboundsConfig: [{ type: 'incy-routing', routingProfile: '[]' }],
+      }),
+    ).rejects.toThrow();
+    mockSubRepo.findOne.mockResolvedValue({ ...created, inbounds: [] });
+    await expect(
+      service.update(created.id, {
+        inboundsConfig: [{ ...config, routingProfile: 'bad' }],
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('persists and clears subscription metadata', async () => {
+    mockSubRepo.create.mockImplementation((value) => value);
+    mockSubRepo.save.mockImplementation(async (value) => value);
+    const created = await service.create({
+      name: 'Test',
+      note: 'Note',
+      supportUrl: 'https://support.test',
+      websiteUrl: 'https://site.test',
+    });
+    expect(created).toMatchObject({
+      note: 'Note',
+      supportUrl: 'https://support.test',
+      websiteUrl: 'https://site.test',
+    });
+    mockSubRepo.findOne.mockResolvedValue({ ...created, inbounds: [] });
+    const updated = await service.update(created.id, {
+      note: '',
+      supportUrl: '',
+      websiteUrl: '',
+    });
+    expect(updated).toMatchObject({ note: '', supportUrl: '', websiteUrl: '' });
+  });
+
   describe('AmneziaWG save lifecycle', () => {
     const config = {
       configId: 'awg-config',

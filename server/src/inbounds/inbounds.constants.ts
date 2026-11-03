@@ -1,6 +1,7 @@
 export const CONNECTION_TYPES = [
   'vless-tcp-reality',
   'vless-xhttp-reality',
+  'vless-xhttp-get',
   'vless-xhttp-tls',
   'vless-grpc-reality',
   'vless-ws',

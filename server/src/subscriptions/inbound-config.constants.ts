@@ -1,6 +1,7 @@
 export const INBOUND_TYPES = [
   'vless-tcp-reality',
   'vless-xhttp-reality',
+  'vless-xhttp-get',
   'vless-grpc-reality',
   'vless-ws',
   'vless-tcp-tls',
@@ -17,6 +18,8 @@ export const INBOUND_TYPES = [
   'http',
   'socks',
   'custom',
+  'happ-routing',
+  'incy-routing',
 ] as const;
 
 export type InboundType = (typeof INBOUND_TYPES)[number];
@@ -48,3 +51,8 @@ export const CERTIFICATE_INBOUND_TYPES = new Set<InboundType>([
 
 export const CERTIFICATE_MODES = ['node', 'custom'] as const;
 export type CertificateMode = (typeof CERTIFICATE_MODES)[number];
+
+export const ROUTING_INBOUND_TYPES = new Set<string>([
+  'happ-routing',
+  'incy-routing',
+]);

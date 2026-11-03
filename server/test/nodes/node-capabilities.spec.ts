@@ -39,6 +39,13 @@ describe('MTProto node capabilities', () => {
     ).not.toContain('mtproto-faketls');
   });
 
+  it('does not advertise routing profiles as panel protocols', () => {
+    const supported = buildNodeCapabilities(baseInput).supportedInboundTypes;
+    expect(supported).not.toContain('happ-routing');
+    expect(supported).not.toContain('incy-routing');
+    expect(supported).toContain('vless-xhttp-get');
+  });
+
   it('parses versions with product-name prefixes', () => {
     expect(
       supportsInboundType('hysteria2-udp', {

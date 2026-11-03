@@ -9,10 +9,15 @@ import {
 } from '@nestjs/throttler';
 import { JwtAuthGuard } from 'src/auth/jwt-auth.guard';
 import { AppModule } from 'src/app.module';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { TYPEORM_MODULE_OPTIONS } from '@nestjs/typeorm/dist/typeorm.constants';
+import { AddSubscriptionMetadata1820000000000 } from 'src/migrations/1820000000000-add-subscription-metadata';
+import { AddOperationErrorDetails1830000000000 } from 'src/migrations/1830000000000-add-operation-error-details';
 
 type DynamicModuleLike = {
   module?: unknown;
   global?: boolean;
+  imports?: DynamicModuleLike[];
   providers?: Array<{
     provide?: unknown;
     useClass?: unknown;
@@ -26,6 +31,18 @@ describe('AppModule конфигурация', () => {
   afterEach(() => {
     delete process.env.ALLOWED_ORIGINS;
     delete process.env.JWT_SECRET;
+  });
+
+  it('registers the subscription metadata migration', async () => {
+    const imports = (Reflect.getMetadata(MODULE_METADATA.IMPORTS, AppModule) ??
+      []) as AppImportEntry[];
+    const resolved = await Promise.all(imports);
+    const db = resolved.find((entry) => entry.module === TypeOrmModule);
+    const options = db?.imports?.[0]?.providers?.find(
+      (provider) => provider.provide === TYPEORM_MODULE_OPTIONS,
+    )?.useValue as { migrations: unknown[] };
+    expect(options.migrations).toContain(AddSubscriptionMetadata1820000000000);
+    expect(options.migrations).toContain(AddOperationErrorDetails1830000000000);
   });
 
   it('должен регистрировать ThrottlerModule с лимитом 1000/60000ms (лояльный API)', () => {

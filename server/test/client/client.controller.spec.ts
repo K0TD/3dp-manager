@@ -76,6 +76,132 @@ describe('ClientController', () => {
     jest.clearAllMocks();
   });
 
+  it.each(['direct', 'relay'])(
+    'prepends enabled routing lines for %s',
+    async (route) => {
+      mockSubRepo.findOne.mockResolvedValue({
+        name: 'Test',
+        isEnabled: true,
+        inboundsConfig: [
+          { type: 'happ-routing', routingProfile: '{}' },
+          {
+            type: 'incy-routing',
+            routingProfile: 'https://example.com/profile',
+          },
+          {
+            type: 'happ-routing',
+            routingProfile: 'happ://routing/off',
+            enabled: false,
+          },
+        ],
+        inbounds: [
+          {
+            id: 1,
+            status: 'active',
+            protocol: 'vless',
+            link: 'vless://id@host:443',
+            position: 1,
+          },
+        ],
+      });
+      mockTunnelRepo.findOne.mockResolvedValue({ id: 1, ip: 'relay.example' });
+      const req = { headers: {}, query: {} } as any;
+      const res = { setHeader: jest.fn(), send: jest.fn() } as any;
+      if (route === 'direct') await controller.getSubscription('id', req, res);
+      else await controller.getRelaySubscription('id', '1', req, res);
+      const lines = Buffer.from(res.send.mock.calls[0][0], 'base64')
+        .toString()
+        .split('\n');
+      expect(lines).toEqual([
+        'happ://routing/add/e30=',
+        'incy://autorouting/add/https://example.com/profile',
+        route === 'direct'
+          ? 'vless://id@host:443'
+          : 'vless://id@relay.example:443',
+      ]);
+    },
+  );
+
+  it.each(['direct', 'relay'])(
+    'sets metadata headers for %s subscription',
+    async (route) => {
+      mockSubRepo.findOne.mockResolvedValue({
+        name: 'Подписка',
+        note: 'Привет',
+        supportUrl: 'tg://resolve?domain=help',
+        websiteUrl: 'https://example.com',
+        isEnabled: true,
+        inbounds: [],
+      });
+      mockTunnelRepo.findOne.mockResolvedValue({ id: 1, ip: 'relay.example' });
+      const req = { headers: {}, query: {} } as any;
+      const res = { setHeader: jest.fn(), send: jest.fn() } as any;
+      if (route === 'direct') await controller.getSubscription('id', req, res);
+      else await controller.getRelaySubscription('id', '1', req, res);
+      expect(res.setHeader).toHaveBeenCalledWith(
+        'profile-title',
+        `base64:${Buffer.from('Подписка').toString('base64')}`,
+      );
+      expect(res.setHeader).toHaveBeenCalledWith(
+        'announce',
+        `base64:${Buffer.from('Привет').toString('base64')}`,
+      );
+      expect(res.setHeader).toHaveBeenCalledWith(
+        'support-url',
+        'tg://resolve?domain=help',
+      );
+      expect(res.setHeader).toHaveBeenCalledWith(
+        'profile-web-page-url',
+        'https://example.com',
+      );
+    },
+  );
+
+  it.each(['direct', 'relay'])(
+    'preserves escaped metadata URLs in %s response headers',
+    async (route) => {
+      const supportUrl = 'tg://resolve?domain=help&start=one%2Ftwo%25three';
+      const websiteUrl =
+        'https://example.com/%D1%82%D0%B5%D1%81%D1%82?q=a%2Fb%25c';
+      mockSubRepo.findOne.mockResolvedValue({
+        name: 'Test',
+        supportUrl,
+        websiteUrl,
+        isEnabled: true,
+        inbounds: [],
+      });
+      mockTunnelRepo.findOne.mockResolvedValue({ id: 1, ip: 'relay.example' });
+      const req = { headers: {}, query: {} } as any;
+      const res = { setHeader: jest.fn(), send: jest.fn() } as any;
+      if (route === 'direct') await controller.getSubscription('id', req, res);
+      else await controller.getRelaySubscription('id', '1', req, res);
+      expect(res.setHeader).toHaveBeenCalledWith('support-url', supportUrl);
+      expect(res.setHeader).toHaveBeenCalledWith(
+        'profile-web-page-url',
+        websiteUrl,
+      );
+    },
+  );
+
+  it('encodes header-invalid characters without rewriting valid escapes', async () => {
+    mockSubRepo.findOne.mockResolvedValue({
+      name: 'Test',
+      websiteUrl: 'https://example.com/%2F/тест\r\n',
+      isEnabled: true,
+      inbounds: [],
+    });
+    const res = { setHeader: jest.fn(), send: jest.fn() } as any;
+    await controller.getSubscription(
+      'id',
+      { headers: {}, query: {} } as any,
+      res,
+    );
+    expect(res.setHeader).toHaveBeenCalledWith(
+      'profile-web-page-url',
+      'https://example.com/%2F/%D1%82%D0%B5%D1%81%D1%82%0D%0A',
+    );
+  });
+
   describe.each(['direct', 'relay'])('%s browser QR codes', (route) => {
     const request = {
       headers: { 'user-agent': 'Mozilla/5.0' },

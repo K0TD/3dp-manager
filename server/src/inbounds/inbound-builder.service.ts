@@ -391,6 +391,79 @@ export class InboundBuilderService {
     };
   }
 
+  buildVlessXhttpGet(params: { port: number; uuid: string; email?: string }) {
+    const { port, uuid, email } = params;
+    return {
+      enable: true,
+      port,
+      protocol: 'vless',
+      remark: 'vless-xhttp-get',
+      tag: `in-${port}-xhttp`,
+      settings: JSON.stringify({
+        clients: [
+          {
+            id: uuid,
+            email: email ?? uuid,
+            flow: '',
+            enable: true,
+            limitIp: 0,
+            totalGB: 0,
+            expiryTime: 0,
+            subId: '',
+            reset: 0,
+          },
+        ],
+        decryption: 'none',
+        encryption: 'none',
+      }),
+      sniffing: JSON.stringify({
+        enabled: true,
+        destOverride: ['http', 'tls', 'quic'],
+      }),
+      streamSettings: JSON.stringify({
+        network: 'xhttp',
+        security: 'none',
+        xhttpSettings: {
+          path: '/static/media/live/segment9.ts',
+          host: '',
+          mode: 'packet-up',
+          xPaddingBytes: '4-10',
+          xPaddingObfsMode: true,
+          xPaddingKey: '_token',
+          xPaddingHeader: 'X-Client-Version',
+          xPaddingPlacement: 'query',
+          xPaddingMethod: 'tokenish',
+          sessionIDPlacement: 'path',
+          sessionIDKey: 'sid',
+          sessionIDTable: 'mvcbjonhadefgiklpqrstuwxyz',
+          sessionIDLength: '16-24',
+          seqPlacement: 'query',
+          seqKey: 'offset',
+          uplinkDataPlacement: 'body',
+          uplinkDataKey: '',
+          scMaxEachPostBytes: '500000-1000000',
+          noSSEHeader: false,
+          scMaxBufferedPosts: 50,
+          scStreamUpServerSecs: '20-80',
+          serverMaxHeaderBytes: 0,
+          uplinkHTTPMethod: 'GET',
+          headers: {},
+          scMinPostsIntervalMs: '50-150',
+          uplinkChunkSize: 0,
+          noGRPCHeader: false,
+          xmux: {
+            maxConcurrency: '16-32',
+            maxConnections: '4-8',
+            cMaxReuseTimes: '0',
+            hMaxRequestTimes: '300-600',
+            hMaxReusableSecs: '900-1800',
+            hKeepAlivePeriod: 0,
+          },
+        },
+      }),
+    };
+  }
+
   buildVlessRealityXhttp(params: {
     port: number;
     uuid: string;
@@ -1176,6 +1249,8 @@ export class InboundBuilderService {
       params.set('path', x?.path || profile.xhttpPath || '/');
       params.set('host', host);
       params.set('mode', x?.mode || 'auto');
+      const { path: _path, host: _host, mode: _mode, ...extra } = x || {};
+      if (Object.keys(extra).length) params.set('extra', JSON.stringify(extra));
     }
 
     if (network === 'ws') {

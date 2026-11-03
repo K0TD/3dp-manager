@@ -269,11 +269,21 @@ export class XuiService {
     const err = error as AxiosError<{ msg?: string }>;
     if (err.response)
       return err.response.data?.msg
-        ? safePanelMessage(err.response.data.msg, 16384)
+        ? `3x-ui returned HTTP ${err.response.status}: ${safePanelMessage(err.response.data.msg, 16384)}`
         : `3x-ui returned HTTP ${err.response.status}`;
-    return /timeout|aborted|cancel/i.test(err.message || '')
-      ? 'Connection timed out'
-      : 'Node is unreachable';
+    const code =
+      /^(ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNABORTED)$/.test(
+        err.code || '',
+      )
+        ? err.code
+        : err.message?.match(
+            /\b(ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNABORTED)\b/,
+          )?.[1];
+    const networkCode = code ? ` (${code})` : '';
+    return /timeout|aborted|cancel/i.test(err.message || '') ||
+      /ETIMEDOUT|ECONNABORTED/.test(code || '')
+      ? `Connection timed out${networkCode}`
+      : `Node is unreachable${networkCode}`;
   }
 
   async addInbound(

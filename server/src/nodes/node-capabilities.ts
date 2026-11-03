@@ -1,5 +1,6 @@
 import {
   INBOUND_TYPES,
+  ROUTING_INBOUND_TYPES,
   InboundType,
 } from '../subscriptions/inbound-config.constants';
 
@@ -26,8 +27,9 @@ const WIREGUARD_MULTI_CLIENT_MIN_PANEL_VERSION = [3, 5, 0] as const;
 export function buildNodeCapabilities(
   input: NodeCapabilityInput,
 ): NodeCapabilities {
-  const supportedInboundTypes = INBOUND_TYPES.filter((type) =>
-    supportsInboundType(type, input),
+  const supportedInboundTypes = INBOUND_TYPES.filter(
+    (type) =>
+      !ROUTING_INBOUND_TYPES.has(type) && supportsInboundType(type, input),
   );
   const warnings: string[] = [];
 

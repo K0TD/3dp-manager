@@ -26,6 +26,7 @@ import { buildNodeCapabilities } from './node-capabilities';
 import { Setting } from '../settings/entities/setting.entity';
 import { SubscriptionLockService } from '../subscriptions/subscription-lock.service';
 import { NodeDeletionService } from './node-deletion.service';
+import { ROUTING_INBOUND_TYPES } from '../subscriptions/inbound-config.constants';
 
 type GeoResult = {
   ip: string;
@@ -275,6 +276,7 @@ export class NodesService {
     const relayIds = new Set(tunnels.map((tunnel) => String(tunnel.id)));
     const rewrite = <
       T extends {
+        type?: string;
         nodeId?: string;
         relayServerId?: number | string;
         flag?: string;
@@ -287,6 +289,7 @@ export class NodesService {
       inherited = false,
       disableMatched = disable,
     ): T => {
+      if (item.type && ROUTING_INBOUND_TYPES.has(item.type)) return item;
       const matched = item.nodeId === node.id || (inherited && !item.nodeId);
       const relayMatched =
         item.relayServerId != null && relayIds.has(String(item.relayServerId));
@@ -356,9 +359,10 @@ export class NodesService {
       sub.nodeId === node.id ||
       (sub.inboundsConfig || []).some(
         (item) =>
-          item.nodeId === node.id ||
-          (item.relayServerId != null &&
-            relayIds.has(String(item.relayServerId))),
+          !ROUTING_INBOUND_TYPES.has(item.type || '') &&
+          (item.nodeId === node.id ||
+            (item.relayServerId != null &&
+              relayIds.has(String(item.relayServerId)))),
       )
     );
   }

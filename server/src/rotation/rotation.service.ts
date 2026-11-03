@@ -28,11 +28,11 @@ import {
   CERTIFICATE_INBOUND_TYPES,
   InboundType,
   PERSISTENT_INBOUND_TYPES,
+  ROUTING_INBOUND_TYPES,
   panelInboundProtocol,
 } from '../subscriptions/inbound-config.constants';
 import {
   isPortConflict,
-  safePanelMessage,
   XuiRuntimeError,
   inboundDiagnostic,
 } from '../xui/xui-contract';
@@ -40,6 +40,11 @@ import { supportsInboundType } from '../nodes/node-capabilities';
 import { SubscriptionLockService } from '../subscriptions/subscription-lock.service';
 import { NodeDeletionService } from '../nodes/node-deletion.service';
 import { renameAmneziaVpnLink } from '../inbounds/amnezia-vpn-link';
+import {
+  normalizeOperationError,
+  redactOperationError,
+  OperationErrorStage,
+} from './operation-error';
 import {
   RotationNodeResult,
   RotationOperation,
@@ -177,6 +182,7 @@ export class RotationService implements OnModuleInit {
     operation.status = RotationOperationStatus.Running;
     operation.startedAt = new Date();
     operation.error = undefined;
+    operation.errorDetails = null;
     await this.operationRepo.save(operation);
 
     this.logger.log(
@@ -186,13 +192,34 @@ export class RotationService implements OnModuleInit {
     const startedAt = Date.now();
     try {
       const result = await this.performRotation(operation.subscriptionIds);
-      operation.results = result.results;
+      operation.results = result.results.map((item) => ({
+        ...item,
+        ...(item.message
+          ? { message: redactOperationError(item.message, 16384) }
+          : {}),
+        ...(item.status !== 'succeeded' && item.message && !item.errorDetails
+          ? {
+              errorDetails: normalizeOperationError(item.message, {
+                node: item.nodeName,
+                stage: 'rotation',
+              }),
+            }
+          : {}),
+      }));
       operation.status = result.success
         ? RotationOperationStatus.Succeeded
         : result.results.some((item) => item.status === 'succeeded')
           ? RotationOperationStatus.Partial
           : RotationOperationStatus.Failed;
-      operation.error = result.success ? undefined : result.message;
+      operation.error = result.success
+        ? undefined
+        : redactOperationError(result.message, 16384);
+      operation.errorDetails = result.success
+        ? null
+        : operation.results.find(
+            (item) => item.status !== 'succeeded' && item.errorDetails,
+          )?.errorDetails ||
+          normalizeOperationError(result.message, { stage: 'rotation' });
 
       const durationMs = Date.now() - startedAt;
       if (result.success) {
@@ -201,15 +228,20 @@ export class RotationService implements OnModuleInit {
         );
       } else {
         this.logger.warn(
-          `[RotationService] Операция ${operation.id} завершена со статусом ${operation.status} за ${durationMs}ms: ${result.message}`,
+          `[RotationService] Операция ${operation.id} завершена со статусом ${operation.status} за ${durationMs}ms: ${operation.error}`,
         );
       }
     } catch (error) {
       operation.status = RotationOperationStatus.Failed;
       operation.error = this.safeMessage(error);
+      operation.errorDetails = normalizeOperationError(error, {
+        stage: 'rotation',
+      });
       this.logger.error(
         `[RotationService] Сбой обработки операции ${operation.id}: ${this.safeMessage(error)}`,
-        error instanceof Error ? error.stack : undefined,
+        error instanceof Error && error.stack
+          ? redactOperationError(error.stack, 16384)
+          : undefined,
       );
     } finally {
       operation.finishedAt = new Date();
@@ -436,7 +468,10 @@ export class RotationService implements OnModuleInit {
     domains: Domain[],
     defaultNode: Node | null,
   ) {
-    const allConfigs = subscription.inboundsConfig || [];
+    const configured = subscription.inboundsConfig || [];
+    const allConfigs = configured.filter(
+      (config) => !ROUTING_INBOUND_TYPES.has(config.type),
+    );
     this.logger.log(
       `[RotationService] Обработка подписки «${subscription.name}» (${subscription.id}), конфигураций инбаундов: ${allConfigs.length}`,
     );
@@ -448,19 +483,25 @@ export class RotationService implements OnModuleInit {
           !PERSISTENT_INBOUND_TYPES.has(inbound.protocol),
       );
       await this.queueCleanup(obsolete);
-      this.logger.warn(
-        `[RotationService] У подписки «${subscription.name}» (${subscription.id}) нет конфигураций инбаундов.`,
-      );
+      if (!configured.length) {
+        this.logger.warn(
+          `[RotationService] У подписки «${subscription.name}» (${subscription.id}) нет конфигураций инбаундов.`,
+        );
+      }
       return [
         {
           subscriptionId: subscription.id,
           subscriptionName: subscription.name,
           nodeId: subscription.nodeId || 'none',
-          nodeName: subscription.node?.name || 'Без конфигураций',
+          nodeName:
+            subscription.node?.name ||
+            (configured.length ? 'Маршрутизация' : 'Без конфигураций'),
           status: 'succeeded' as const,
           created: 0,
           pendingCleanup: obsolete.length,
-          message: 'У подписки нет конфигураций инбаундов',
+          message: configured.length
+            ? 'В подписке остались только профили маршрутизации'
+            : 'У подписки нет конфигураций инбаундов',
         },
       ];
     }
@@ -488,12 +529,13 @@ export class RotationService implements OnModuleInit {
     }
 
     if (configsChanged) {
-      subscription.inboundsConfig = allConfigs;
+      subscription.inboundsConfig = configured;
       await this.subRepo.save(subscription);
     }
 
-    const enabledConfigs = allConfigs
+    const enabledConfigs = configured
       .map((config, position) => ({ config, position }))
+      .filter(({ config }) => !ROUTING_INBOUND_TYPES.has(config.type))
       .filter(
         ({ config }) =>
           config.enabled !== false &&
@@ -605,6 +647,11 @@ export class RotationService implements OnModuleInit {
     const usedPorts = new Set<number>();
     const diagnostics: RotationInboundDiagnostic[] = [];
     let phase = 'Проверка ноды и TLS';
+    let stage: OperationErrorStage = 'preflight';
+    let failedConfig: InboundConfig | undefined;
+    let failedPort: number | undefined;
+    let failureReason: string | undefined;
+    let diagnosticStart = 0;
     let realityKeys:
       | Awaited<ReturnType<XuiService['getNewX25519Cert']>>
       | undefined;
@@ -643,6 +690,12 @@ export class RotationService implements OnModuleInit {
       for (const positionedConfig of group.configs) {
         const { config } = positionedConfig;
         phase = `Создание ${config.name || config.type}`;
+        stage = 'create';
+        diagnosticStart = diagnostics.length;
+        if (!failureReason) {
+          failedConfig = config;
+          failedPort = undefined;
+        }
         if (config.type?.includes('reality') && !realityKeys) {
           this.logger.log(
             `[RotationService] Запрос ключей Reality для ноды «${group.node?.name || 'main'}»...`,
@@ -672,6 +725,11 @@ export class RotationService implements OnModuleInit {
           const reason =
             this.xuiService.getLastInboundError(group.node) ||
             '3x-ui отклонил создание инбаунда';
+          if (!failureReason) {
+            failureReason = reason;
+            failedConfig = config;
+            failedPort = diagnostics.at(-1)?.port;
+          }
           rejectedInbounds.push({
             type: config.type,
             name: config.name,
@@ -690,7 +748,7 @@ export class RotationService implements OnModuleInit {
           )
           .join('; ');
         this.logger.warn(
-          `[RotationService] Сводка отклонённых панелью инбаундов для подписки «${subscription.name}» на ноде «${nodeLabel}» (${rejectedInbounds.length}/${group.configs.length}): ${summary}`,
+          `[RotationService] Сводка отклонённых панелью инбаундов для подписки «${subscription.name}» на ноде «${nodeLabel}» (${rejectedInbounds.length}/${group.configs.length}): ${redactOperationError(summary, 16384)}`,
         );
         throw new Error(summary);
       }
@@ -707,6 +765,9 @@ export class RotationService implements OnModuleInit {
       }
 
       phase = 'Проверка запуска Xray';
+      stage = 'verify';
+      failedConfig = undefined;
+      failedPort = undefined;
       if (
         group.node &&
         group.configs.some(
@@ -772,7 +833,9 @@ export class RotationService implements OnModuleInit {
       }
       this.logger.error(
         `[RotationService] Сбой ротации для подписки «${subscription.name}» на ноде «${nodeLabel}»: ${errMessage}`,
-        error instanceof Error ? error.stack : undefined,
+        error instanceof Error && error.stack
+          ? redactOperationError(error.stack, 16384)
+          : undefined,
       );
       await this.queueCleanup(created);
       return {
@@ -786,6 +849,22 @@ export class RotationService implements OnModuleInit {
         created: 0,
         pendingCleanup: created.length,
         message: errMessage,
+        errorDetails: normalizeOperationError(failureReason || errMessage, {
+          node: group.node?.name,
+          inboundType: failedConfig?.type,
+          port:
+            failedPort ||
+            (failedConfig && diagnostics.length > diagnosticStart
+              ? diagnostics.at(-1)?.port
+              : undefined) ||
+            (typeof failedConfig?.port === 'number'
+              ? failedConfig.port
+              : /^\d+$/.test(failedConfig?.port || '')
+                ? Number(failedConfig?.port)
+                : undefined),
+          stage,
+          panelRejected: Boolean(failureReason),
+        }),
         details: {
           phase,
           inbounds: diagnostics.length
@@ -941,7 +1020,8 @@ export class RotationService implements OnModuleInit {
   private resolveInboundSni(config: InboundConfig, domains: Domain[]) {
     if (
       CERTIFICATE_INBOUND_TYPES.has(config.type as InboundType) ||
-      PERSISTENT_INBOUND_TYPES.has(config.type)
+      PERSISTENT_INBOUND_TYPES.has(config.type) ||
+      config.type === 'vless-xhttp-get'
     )
       return '';
     const configuredSni = config.sni?.trim() || '';
@@ -1127,6 +1207,8 @@ export class RotationService implements OnModuleInit {
         realityParams
           ? this.inboundBuilder.buildVlessRealityTcp(realityParams)
           : null,
+      'vless-xhttp-get': () =>
+        this.inboundBuilder.buildVlessXhttpGet({ port, uuid, email }),
       'vless-xhttp-reality': () =>
         realityParams
           ? this.inboundBuilder.buildVlessRealityXhttp(realityParams)
@@ -1712,6 +1794,6 @@ export class RotationService implements OnModuleInit {
   private safeMessage(error: unknown) {
     const message =
       error instanceof Error ? error.message : 'Неизвестная ошибка';
-    return safePanelMessage(message, 16384);
+    return redactOperationError(message, 16384);
   }
 }

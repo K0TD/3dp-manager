@@ -63,6 +63,7 @@ describe('RotationService resilient generations', () => {
   const inboundBuilder = {
     buildVlessRealityTcp: jest.fn(),
     buildVlessRealityXhttp: jest.fn(),
+    buildVlessXhttpGet: jest.fn(),
     buildVlessRealityGrpc: jest.fn(),
     buildVlessWs: jest.fn(),
     buildVlessTlsTcp: jest.fn(),
@@ -107,6 +108,61 @@ describe('RotationService resilient generations', () => {
       certificateFile: '/panel/cert/fullchain.pem',
       keyFile: '/panel/cert/privkey.pem',
     });
+  });
+
+  it('persists normalized details next to the legacy operation and node messages', async () => {
+    const operation = { id: 'operation', status: 'queued', results: [] };
+    operationRepo.findOne.mockResolvedValue(operation);
+    jest.spyOn(service, 'performRotation').mockResolvedValue({
+      success: false,
+      message: 'Node is unreachable (ECONNREFUSED)',
+      results: [
+        {
+          subscriptionId: 'sub',
+          subscriptionName: 'Sub',
+          nodeName: 'Node',
+          status: 'preserved',
+          created: 0,
+          pendingCleanup: 0,
+          message: 'Node is unreachable (ECONNREFUSED)',
+        },
+      ],
+    });
+    await service.processQueuedOperation();
+    expect(operationRepo.save).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        error: 'Node is unreachable (ECONNREFUSED)',
+        errorDetails: expect.objectContaining({
+          code: 'ECONNREFUSED',
+          node: 'Node',
+        }),
+        results: [
+          expect.objectContaining({
+            message: 'Node is unreachable (ECONNREFUSED)',
+            errorDetails: expect.objectContaining({ code: 'ECONNREFUSED' }),
+          }),
+        ],
+      }),
+    );
+    await expect(service.getOperation('operation')).resolves.toBe(operation);
+  });
+
+  it('normalizes unexpected operation failures without saving credentials', async () => {
+    const operation = { id: 'operation', status: 'queued', results: [] };
+    operationRepo.findOne.mockResolvedValue(operation);
+    jest
+      .spyOn(service, 'performRotation')
+      .mockRejectedValue(new Error('password=shortsecret connect ECONNRESET'));
+    await service.processQueuedOperation();
+    expect(operationRepo.save).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        error: expect.not.stringContaining('shortsecret'),
+        errorDetails: expect.objectContaining({
+          code: 'ECONNRESET',
+          raw: expect.not.stringContaining('shortsecret'),
+        }),
+      }),
+    );
   });
 
   describe('persistent AmneziaWG', () => {
@@ -354,6 +410,137 @@ describe('RotationService resilient generations', () => {
     expect(results[0]).toMatchObject({ status: 'preserved', nodeId: node.id });
     expect(manager.update).not.toHaveBeenCalled();
     expect(old.status).toBe(InboundStatus.Active);
+  });
+
+  it('queues obsolete ordinary inbounds when only routing profiles remain', async () => {
+    const old = {
+      id: 11,
+      status: InboundStatus.Active,
+      protocol: 'vless',
+      link: 'vless://old',
+    };
+    const persistent = {
+      id: 12,
+      status: InboundStatus.Active,
+      protocol: 'amneziawg',
+    };
+    const alreadyPending = {
+      id: 13,
+      status: InboundStatus.PendingCleanup,
+      protocol: 'vless',
+    };
+    const subscription = {
+      id: 'routing',
+      name: 'Routing',
+      inbounds: [old, persistent, alreadyPending],
+      inboundsConfig: [
+        { type: 'happ-routing', configId: 'route', routingProfile: '{}' },
+      ],
+    } as Subscription;
+    const result = await (service as any).rotateSubscription(
+      subscription,
+      [],
+      null,
+    );
+    expect(result).toEqual([
+      expect.objectContaining({
+        status: 'succeeded',
+        created: 0,
+        pendingCleanup: 1,
+      }),
+    ]);
+    expect(old.status).toBe(InboundStatus.PendingCleanup);
+    expect(old).toHaveProperty('nextCleanupAt', expect.any(Date));
+    expect(inboundRepo.save).toHaveBeenCalledWith([old]);
+    expect(persistent.status).toBe(InboundStatus.Active);
+    expect(manager.transaction).not.toHaveBeenCalled();
+    expect(xuiService.addInbound).not.toHaveBeenCalled();
+  });
+
+  it('keeps original positions when routing profiles are interleaved', async () => {
+    const sub = {
+      id: 'mixed',
+      name: 'Mixed',
+      inbounds: [],
+      inboundsConfig: [
+        { type: 'happ-routing', configId: 'route', routingProfile: '{}' },
+        { type: 'custom', configId: 'connection', link: 'vless://test' },
+        { type: 'incy-routing', routingProfile: '{}' },
+      ],
+    } as Subscription;
+    const result = await (service as any).rotateSubscription(sub, [], null);
+    expect(result).toEqual([
+      expect.objectContaining({ status: 'succeeded', created: 1 }),
+    ]);
+    expect(inboundRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ configId: 'connection', position: 1 }),
+    );
+    expect(xuiService.addInbound).not.toHaveBeenCalled();
+  });
+
+  it('rotates XHTTP GET without SNI or Reality keys using the relay and configured position', async () => {
+    const node = {
+      id: 'node-get',
+      name: 'GET',
+      flag: 'flag',
+      host: 'node.example',
+      healthStatus: 'online',
+    } as Node;
+    const sub = {
+      id: 'get-sub',
+      name: 'GET',
+      node,
+      inbounds: [],
+      inboundsConfig: [
+        { type: 'happ-routing', routingProfile: '{}' },
+        {
+          type: 'vless-xhttp-get',
+          nodeId: node.id,
+          relayServerId: 7,
+          port: 8080,
+          sni: 'random',
+          configId: 'get-config',
+        },
+      ],
+    } as Subscription;
+    const built = {
+      port: 8080,
+      protocol: 'vless',
+      settings: JSON.stringify({ clients: [{ id: 'id' }] }),
+      streamSettings: JSON.stringify({ network: 'xhttp', security: 'none' }),
+    };
+    nodeRepo.createQueryBuilder.mockReturnValue({
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockResolvedValue(node),
+    });
+    tunnelRepo.findOne.mockResolvedValue({
+      id: 7,
+      nodeId: node.id,
+      domain: 'relay.example',
+    });
+    inboundBuilder.buildVlessXhttpGet.mockReturnValue(built);
+    inboundBuilder.buildInboundLink.mockReturnValue('vless://link');
+    xuiService.addInbound.mockResolvedValue({ id: 101, inbound: built });
+    const results = await (service as any).rotateSubscription(sub, [], node);
+    expect(results[0]).toMatchObject({ status: 'succeeded', created: 1 });
+    expect(inboundBuilder.buildVlessXhttpGet).toHaveBeenCalledWith({
+      port: 8080,
+      uuid: expect.any(String),
+      email: expect.any(String),
+    });
+    expect(inboundBuilder.buildInboundLink).toHaveBeenCalledWith(
+      built,
+      'relay.example',
+      '',
+      'flag',
+      'vless-xhttp-get',
+    );
+    expect(inboundRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ configId: 'get-config', position: 1 }),
+    );
+    expect(xuiService.getNewX25519Cert).not.toHaveBeenCalled();
   });
 
   it('publishes a complete local generation and retires the old one atomically', async () => {
@@ -944,6 +1131,13 @@ describe('RotationService resilient generations', () => {
     expect(results[0]).toMatchObject({
       status: 'preserved',
       created: 0,
+      errorDetails: {
+        code: 'PANEL_INVALID_PAYLOAD',
+        stage: 'create',
+        inboundType: 'vmess-tcp',
+        port: 8081,
+        node: 'Partial node',
+      },
     });
     expect(loggerWarnSpy).toHaveBeenCalledWith(
       expect.stringContaining('Сводка отклонённых панелью инбаундов'),

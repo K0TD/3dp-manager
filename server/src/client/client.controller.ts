@@ -26,6 +26,10 @@ import {
 import { InboundStatus } from '../inbounds/entities/inbound.entity';
 import { sortInboundsByPosition } from '../inbounds/inbound-order';
 import {
+  buildHappRoutingLink,
+  buildIncyRoutingLink,
+} from '../subscriptions/routing-profile';
+import {
   amneziaConfigFileName,
   attachmentDisposition,
 } from './subscription-name';
@@ -70,6 +74,7 @@ export class ClientController {
       throw new HttpException('Subscription not found', HttpStatus.NOT_FOUND);
     }
     res.setHeader('Cache-Control', 'no-store');
+    this.setSubscriptionMetadata(sub, res);
 
     const previewData = this.buildPreviewData(
       sortInboundsByPosition(sub.inbounds || [])
@@ -98,7 +103,10 @@ export class ClientController {
         res,
       );
     }
-    const plainTextList = previewData.subscriptionLinks.join('\n');
+    const plainTextList = [
+      ...this.routingLines(sub),
+      ...previewData.subscriptionLinks,
+    ].join('\n');
     const base64Config = Buffer.from(plainTextList).toString('base64');
 
     const userAgent = req.headers['user-agent'] || '';
@@ -153,6 +161,7 @@ export class ClientController {
       throw new HttpException('Subscription not found', HttpStatus.NOT_FOUND);
     }
     res.setHeader('Cache-Control', 'no-store');
+    this.setSubscriptionMetadata(sub, res);
 
     const previewData = this.buildPreviewData(
       sortInboundsByPosition(sub.inbounds || [])
@@ -189,7 +198,10 @@ export class ClientController {
         res,
       );
     }
-    const plainTextList = previewData.subscriptionLinks.join('\n');
+    const plainTextList = [
+      ...this.routingLines(sub),
+      ...previewData.subscriptionLinks,
+    ].join('\n');
     const base64Config = Buffer.from(plainTextList).toString('base64');
 
     const userAgent = req.headers['user-agent'] || '';
@@ -217,6 +229,43 @@ export class ClientController {
       res.setHeader('Content-Type', 'text/html');
       res.send(html);
     }
+  }
+
+  private setSubscriptionMetadata(sub: Subscription, res: Response) {
+    const encode = (value: string) =>
+      `base64:${Buffer.from(value, 'utf8').toString('base64')}`;
+    res.setHeader('profile-title', encode(sub.name || 'Подписка'));
+    if (sub.note) res.setHeader('announce', encode(sub.note));
+    if (sub.supportUrl)
+      res.setHeader('support-url', this.encodeHeaderUrl(sub.supportUrl));
+    if (sub.websiteUrl)
+      res.setHeader(
+        'profile-web-page-url',
+        this.encodeHeaderUrl(sub.websiteUrl),
+      );
+  }
+
+  private encodeHeaderUrl(value: string): string {
+    return value.replace(/[^\t\x20-\x7e\x80-\xff]+/gu, (invalid) =>
+      Array.from(
+        Buffer.from(invalid, 'utf8'),
+        (byte) => `%${byte.toString(16).toUpperCase().padStart(2, '0')}`,
+      ).join(''),
+    );
+  }
+
+  private routingLines(sub: Subscription): string[] {
+    return (sub.inboundsConfig || [])
+      .filter(
+        (config) =>
+          config.enabled !== false &&
+          (config.type === 'happ-routing' || config.type === 'incy-routing'),
+      )
+      .map((config) =>
+        config.type === 'happ-routing'
+          ? buildHappRoutingLink(config.routingProfile)
+          : buildIncyRoutingLink(config.routingProfile),
+      );
   }
 
   private async buildPreviewQrData(

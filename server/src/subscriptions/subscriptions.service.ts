@@ -16,6 +16,7 @@ import {
   INBOUND_TYPES,
   InboundType,
   PERSISTENT_INBOUND_TYPES,
+  ROUTING_INBOUND_TYPES,
   panelInboundProtocol,
 } from './inbound-config.constants';
 import { supportsInboundType } from '../nodes/node-capabilities';
@@ -32,6 +33,7 @@ import {
 } from '../inbounds/connection-profiles';
 import { RotationService } from '../rotation/rotation.service';
 import { SubscriptionLockService } from './subscription-lock.service';
+import { buildHappRoutingLink, buildIncyRoutingLink } from './routing-profile';
 
 type InboundConfig = NonNullable<
   CreateSubscriptionDto['inboundsConfig']
@@ -90,6 +92,9 @@ export class SubscriptionsService {
     const sub = this.subRepo.create({
       id: uuidv4(),
       name: dto.name,
+      note: dto.note,
+      supportUrl: dto.supportUrl,
+      websiteUrl: dto.websiteUrl,
       uuid: uuidv4(),
       inboundsConfig: this.withConfigIds(dto.inboundsConfig || []),
       isAutoRotationEnabled: dto.isAutoRotationEnabled ?? true,
@@ -123,6 +128,10 @@ export class SubscriptionsService {
     if (dto.name && dto.name.trim().length > 0) {
       sub.name = dto.name;
     }
+
+    if (dto.note !== undefined) sub.note = dto.note;
+    if (dto.supportUrl !== undefined) sub.supportUrl = dto.supportUrl;
+    if (dto.websiteUrl !== undefined) sub.websiteUrl = dto.websiteUrl;
 
     let nextConfigs: InboundConfig[] | undefined;
     if (dto.inboundsConfig) {
@@ -376,6 +385,12 @@ export class SubscriptionsService {
     const configIds = new Set<string>();
     for (const config of inboundsConfig || []) {
       this.validateConfigIdentity(config, configIds);
+      if (ROUTING_INBOUND_TYPES.has(config.type)) {
+        if (config.type === 'happ-routing')
+          buildHappRoutingLink(config.routingProfile);
+        else buildIncyRoutingLink(config.routingProfile);
+        continue;
+      }
       this.validateTlsConfig(config);
       await this.validateMtprotoConfig(config);
       if (config.type === 'custom') continue;

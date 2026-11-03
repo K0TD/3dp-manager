@@ -1,5 +1,6 @@
 import {
   IsString,
+  IsUrl,
   IsArray,
   ValidateNested,
   IsOptional,
@@ -7,14 +8,17 @@ import {
   IsUUID,
   IsInt,
   ValidateIf,
-  ArrayMaxSize,
   ValidateBy,
   ValidationOptions,
   IsIn,
   MaxLength,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { CERTIFICATE_MODES, INBOUND_TYPES } from '../inbound-config.constants';
+import {
+  CERTIFICATE_MODES,
+  INBOUND_TYPES,
+  ROUTING_INBOUND_TYPES,
+} from '../inbound-config.constants';
 import type { CertificateMode } from '../inbound-config.constants';
 
 const PORT_OR_RANDOM = 'portOrRandom';
@@ -45,6 +49,23 @@ function IsPortOrRandom(validationOptions?: ValidationOptions) {
   );
 }
 
+function HasAtMost20Connections() {
+  return ValidateBy({
+    name: 'maxConnectionCount',
+    validator: {
+      validate: (value: unknown) =>
+        !Array.isArray(value) ||
+        value.filter((item: unknown) => {
+          if (!item || typeof item !== 'object') return true;
+          const type = (item as { type?: unknown }).type;
+          return typeof type !== 'string' || !ROUTING_INBOUND_TYPES.has(type);
+        }).length <= 20,
+      defaultMessage: () =>
+        'inboundsConfig must contain no more than 20 connections',
+    },
+  });
+}
+
 export class InboundConfigDto {
   @IsUUID()
   @IsOptional()
@@ -54,6 +75,10 @@ export class InboundConfigDto {
   @IsIn(INBOUND_TYPES)
   type: string;
 
+  @ValidateIf(
+    (dto: InboundConfigDto) =>
+      !['happ-routing', 'incy-routing'].includes(dto.type),
+  )
   @IsOptional()
   @IsPortOrRandom()
   port?: number | string;
@@ -105,6 +130,10 @@ export class InboundConfigDto {
   @MaxLength(2048)
   keyFile?: string;
 
+  @IsString()
+  @IsOptional()
+  routingProfile?: string;
+
   @IsBoolean()
   @IsOptional()
   enabled?: boolean;
@@ -115,13 +144,38 @@ export class InboundConfigDto {
 }
 
 export class CreateSubscriptionDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  note?: string;
+
+  @IsOptional()
+  @ValidateIf((_dto, value: unknown) => value !== '')
+  @IsUrl({
+    protocols: ['http', 'https', 'tg'],
+    require_protocol: true,
+    require_tld: false,
+  })
+  @MaxLength(2048)
+  supportUrl?: string;
+
+  @IsOptional()
+  @ValidateIf((_dto, value: unknown) => value !== '')
+  @IsUrl({
+    protocols: ['http', 'https'],
+    require_protocol: true,
+    require_tld: false,
+  })
+  @MaxLength(2048)
+  websiteUrl?: string;
+
   @IsString()
   name: string;
 
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => InboundConfigDto)
-  @ArrayMaxSize(20)
+  @HasAtMost20Connections()
   @IsOptional()
   inboundsConfig?: InboundConfigDto[];
 

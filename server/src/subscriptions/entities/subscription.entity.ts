@@ -19,6 +19,15 @@ export class Subscription {
   @Column()
   name: string;
 
+  @Column({ type: 'varchar', length: 200, nullable: true })
+  note?: string;
+
+  @Column({ type: 'varchar', length: 2048, nullable: true })
+  supportUrl?: string;
+
+  @Column({ type: 'varchar', length: 2048, nullable: true })
+  websiteUrl?: string;
+
   @Column({ unique: true })
   uuid: string;
 
@@ -37,6 +46,7 @@ export class Subscription {
     certificateMode?: 'node' | 'custom';
     tlsServerName?: string;
     link?: string;
+    routingProfile?: string;
     nodeId?: string;
     relayServerId?: number;
     flag?: string;
