@@ -87,6 +87,40 @@ describe('operation error normalization', () => {
     ).toMatchObject({ code: 'SSH_FAILED', stage: 'ssh' });
   });
 
+  it.each([
+    'password',
+    'privateKey',
+    'token',
+    'cookie',
+    'clientId',
+    'id',
+    'uuid',
+  ])('redacts %s in panel JSON embedded at multiple escaping depths', (key) => {
+    const secret = `short-${key}-secret`;
+    let embedded = JSON.stringify({ [key]: secret, other: 'value' });
+    for (let level = 1; level <= 4; level++) {
+      const panelMessage = `3x-ui отказ: ${JSON.stringify({ settings: embedded })}`;
+      const details = normalizeOperationError(panelMessage, {
+        stage: 'create',
+      });
+      expect(details.raw).not.toContain(secret);
+      expect(details.raw).toContain('3x-ui отказ:');
+      embedded = JSON.stringify({ data: embedded });
+    }
+  });
+
+  it('redacts plain short client IDs and preserves unrelated diagnostic text', () => {
+    const raw = redactOperationError(
+      '{"id":"short-client-id","uuid":"short-uuid","port":443}',
+    );
+    expect(raw).not.toContain('short-client-id');
+    expect(raw).not.toContain('short-uuid');
+    expect(raw).toContain('443');
+    expect(redactOperationError('invalid: diagnostic')).toBe(
+      'invalid: diagnostic',
+    );
+  });
+
   it('redacts secrets before truncation from raw and contextual fields', () => {
     const value = [
       '{"password":"short password","token":"shortToken","privateKey":"privateValue","id":"123e4567-e89b-12d3-a456-426614174000"}',

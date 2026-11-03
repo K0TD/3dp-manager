@@ -35,7 +35,17 @@ export function redactOperationError(value: unknown, maxLength = 2048): string {
       : value instanceof Error
         ? value.message
         : 'Неизвестная ошибка';
-  return message
+  // An escaped JSON document may contain further escaped strings at arbitrary
+  // nesting depths. Once an escaped credential key is found, discard the
+  // remainder instead of trying to parse potentially malformed panel output.
+  const escapedCredential =
+    /\\+["'](?:password|passwd|pwd|token|secret|private[_-]?key|authorization|cookie|session|api[_-]?key|client[_-]?id|uuid|id)\\+["']\s*[:=]/i.exec(
+      message,
+    );
+  const safeInput = escapedCredential
+    ? `${message.slice(0, escapedCredential.index)}[скрыто]`
+    : message;
+  return safeInput
     .replace(
       /-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-\r\n]*PRIVATE KEY-----|$)/gi,
       '[скрытый ключ]',
@@ -46,7 +56,7 @@ export function redactOperationError(value: unknown, maxLength = 2048): string {
     )
     .replace(/\bBearer\s+[^\s,;"']+/gi, 'Bearer [скрыто]')
     .replace(
-      /(["']?(?:password|passwd|pwd|token|secret|private[_-]?key|authorization|cookie|session|api[_-]?key|client[_-]?id)["']?\s*[=:]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}]+)/gi,
+      /(["']?\b(?:password|passwd|pwd|token|secret|private[_-]?key|authorization|cookie|session|api[_-]?key|client[_-]?id|uuid|id)["']?\s*[=:]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}]+)/gi,
       '$1[скрыто]',
     )
     .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, '[ссылка скрыта]')

@@ -350,6 +350,116 @@ describe('NodesService', () => {
     expect(subscriptionsRepo.save).not.toHaveBeenCalled();
   });
 
+  it('waits for implicit main-node provisioning before queuing its new inbound', async () => {
+    const node = { id: 'main', name: 'Main', isMain: true } as Node;
+    const repo = createNodeRepo(
+      jest.fn().mockResolvedValueOnce(node).mockResolvedValue(null),
+    );
+    repo.findOne.mockResolvedValue(null);
+    const { service, subscriptionsRepo, inboundsRepo, lock } =
+      createService(repo);
+    const subscription = {
+      id: 'sub-implicit',
+      name: 'Different name',
+      nodeId: null,
+      inboundsConfig: [
+        { type: 'wireguard', nodeId: '', configId: 'wg-config' },
+      ],
+    };
+    subscriptionsRepo.find.mockResolvedValue([subscription]);
+    const published: Inbound[] = [];
+    inboundsRepo.find.mockImplementation(async () => published);
+    let release!: () => void;
+    let entered!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    lock.run.mockImplementation(async (_id, work) => {
+      entered();
+      await gate;
+      published.push({
+        id: 12,
+        nodeId: node.id,
+        status: 'active',
+        protocol: 'wireguard',
+      } as Inbound);
+      return work();
+    });
+    const removal = service.remove(node.id, 'deferred');
+    await waiting;
+    expect(inboundsRepo.find).not.toHaveBeenCalled();
+    release();
+    await expect(removal).resolves.toMatchObject({
+      deferred: true,
+      pendingCleanup: 1,
+    });
+    expect(lock.run).toHaveBeenCalledWith('sub-implicit', expect.any(Function));
+    expect(published[0].status).toBe('pending_cleanup');
+    expect(inboundsRepo.save).toHaveBeenCalledWith([
+      expect.objectContaining({ id: 12, status: 'pending_cleanup' }),
+    ]);
+  });
+
+  it('locks implicit name matches on non-main nodes without locking unrelated subscriptions', async () => {
+    const node = { id: 'named', name: '  France  ', isMain: false } as Node;
+    const repo = createNodeRepo(
+      jest.fn().mockResolvedValueOnce(node).mockResolvedValue(null),
+    );
+    repo.findOne.mockResolvedValue({ id: 'other', isMain: true });
+    const { service, subscriptionsRepo, lock } = createService(repo);
+    subscriptionsRepo.find.mockResolvedValue([
+      {
+        id: 'matched',
+        name: 'france',
+        inboundsConfig: [{ type: 'wireguard' }],
+      },
+      {
+        id: 'unrelated',
+        name: 'other',
+        inboundsConfig: [{ type: 'wireguard' }],
+      },
+      {
+        id: 'custom',
+        name: 'france',
+        inboundsConfig: [{ type: 'custom' }, { type: 'happ-routing' }],
+      },
+      {
+        id: 'inherited-other',
+        name: 'france',
+        nodeId: 'other',
+        inboundsConfig: [{ type: 'wireguard' }],
+      },
+    ]);
+    await service.remove('named', 'deferred');
+    expect(lock.run).toHaveBeenCalledTimes(1);
+    expect(lock.run).toHaveBeenCalledWith('matched', expect.any(Function));
+  });
+
+  it('recognizes the earliest fallback node when no main node exists', async () => {
+    const node = { id: 'fallback', name: 'Fallback', isMain: false } as Node;
+    const repo = createNodeRepo(
+      jest.fn().mockResolvedValueOnce(node).mockResolvedValue(null),
+    );
+    repo.findOne.mockResolvedValue(node);
+    const { service, subscriptionsRepo, lock } = createService(repo);
+    subscriptionsRepo.find.mockResolvedValue([
+      {
+        id: 'implicit',
+        name: 'Other',
+        inboundsConfig: [{ type: 'wireguard' }],
+      },
+    ]);
+    await service.remove('fallback', 'force');
+    expect(lock.run).toHaveBeenCalledWith('implicit', expect.any(Function));
+    expect(repo.findOne).toHaveBeenCalledWith({
+      where: { deletedAt: IsNull() },
+      order: { isMain: 'DESC', createdAt: 'ASC' },
+    });
+  });
+
   it('holds the deletion marker while waiting for a rotation and clears it after a failed safe removal', async () => {
     const node = { id: 'gone', name: 'Gone' } as Node;
     const repo = createNodeRepo(jest.fn().mockResolvedValueOnce(node));

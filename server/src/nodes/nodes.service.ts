@@ -223,9 +223,9 @@ export class NodesService {
     const now = new Date();
     node.deletedAt = now;
     node.healthStatus = NodeHealthStatus.Deleting;
-    node.isMain = false;
 
     await this.detachNodeSubscriptions(node, true);
+    node.isMain = false;
 
     const inbounds = await this.inboundsRepo.find({
       where: { nodeId: node.id },
@@ -308,14 +308,16 @@ export class NodesService {
       return next;
     };
     const subscriptions = await this.subscriptionsRepo.find();
+    const isDefault = await this.isImplicitDefault(node, subscriptions);
     for (const found of subscriptions.filter((sub) =>
-      this.referencesNode(sub, node, relayIds),
+      this.referencesNode(sub, node, relayIds, isDefault),
     )) {
       await this.subscriptionLock.run(found.id, async () => {
         const sub = await this.subscriptionsRepo.findOne({
           where: { id: found.id },
         });
-        if (!sub || !this.referencesNode(sub, node, relayIds)) return;
+        if (!sub || !this.referencesNode(sub, node, relayIds, isDefault))
+          return;
         const inherited = sub.nodeId === node.id;
         const config = sub.inboundsConfig || [];
         const next = config.map((item) => rewrite(item, inherited));
@@ -354,9 +356,43 @@ export class NodesService {
     }
   }
 
-  private referencesNode(sub: Subscription, node: Node, relayIds: Set<string>) {
+  private hasImplicitNode(sub: Subscription) {
+    return (
+      !sub.nodeId &&
+      (sub.inboundsConfig || []).some(
+        (item) =>
+          !item.nodeId &&
+          item.type !== 'custom' &&
+          !ROUTING_INBOUND_TYPES.has(item.type || ''),
+      )
+    );
+  }
+
+  private async isImplicitDefault(node: Node, subscriptions: Subscription[]) {
+    if (node.isMain) return true;
+    if (!subscriptions.some((sub) => this.hasImplicitNode(sub))) return false;
+    // Match rotation's main-node preference and earliest-node fallback.
+    const defaultNode = await this.nodesRepo.findOne({
+      where: { deletedAt: IsNull() },
+      order: { isMain: 'DESC', createdAt: 'ASC' },
+    });
+    return defaultNode?.id === node.id;
+  }
+
+  private referencesNode(
+    sub: Subscription,
+    node: Node,
+    relayIds: Set<string>,
+    isDefault: boolean,
+  ) {
+    const matchesName = Boolean(
+      sub.name &&
+      node.name &&
+      sub.name.trim().toLowerCase() === node.name.trim().toLowerCase(),
+    );
     return (
       sub.nodeId === node.id ||
+      (this.hasImplicitNode(sub) && (isDefault || matchesName)) ||
       (sub.inboundsConfig || []).some(
         (item) =>
           !ROUTING_INBOUND_TYPES.has(item.type || '') &&
@@ -371,8 +407,9 @@ export class NodesService {
     const tunnels = await this.tunnelsRepo.find({ where: { nodeId: node.id } });
     const relayIds = new Set(tunnels.map((tunnel) => String(tunnel.id)));
     const subscriptions = await this.subscriptionsRepo.find();
+    const isDefault = await this.isImplicitDefault(node, subscriptions);
     for (const sub of subscriptions.filter((item) =>
-      this.referencesNode(item, node, relayIds),
+      this.referencesNode(item, node, relayIds, isDefault),
     )) {
       await this.subscriptionLock.run(sub.id, async () => {
         // A running rotation finishes before we inspect and remove its inbounds.
