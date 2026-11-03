@@ -71,9 +71,7 @@ export function normalizeOperationError(
     ? redactOperationError(context.inboundType, 100)
     : undefined;
   const port =
-    Number.isInteger(context.port) &&
-    context.port! >= 1 &&
-    context.port! <= 65535
+    Number.isInteger(context.port) && context.port >= 1 && context.port <= 65535
       ? context.port
       : undefined;
   let stage = context.stage || 'rotation';
