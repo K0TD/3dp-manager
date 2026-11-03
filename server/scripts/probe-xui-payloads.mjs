@@ -23,7 +23,6 @@ const client = (id, extra = {}) => ({
   limitIp: 0,
   totalGB: 0,
   expiryTime: 0,
-  tgId: 0,
   subId: '',
   reset: 0,
   ...extra,

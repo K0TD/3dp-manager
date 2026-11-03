@@ -88,7 +88,7 @@ test('refreshes CSRF after login and diagnoses all eight types with cleanup', as
   assert.deepEqual(result.created.map((r) => r.protocol), ['vless', 'vless', 'vless', 'vless', 'vmess', 'shadowsocks', 'trojan', 'hysteria']);
   for (const inbound of result.created) {
     for (const client of JSON.parse(inbound.settings).clients) {
-      if (inbound.protocol !== 'hysteria') assert.equal(client.tgId, 0);
+      assert.equal(Object.hasOwn(client, 'tgId'), false);
       if (inbound.protocol === 'vmess') assert.equal(client.alterId, 0);
     }
   }

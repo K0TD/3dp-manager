@@ -426,8 +426,7 @@ describe('InboundBuilderService', () => {
 
       const settings = JSON.parse(result.settings);
       expect(settings.clients[0].id).toBe('test-uuid-vmess');
-      expect(settings.clients[0].tgId).toBe(0);
-      expect(typeof settings.clients[0].tgId).toBe('number');
+      expect(settings.clients[0]).not.toHaveProperty('tgId');
       expect(settings.clients[0].alterId).toBe(0);
       expect(typeof settings.clients[0].alterId).toBe('number');
     });
@@ -508,12 +507,11 @@ describe('InboundBuilderService', () => {
       // SNI может быть IP, если конфиг не найден
     });
 
-    it('должен создать ссылку hysteria2 с портом', () => {
+    it('должен создать ссылку hysteria2 с портом по умолчанию', () => {
       const result = service.buildHysteria2Link(
         '192.168.1.1',
         'ya.ru',
         '%F0%9F%92%AF%20hysteria2',
-        443,
       );
 
       expect(result).toContain(':443');
@@ -839,7 +837,7 @@ describe('InboundBuilderService', () => {
     });
   });
 
-  describe('Совместимость с Go struct 3x-ui (десериализация int64 tgId и int alterId)', () => {
+  describe('Совместимость клиентов с 3x-ui', () => {
     const commonParams = {
       port: 443,
       uuid: '11111111-2222-3333-4444-555555555555',
@@ -851,7 +849,7 @@ describe('InboundBuilderService', () => {
       keyFile: '/panel/cert/privkey.pem',
     };
 
-    it('должен генерировать tgId: 0 (число) для всех поддерживаемых протоколов', () => {
+    it('не должен отправлять tgId для всех поддерживаемых протоколов', () => {
       const inbounds = [
         service.buildVlessRealityTcp(commonParams),
         service.buildVlessRealityXhttp(commonParams),
@@ -876,8 +874,7 @@ describe('InboundBuilderService', () => {
         expect(Array.isArray(settings.clients)).toBe(true);
         expect(settings.clients.length).toBeGreaterThan(0);
         for (const client of settings.clients) {
-          expect(client.tgId).toBe(0);
-          expect(typeof client.tgId).toBe('number');
+          expect(client).not.toHaveProperty('tgId');
         }
       }
     });
