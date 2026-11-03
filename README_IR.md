@@ -4,7 +4,7 @@
 
 ![Version](https://img.shields.io/badge/version-2.2.0-blue.svg) ![Downloads](https://img.shields.io/badge/downloads-5.1k-blue) [![License](https://img.shields.io/badge/license-GPL%20V3-blue.svg?longCache=true)](https://www.gnu.org/licenses/gpl-3.0) [![Telegram](https://img.shields.io/badge/Telegram-26A5E4?style=flat&logo=telegram&logoColor=white)](https://t.me/denpiligrim_web) [![YouTube Channel Subscribers](https://img.shields.io/youtube/channel/subscribers/UCOv2tFFYDY4mXOM60PVz8zw)](https://www.youtube.com/@denpiligrim)
 
-# 3DP-MANAGER
+# 3DP-MANAGER · K0TD fork
 
 ابزاری برای تولید خودکار inbound برای پنل [3x-ui](https://github.com/MHSanaei/3x-ui)، ساخت اشتراک‌های یکپارچه، مدیریت چندین نود 3x-ui و پیکربندی relay forwarding از سرورهای واسط به سرورهای اصلی. از نسخه 2.0.0 به بعد، پروژه دارای رابط گرافیکی و تنظیمات ساده کاربری است.
 
@@ -28,7 +28,7 @@
 هدف اصلی ابزار این است که ترافیک شما یکسان به نظر نرسد. 3DP-MANAGER در بازه زمانی تعیین‌شده، مجموعه‌ای از اتصال‌ها با پارامترهای متفاوت تولید می‌کند:
 
 - پروتکل‌ها: `vless`, `vmess`, `shadowsocks`, `hysteria2`, `trojan`;
-- پورت‌ها: `443` و `8443` به‌صورت ثابت، و پورت‌های تصادفی از بازه `10000-60000`;
+- پورت‌ها: `443` و `8443` به‌صورت ثابت، و پورت‌های تصادفی از بازه `10000-59999`;
 - transport: `tcp`, `websocket`, `grpc`, `xhttp`;
 - SNI از whitelist دامنه‌ها انتخاب می‌شود یا به‌صورت دستی تنظیم می‌گردد؛
 - نود، relay server، پورت و پرچم را می‌توان برای هر inbound جداگانه تنظیم کرد.
@@ -60,10 +60,23 @@
 - تنظیم خودکار relay forwarding به‌صورت اختیاری
 - نصب Web UI از طریق HTTP یا HTTPS: Let's Encrypt، self-signed یا گواهی‌های خودتان
 
+## قابلیت‌ها و پیکربندی فورک
+
+1. یک نود 3x-ui و اطلاعات احراز هویت آن را اضافه کنید؛ نود اصلی پیش‌فرض است. در صورت نیاز relay و forwarding را تنظیم کنید، فهرست دامنه‌های SNI را بسازید و اشتراک را ایجاد کنید. نشانی `/bus/<UUID>` در روتیشن ثابت می‌ماند.
+2. اتصال‌های VLESS TCP/XHTTP/gRPC Reality، VLESS WS، VLESS TCP/WS/XHTTP TLS، VMess، Shadowsocks، Trojan Reality، Hysteria2، MTProto FakeTLS، AmneziaWG، WireGuard، HTTP/SOCKS/mixed و لینک سفارشی پشتیبانی می‌شوند. پشتیبانی به نسخه پنل و Xray بستگی دارد؛ AmneziaWG به 3x-ui نسخه 3.7 یا جدیدتر نیاز دارد و MTProto از پل داخلی پنل به Xray استفاده می‌کند.
+3. پروفایل‌های SNI برای Reality بر اساس دامنه fingerprint، `spiderX`، مسیر و padding مربوط به XHTTP را انتخاب می‌کنند؛ مقدار پیش‌فرض `chrome` است. اتصال TLS از مسیر گواهی نود یا مسیر و نام TLS مشخص‌شده استفاده می‌کند.
+4. روتیشن نودها مستقل است؛ در خطا آخرین نسل سالم حفظ می‌شود و inboundهای قدیمی برای پاک‌سازی قرار می‌گیرند. AmneziaWG، WireGuard و HTTP/SOCKS/mixed هنگام ذخیره ساخته می‌شوند و در روتیشن کلید و پورت ثابت دارند؛ برای تغییر نوع، نود، relay یا پورت، ابتدا حذف و ذخیره کنید و سپس اتصال جدید را اضافه کنید.
+5. حذف نود: `safe` ابتدا inboundهای پنل را پاک می‌کند و در خطا متوقف می‌شود، اما مواردی که قبلاً حذف شده‌اند بازگردانده نمی‌شوند؛ `deferred` نود را پنهان و پاک‌سازی را به تعویق می‌اندازد؛ `force` بدون تماس با پنل رکوردهای محلی را حذف می‌کند و ممکن است پاک‌سازی دستی پنل لازم باشد. اشتراک‌ها می‌مانند؛ در دو حالت آخر تنظیمات مرتبط غیرفعال می‌شوند و با نود در دسترس ممکن است در روتیشن بعدی خودکار فعال شوند.
+6. presetهای نود می‌توانند دامنه/IPهای روسیه یا سرویس‌های تشخیص IP را مسدود کنند و ترافیک Google را از IPv4 بفرستند. این تنظیمات برای Xray سمت سرور و وابسته به geodata هستند و با پروفایل مسیریابی کلاینت تفاوت دارند.
+7. API سرور از `happ-routing` و `incy-routing`، فیلدهای `note`، `supportUrl` و `websiteUrl` و نوع `vless-xhttp-get` (حالت XHTTP packet-up، روش GET، بدون TLS/SNI) پشتیبانی می‌کند. خطوط مسیریابی پیش از لینک‌ها قرار دارند و جزو سقف ۲۰ اتصال نیستند. در فرم اشتراک نوع **Happ routing** یا **INCY routing** را انتخاب و پروفایل را در فیلد چندخطی وارد کنید؛ فیلدهای **یادداشت**، **لینک پشتیبانی**، **وب‌سایت** و نوع اتصال **VLESS XHTTP GET** نیز در فرم هستند. صفحه اصلی خطاهای عملیات را با متن روشن و راهنما نشان می‌دهد و جزئیات فنی به‌صورت بسته نمایش داده می‌شوند. [api.md](api.md) را ببینید.
+8. حذف عادی اشتراک در صورت خطای پاک‌سازی 3x-ui متوقف می‌شود. `force=true` حذف را ادامه می‌دهد؛ inboundهای باقی‌مانده را در پنل بررسی و دستی حذف کنید.
+
+از تنظیمات بخش انتقال پنل می‌توان نسخه پشتیبان گرفت و در سرور جدید نصب‌کننده فورک را با `--restore /root/panel.3dp-backup` اجرا کرد. فایل می‌تواند گذرواژه مستقل داشته باشد و UUID اشتراک‌ها، نودها، تنظیمات و اطلاعات relay را نگه می‌دارد.
+
 ## نیازمندی‌ها
 
 - Ubuntu 20.04 یا جدیدتر، Debian 12.11 یا جدیدتر
-- پنل `3x-ui` نسخه v2.8.4 یا جدیدتر
+- پنل `3x-ui` نسخه v2.9.4 یا جدیدتر
 - دسترسی root روی سرور
 - Docker و Docker Compose؛ اگر نصب نباشند، اسکریپت نصب تلاش می‌کند آن‌ها را خودکار نصب کند
 - دامنه + گواهی SSL (اختیاری)
@@ -242,3 +255,18 @@ node get_domains.js
 
 - تلگرام: [@denpiligrim_web](https://t.me/denpiligrim_web)
 - بخش Issues در همین مخزن
+
+## نویسندگان و قدردانی
+
+پروژه اصلی را [@DenPiligrim](https://github.com/denpiligrim) ساخته و فورک را [@K0TD](https://github.com/k0td) نگهداری می‌کند. از مشارکت‌کنندگان سپاسگزاریم:
+
+- [@zangetsuka](https://github.com/zangetsuka) — Happ routing، [PR #53](https://github.com/denpiligrim/3dp-manager/pull/53). پشتیبانی Happ به فورک منتقل و با INCY تکمیل شده است؛ امضای commitهای اصلی `root` بود.
+- [@xFalconMH](https://github.com/xFalconMH) — روتیشن با ساخت پیش از حذف و پاک‌سازی، [PR #59](https://github.com/denpiligrim/3dp-manager/pull/59). ایده با نگهداری نسل سالم و پاک‌سازی فورک سازگار شده است.
+- [@PavelArs](https://github.com/PavelArs) — سازگاری ساختار کلاینت 3x-ui، [PR #62](https://github.com/denpiligrim/3dp-manager/pull/62). سازگاری `tgId` در فورک منتقل شده است.
+- [@n1xsi](https://github.com/n1xsi) — سازگاری 3x-ui، CSRF، عیب‌یابی، آدرس Trojan و probe، [PR #63](https://github.com/denpiligrim/3dp-manager/pull/63). فورک از اصلاحات مربوط و probe عیب‌یابی استفاده می‌کند.
+- [@K0TD](https://github.com/k0td) — عملیات اجباری و پس‌زمینه ورود، [PR #64](https://github.com/denpiligrim/3dp-manager/pull/64). فورک حذف اجباری و حالت‌های اختصاصی حذف نود را پشتیبانی می‌کند.
+- [@lunal1ght](https://github.com/lunal1ght) — گزارش مسیر گواهی در [issue #52](https://github.com/denpiligrim/3dp-manager/issues/52). فورک از گواهی نود و مسیر سفارشی پشتیبانی می‌کند.
+- [@keidos57](https://github.com/keidos57) — تأیید مشکل تولید در [issue #61](https://github.com/denpiligrim/3dp-manager/issues/61) مرتبط با سازگاری `tgId` که در فورک اصلاح شده است.
+- [@iqubik](https://github.com/iqubik) — مشارکت در نصب، رابط، تست و مستندات از جمله [PR #39](https://github.com/denpiligrim/3dp-manager/pull/39). از Jules (`google-labs-jules[bot]`) و دیگر مشارکت‌کنندگان نیز سپاسگزاریم.
+
+فهرست کامل در تاریخچه Git و صفحه مشارکت‌کنندگان [فورک](https://github.com/k0td/3dp-manager/graphs/contributors) و [پروژه اصلی](https://github.com/denpiligrim/3dp-manager/graphs/contributors) است. مجوز: [GPL-3.0](LICENSE).

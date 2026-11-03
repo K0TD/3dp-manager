@@ -100,7 +100,7 @@
 ```json
 [
   {
-    "id": 1,
+    "id": "b93b98f6-7d55-4d32-b0dd-497680715a31",
     "uuid": "abc-123-def",
     "name": "My Subscription",
     "isEnabled": true,
@@ -124,6 +124,9 @@
 ```json
 {
   "name": "My Subscription",
+  "note": "Поддержка по ссылке",
+  "supportUrl": "tg://resolve?domain=support",
+  "websiteUrl": "https://example.com",
   "inboundsConfig": [
     {
       "configId": "8d1f6bf3-47f0-4f56-9ed4-8f9d89e10616",
@@ -146,10 +149,27 @@
 }
 ```
 
+В конфигурацию можно включить до 20 подключений; элементы `happ-routing` и `incy-routing` в этот лимит не входят. Для routing передайте `routingProfile`: JSON-объект в строке, base64 или ссылку Happ/INCY. INCY также принимает HTTP(S) URL профиля. Профили проверяются при создании и обновлении, не создают inbound в панели и выдаются первыми в `/bus`. `vless-xhttp-get` создаёт XHTTP `packet-up` с uplink GET, без TLS/SNI; дополнительные настройки XHTTP попадают в параметр ссылки `extra`.
+
+`note` — не более 200 символов; `supportUrl` принимает HTTP, HTTPS или TG, `websiteUrl` — HTTP или HTTPS (до 2048 символов). Для очистки поля передайте пустую строку.
+
+Пример конфигураций routing и XHTTP GET:
+
+```json
+{
+  "name": "Routing example",
+  "inboundsConfig": [
+    { "type": "happ-routing", "routingProfile": "{\"Name\":\"My rules\"}" },
+    { "type": "incy-routing", "routingProfile": "https://example.com/rules.json" },
+    { "type": "vless-xhttp-get", "port": 8443, "nodeId": "c474f7d3-99c6-4c38-aa9b-144e180e4212" }
+  ]
+}
+```
+
 **Response:**
 ```json
 {
-  "id": 1,
+  "id": "b93b98f6-7d55-4d32-b0dd-497680715a31",
   "uuid": "abc-123-def",
   "name": "My Subscription",
   ...
@@ -168,7 +188,7 @@
 ```json
 {
   "name": "Updated Name",
-  "isEnabled": false,
+  "note": "",
   "isAutoRotationEnabled": true
 }
 ```
@@ -176,7 +196,7 @@
 **Response:**
 ```json
 {
-  "id": 1,
+  "id": "b93b98f6-7d55-4d32-b0dd-497680715a31",
   "name": "Updated Name",
   ...
 }
@@ -212,16 +232,21 @@
 
 ### DELETE `/api/subscriptions/:id`
 
-Удалить подписку.
+Обычное удаление сначала удаляет inbound подписки из 3x-ui. Если панель вернула отказ или возникла ошибка связи, операция прекращается с HTTP 400:
 
-**Headers:** `Authorization: Bearer <token>`
-
-**Response:**
 ```json
 {
-  "success": true
+  "statusCode": 400,
+  "code": "INBOUND_DELETE_FAILED",
+  "message": "Не удалось удалить инбаунд 101 (vless) на ноде «Node» из 3x-ui. Можно удалить подписку принудительно.",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "path": "/api/subscriptions/b93b98f6-7d55-4d32-b0dd-497680715a31"
 }
 ```
+
+`DELETE /api/subscriptions/:id?force=true` продолжает удаление подписки при ошибке панели. Часть inbound может остаться в 3x-ui; проверьте и удалите их вручную. Удаление выполняется последовательно: если ошибка произошла не на первом inbound, некоторые уже могли быть удалены. При успехе возвращается удалённая сущность подписки; если подписка не найдена, тело может отсутствовать.
+
+**Headers:** `Authorization: Bearer <token>`
 
 ---
 
@@ -632,7 +657,24 @@
 
 Последние фоновые операции и результат по каждой ноде.
 
-В `results[]` возвращаются `subscriptionId`, `subscriptionName`, нода и сообщение об ошибке. Для новых ошибок поле `details` содержит этап (`phase`), конфигурации (`inbounds`: `configId`, протокол, порт, ID инбаунда панели, TLS-имя и пути сертификата/ключа) и, если найден, `blockingInbound` с подпиской-владельцем. Текст ошибки сохраняется до 16 КБ; содержимое ключей и токены не включаются. Старые операции могут не содержать `details`.
+В операции сохраняется прежнее поле `error`, в результатах нод — `results[].message`. Новые ошибки дополнительно содержат `errorDetails` на уровне операции и соответствующего результата:
+
+```json
+{
+  "title": "Нода «Node» недоступна: соединение отклонено (ECONNREFUSED)",
+  "hint": "Проверьте, запущена ли 3x-ui и верен ли порт панели.",
+  "code": "ECONNREFUSED",
+  "stage": "create",
+  "node": "Node",
+  "inboundType": "vless-xhttp-reality",
+  "port": 443,
+  "raw": "Node is unreachable (ECONNREFUSED)"
+}
+```
+
+`title` и `hint` предназначены для пользователя, `code` — машинный код; возможные этапы: `login`, `create`, `delete`, `cleanup`, `preflight`, `verify`, `ssh`, `rotation`. `node`, `inboundType` и `port` присутствуют только при известном контексте. `raw` ограничен 2048 символами; секреты, ссылки и UUID клиентов редактируются. Старые записи могут не содержать `errorDetails`.
+
+Поле `results[].details` отдельно содержит прежнюю диагностику: `phase`, `inbounds` и, если найден, `blockingInbound`. Ответ `/operations/:id` имеет ту же структуру.
 
 ### GET `/api/rotation/operations/:id`
 
@@ -646,9 +688,9 @@ Inbounds старых поколений, ожидающие удаления с
 
 Поставить задачу очистки на ближайшую попытку.
 
-### DELETE `/api/nodes/:id?mode=deferred`
+### DELETE `/api/nodes/:id?mode=safe|deferred|force`
 
-Принудительно скрыть недоступную ноду. Её реквизиты сохраняются до завершения фоновой очистки.
+`safe` используется по умолчанию: сначала удаляются inbound в панели, и при ошибке удаление ноды прерывается. `deferred` сразу скрывает ноду и помечает inbound для фоновой очистки. `force` удаляет ноду и её inbound из базы, не обращаясь к панели; оставшиеся в 3x-ui подключения нужно проверить вручную. Подписки сохраняются, ссылки на ноду и связанные relay очищаются. В `deferred`/`force` затронутые конфигурации отключаются и могут автоматически активироваться при следующей ротации, если нода доступна.
 
 ---
 
@@ -672,13 +714,16 @@ GET /bus/abc-123-def
 - `User-Agent: v2rayN/...` → возвращает plain text Base64
 
 **Query Parameters:**
-- `format`: `base64` | `html` | `wireguard` | `amneziawg`
+- `format` (опционально): `wireguard` | `amneziawg` для скачивания конфигурации; обычные Base64 или HTML выбираются по User-Agent.
 - `index`: номер конфигурации выбранного формата с нуля (для `wireguard`/`amneziawg`).
+
+Для обоих `/bus` эндпоинтов заголовок `profile-title` содержит `base64:` + имя в UTF-8/base64; при наличии `note` таким же образом отдаётся `announce`, а `supportUrl` и `websiteUrl` передаются в `support-url` и `profile-web-page-url`. В Base64-содержимом включённые Happ/INCY routing-линии предшествуют ссылкам подключений; при использовании relay эти линии не переписываются.
 
 `format=wireguard&index=0` скачивает первый профиль WireGuard `.conf`. HTML показывает QR-коды и настройки HTTP/SOCKS/mixed. Эти подключения исключены из обычной Base64-выдачи. Ответы подписки используют `Cache-Control: no-store`.
 
-**Response (Base64):**
+**Response (декодированное Base64-содержимое):**
 ```
+happ://routing/add/e30=
 vless://abc123...
 vmess://xyz789...
 ...
@@ -705,7 +750,7 @@ vmess://xyz789...
 **Public** — без токена.
 
 **Query Parameters:**
-- `format` (опционально): `base64` | `html` | `wireguard` | `amneziawg`
+- `format` (опционально): `wireguard` | `amneziawg` для скачивания конфигурации; обычные Base64 или HTML выбираются по User-Agent.
 - `index` (опционально): номер конфигурации с нуля для `wireguard`/`amneziawg`
 
 **URL:**
@@ -724,19 +769,24 @@ GET /bus/abc-123-def/1
 ### Subscription
 ```typescript
 {
-  id: number;
+  id: string;
   uuid: string;
   name: string;
+  note?: string;
+  supportUrl?: string;
+  websiteUrl?: string;
   isEnabled: boolean;
   isAutoRotationEnabled: boolean;
   inboundsConfig: Array<{
     configId: string;
-    type: 'vless-tcp-reality' | 'vless-xhttp-reality' | 'vless-grpc-reality' |
+    type: 'vless-tcp-reality' | 'vless-xhttp-reality' | 'vless-xhttp-get' | 'vless-grpc-reality' |
       'vless-ws' | 'vless-tcp-tls' | 'vless-ws-tls' | 'vless-xhttp-tls' | 'hysteria2-udp' |
       'vmess-tcp' | 'shadowsocks-tcp' | 'trojan-tcp-reality' | 'mtproto-faketls' |
-      'amneziawg' | 'wireguard' | 'mixed' | 'http' | 'socks' | 'custom';
+      'amneziawg' | 'wireguard' | 'mixed' | 'http' | 'socks' | 'custom' |
+      'happ-routing' | 'incy-routing';
     port?: number | 'random';
     sni?: string;
+    routingProfile?: string;
   }>;
   inbounds: Inbound[];
   createdAt: Date;

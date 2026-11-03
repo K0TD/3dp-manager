@@ -4,7 +4,7 @@
 
 ![Version](https://img.shields.io/badge/version-2.2.0-blue.svg) ![Downloads](https://img.shields.io/badge/downloads-5.1k-blue) [![License](https://img.shields.io/badge/license-GPL%20V3-blue.svg?longCache=true)](https://www.gnu.org/licenses/gpl-3.0) [![Telegram](https://img.shields.io/badge/Telegram-26A5E4?style=flat&logo=telegram&logoColor=white)](https://t.me/denpiligrim_web) [![YouTube Channel Subscribers](https://img.shields.io/youtube/channel/subscribers/UCOv2tFFYDY4mXOM60PVz8zw)](https://www.youtube.com/@denpiligrim)
 
-# 3DP-MANAGER
+# 3DP-MANAGER · K0TD fork
 
 3DP-MANAGER 是一个用于为 [3x-ui](https://github.com/MHSanaei/3x-ui) 面板自动生成 inbound、创建统一订阅、管理多个 3x-ui 节点，并配置从中间服务器到源服务器的 relay 转发的工具。从 2.0.0 版本开始，项目提供图形界面和简单的用户设置。
 
@@ -28,7 +28,7 @@
 该工具的主要目标是让您的流量看起来不那么单一。3DP-MANAGER 会按设定间隔生成一组具有不同参数的连接：
 
 - 协议：`vless`、`vmess`、`shadowsocks`、`hysteria2`、`trojan`；
-- 端口：固定的 `443`、`8443`，以及 `10000-60000` 范围内的随机端口；
+- 端口：固定的 `443`、`8443`，以及 `10000-59999` 范围内的随机端口；
 - 传输：`tcp`、`websocket`、`grpc`、`xhttp`；
 - SNI 可从域名白名单中选择，也可以手动指定；
 - 每个 inbound 都可以单独设置节点、relay 服务器、端口和旗帜。
@@ -60,10 +60,23 @@
 - 可选的自动 relay 转发配置
 - Web UI 可通过 HTTP 或 HTTPS 安装：Let's Encrypt、自签名证书或自定义证书
 
+## 分支功能与配置
+
+1. 添加 3x-ui 节点和认证信息，主节点作为默认值；按需添加 relay 并安装转发，配置 SNI 域名后创建订阅。轮换时 `/bus/<UUID>` 地址保持不变。
+2. 支持 VLESS TCP/XHTTP/gRPC Reality、VLESS WS、VLESS TCP/WS/XHTTP TLS、VMess、Shadowsocks、Trojan Reality、Hysteria2、MTProto FakeTLS、AmneziaWG、WireGuard、HTTP/SOCKS/mixed 和自定义链接。具体可用性取决于面板与 Xray 版本；AmneziaWG 需要 3x-ui 3.7 或更高版本。MTProto 使用面板内置的 Xray 桥接。
+3. Reality 的 SNI 配置按域名选择 fingerprint、`spiderX`、XHTTP 路径和填充；未匹配时使用 `chrome`。TLS 使用节点证书或指定证书路径与 TLS 名称。
+4. 各节点独立轮换，失败时保留上一次可用配置，旧 inbound 会等待清理。AmneziaWG、WireGuard 和 HTTP/SOCKS/mixed 在保存时创建，轮换不改变密钥或端口；修改类型、节点、relay 或端口时先删除并保存，再重新添加。
+5. 删除节点：`safe` 先清理面板 inbound，失败则停止，但已删除的 inbound 不会恢复；`deferred` 隐藏节点并延后清理；`force` 不访问面板，直接删除本地记录，面板中残留的 inbound 需手动检查。订阅保留；后两种模式会禁用受影响配置，之后有可用节点时轮换可能自动启用。
+6. 节点路由预设可阻止俄罗斯域名/IP 或 IP 检测服务，并让 Google 使用 IPv4；它们修改服务器端 Xray 路由，依赖已安装的地理数据库，与客户端路由配置不同。
+7. 服务器 API 支持 `happ-routing`、`incy-routing`，订阅的 `note`、`supportUrl`、`websiteUrl`，以及 `vless-xhttp-get`（XHTTP packet-up、GET、无 TLS/SNI）。路由配置排在连接前，不计入 20 个连接的限制。在订阅表单中选择 **Happ routing** 或 **INCY routing**，并在多行字段中输入配置；表单还提供**备注**、**支持链接**、**网站**和 **VLESS XHTTP GET** 连接类型。首页以易懂的文字和提示显示操作错误，技术详情默认折叠。详见 [api.md](api.md)。
+8. 普通删除订阅在 3x-ui 清理失败时停止；`force=true` 会继续删除，需手动检查并清除面板残留 inbound。
+
+可在设置的面板迁移功能中导出备份，然后在新服务器运行分支安装脚本并传入 `--restore /root/panel.3dp-backup`。备份可用独立密码保护，包含订阅 UUID、节点、设置和 relay 凭据。
+
 ## 要求
 
 - Ubuntu 20.04 或更高版本，Debian 12.11 或更高版本
-- `3x-ui` 面板 v2.8.4 或更高版本
+- `3x-ui` 面板 v2.9.4 或更高版本
 - 服务器 root 权限
 - Docker 和 Docker Compose；如果缺失，安装脚本会尝试自动安装
 - 域名 + SSL 证书（可选）
@@ -242,3 +255,18 @@ node get_domains.js
 
 - Telegram: [@denpiligrim_web](https://t.me/denpiligrim_web)
 - 本仓库的 Issues 区
+
+## 作者与致谢
+
+原项目由 [@DenPiligrim](https://github.com/denpiligrim) 创建，分支由 [@K0TD](https://github.com/k0td) 维护。感谢各位贡献者：
+
+- [@zangetsuka](https://github.com/zangetsuka) — Happ routing，[PR #53](https://github.com/denpiligrim/3dp-manager/pull/53)。分支移植了 Happ 支持并扩展 INCY；原始提交签名为 `root`。
+- [@xFalconMH](https://github.com/xFalconMH) — 先创建后删除的轮换和清理，[PR #59](https://github.com/denpiligrim/3dp-manager/pull/59)。这一思路已适配分支的可用配置保留与清理机制。
+- [@PavelArs](https://github.com/PavelArs) — 3x-ui 客户端结构兼容，[PR #62](https://github.com/denpiligrim/3dp-manager/pull/62)。分支移植了 `tgId` 兼容处理。
+- [@n1xsi](https://github.com/n1xsi) — 3x-ui 兼容、CSRF、诊断、Trojan 地址和 probe，[PR #63](https://github.com/denpiligrim/3dp-manager/pull/63)。分支使用了相关修复和诊断 probe。
+- [@K0TD](https://github.com/k0td) — 强制操作和登录背景，[PR #64](https://github.com/denpiligrim/3dp-manager/pull/64)。分支支持强制删除和自己的节点删除模式。
+- [@lunal1ght](https://github.com/lunal1ght) — 在 [issue #52](https://github.com/denpiligrim/3dp-manager/issues/52) 报告证书路径问题；分支支持节点证书和自定义路径。
+- [@keidos57](https://github.com/keidos57) — 在 [issue #61](https://github.com/denpiligrim/3dp-manager/issues/61) 确认生成问题；相关 `tgId` 兼容问题已在分支中修复。
+- [@iqubik](https://github.com/iqubik) — 安装程序、界面、测试和文档贡献，包括 [PR #39](https://github.com/denpiligrim/3dp-manager/pull/39)。也感谢 Jules（`google-labs-jules[bot]`）及所有其他贡献者。
+
+完整名单见 Git 历史及[分支](https://github.com/k0td/3dp-manager/graphs/contributors)、[原项目](https://github.com/denpiligrim/3dp-manager/graphs/contributors)贡献者页面。许可证：[GPL-3.0](LICENSE)。

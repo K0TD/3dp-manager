@@ -4,7 +4,7 @@
 
 ![Version](https://img.shields.io/badge/version-2.2.0-blue.svg) ![Downloads](https://img.shields.io/badge/downloads-5.1k-blue) [![License](https://img.shields.io/badge/license-GPL%20V3-blue.svg?longCache=true)](https://www.gnu.org/licenses/gpl-3.0) [![Telegram](https://img.shields.io/badge/Telegram-26A5E4?style=flat&logo=telegram&logoColor=white)](https://t.me/denpiligrim_web) [![YouTube Channel Subscribers](https://img.shields.io/youtube/channel/subscribers/UCOv2tFFYDY4mXOM60PVz8zw)](https://www.youtube.com/@denpiligrim)
 
-# 3DP-MANAGER
+# 3DP-MANAGER · K0TD fork
 
 [3x-ui](https://github.com/MHSanaei/3x-ui) paneli üçin inbound-lary awtomatiki döretmäge, birleşdirilen abunalary düzmäge, birnäçe 3x-ui node-ny dolandyrmaga we aralyk serwerlerden esasy serwerlere relay forwarding sazlamaga niýetlenen gural. 2.0.0 wersiýadan bäri taslamada grafiki interfeýs we ýönekeý ulanyjy sazlamalary bar.
 
@@ -28,7 +28,7 @@
 Guralyň esasy maksady trafigiňiziň birmeňzeş görünmezligini gazanmakdyr. 3DP-MANAGER bellenen aralykda dürli parametrli baglanyşyklar toplumyny döredýär:
 
 - protokollar: `vless`, `vmess`, `shadowsocks`, `hysteria2`, `trojan`;
-- portlar: hemişelik `443`, `8443` we `10000-60000` aralygyndaky tötänleýin portlar;
+- portlar: hemişelik `443`, `8443` we `10000-59999` aralygyndaky tötänleýin portlar;
 - transport: `tcp`, `websocket`, `grpc`, `xhttp`;
 - SNI domen whitelist-den alynýar ýa-da el bilen berilýär;
 - her inbound üçin node, relay serwer, port we baýdak aýratyn sazlanýar.
@@ -60,10 +60,23 @@ Maslahatlar:
 - Relay forwarding-i awtomatiki sazlamak mümkinçiligi bar
 - Web UI HTTP ýa-da HTTPS arkaly gurnalýar: Let's Encrypt, self-signed ýa-da öz şahadatnamalaryňyz
 
+## Fork mümkinçilikleri we sazlama
+
+1. 3x-ui node-syny we giriş maglumatlaryny goşuň; esasy node deslapky saýlawdyr. Gerek bolsa relay we forwarding guruň, SNI domenlerini düzüň we abuna dörediň. Rotasiýada `/bus/<UUID>` salgysy üýtgemeýär.
+2. VLESS TCP/XHTTP/gRPC Reality, VLESS WS, VLESS TCP/WS/XHTTP TLS, VMess, Shadowsocks, Trojan Reality, Hysteria2, MTProto FakeTLS, AmneziaWG, WireGuard, HTTP/SOCKS/mixed we custom linkler goldanýar. Elýeterlilik paneliň we Xray-yň wersiýasyna bagly; AmneziaWG üçin 3x-ui 3.7 ýa-da täze gerek. MTProto paneliň Xray köprüsini ulanýar.
+3. Reality üçin SNI profilleri domene görä fingerprint, `spiderX`, XHTTP ýoly we padding saýlaýar; gabat gelmese `chrome` ulanylýar. TLS üçin node-nyň şahadatnama ýollary ýa-da aýratyn görkezilen ýollar we TLS ady ulanylýar.
+4. Node-lar aýratyn rotasiýa edilýär; näsazlykda iň soňky işleýän toplum saklanýar we köne inbound-lar arassalanýar. AmneziaWG, WireGuard we HTTP/SOCKS/mixed saklanylanda döredilip, rotasiýada açaryny we portuny saklaýar; görnüşini, node-ny, relay-i ýa-da porty üýtgetmek üçin ilki pozup saklaň, soň täze baglanyşyk goşuň.
+5. Node pozmagyň görnüşleri: `safe` ilki paneldäki inbound-lary pozýar, ýalňyşlykda saklanýar, emma öň pozulan inbound-lar dikeldilmeýär; `deferred` node-ny gizläp soň arassalaýar; `force` 3x-ui bilen habarlaşman ýerli ýazgylary pozýar, panelde galan inbound-lary el bilen barlamaly. Abunalar saklanýar; soňky iki usul degişli sazlamalary öçürýär, elýeterli node bolsa olar indiki rotasiýada awtomatiki işläp biler.
+6. Node routing presetleri Russiýa domenlerini/IP-lerini ýa-da IP barlag hyzmatlaryny petikläp, Google trafigini IPv4-a ugrukdyryp biler. Bular serwerdäki Xray düzgünleridir, geodata talap edýär we müşderi routing profillerinden tapawutlanýar.
+7. Serwer API-si `happ-routing`, `incy-routing`, abunanyň `note`, `supportUrl`, `websiteUrl` meýdanlaryny we `vless-xhttp-get` görnüşini (XHTTP packet-up, GET, TLS/SNI ýok) goldaýar. Routing setirleri baglanyşyklardan öň gelýär we 20 baglanyşyk çägine goşulmaýar. Abuna formasynda **Happ routing** ýa-da **INCY routing** görnüşini saýlap, profili köp setirli meýdana giriziň; formada **bellik**, **goldaw salgysy**, **web sahypasy** we **VLESS XHTTP GET** baglanyşyk görnüşi hem bar. Baş sahypa operasiýa ýalňyşlaryny düşnükli tekst we maslahat bilen görkezýär, tehniki maglumatlar bolsa ýapyk bölümde saklanýar. [api.md](api.md) serediň.
+8. Adaty abuna pozmasy 3x-ui arassalamasy şowsuz bolsa durýar. `force=true` abunany barybir pozýar; panelde galan inbound-lary barlap el bilen aýyryň.
+
+Sazlamalardaky panel göçürme bölüminden ätiýaçlyk nusgasyny alyň, soň täze serwerde fork gurnawçysyny `--restore /root/panel.3dp-backup` bilen işlediň. Aýratyn parol ulanyp bolýar; abuna UUID-leri, node-lar, sazlamalar we relay maglumatlary saklanýar.
+
 ## Talaplar
 
 - Ubuntu 20.04 ýa-da täze, Debian 12.11 ýa-da täze
-- `3x-ui` paneli v2.8.4 ýa-da täze
+- `3x-ui` paneli v2.9.4 ýa-da täze
 - Serwerde root elýeterliligi
 - Docker we Docker Compose; ýok bolsa, gurnama skripti olary awtomatiki gurnamaga synanyşar
 - Domen + SSL şahadatnamasy (islege bagly)
@@ -242,3 +255,18 @@ Taslama goşantlaryňyza hoşal bolarys! Goşantçylar üçin ýönekeý proses:
 
 - Telegram: [@denpiligrim_web](https://t.me/denpiligrim_web)
 - Şu repozitoriýanyň Issues bölümi
+
+## Awtorlar we minnetdarlyk
+
+Asyl taslamany [@DenPiligrim](https://github.com/denpiligrim) döretdi, forky [@K0TD](https://github.com/k0td) goldaýar. Goşant goşanlara minnetdar:
+
+- [@zangetsuka](https://github.com/zangetsuka) — Happ routing, [PR #53](https://github.com/denpiligrim/3dp-manager/pull/53). Happ goldawy forka geçirilip INCY bilen giňeldildi; asyl commit-ler `root` diýip gol çekilipdi.
+- [@xFalconMH](https://github.com/xFalconMH) — pozmazdan öň döretmek we arassalamak, [PR #59](https://github.com/denpiligrim/3dp-manager/pull/59). Pikir forkdaky işleýän toplumy saklamak we arassalamak usulyna uýgunlaşdyryldy.
+- [@PavelArs](https://github.com/PavelArs) — 3x-ui müşderi shemasy bilen sazlaşyk, [PR #62](https://github.com/denpiligrim/3dp-manager/pull/62). `tgId` sazlaşygy forka geçirildi.
+- [@n1xsi](https://github.com/n1xsi) — 3x-ui sazlaşygy, CSRF, diagnostika, Trojan salgysy we probe, [PR #63](https://github.com/denpiligrim/3dp-manager/pull/63). Degişli düzedişler we diagnostika probe-y forkda ulanylýar.
+- [@K0TD](https://github.com/k0td) — mejbury operasiýalar we giriş fon suraty, [PR #64](https://github.com/denpiligrim/3dp-manager/pull/64). Fork mejbury pozmagy we öz node pozmak görnüşlerini goldaýar.
+- [@lunal1ght](https://github.com/lunal1ght) — şahadatnama ýollary barada [issue #52](https://github.com/denpiligrim/3dp-manager/issues/52) habar berdi. Fork node şahadatnamalaryny we aýratyn ýollary goldaýar.
+- [@keidos57](https://github.com/keidos57) — [issue #61](https://github.com/denpiligrim/3dp-manager/issues/61) boýunça döretmek meselesini tassyklady; degişli `tgId` sazlaşygy forkda düzedildi.
+- [@iqubik](https://github.com/iqubik) — gurnawçy, UI, testler we dokumentasiýa, şol sanda [PR #39](https://github.com/denpiligrim/3dp-manager/pull/39). Jules-e (`google-labs-jules[bot]`) we beýleki goşantçylara-da sag bolsun aýdýarys.
+
+Doly sanaw Git taryhynda, [forkuň](https://github.com/k0td/3dp-manager/graphs/contributors) we [asyl taslamanyň](https://github.com/denpiligrim/3dp-manager/graphs/contributors) sahypalarynda. Ygtyýarnama: [GPL-3.0](LICENSE).

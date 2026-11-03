@@ -4,7 +4,7 @@
 
 ![Version](https://img.shields.io/badge/version-2.2.0-blue.svg) ![Downloads](https://img.shields.io/badge/downloads-5.1k-blue) [![License](https://img.shields.io/badge/license-GPL%20V3-blue.svg?longCache=true)](https://www.gnu.org/licenses/gpl-3.0) [![Telegram](https://img.shields.io/badge/Telegram-26A5E4?style=flat&logo=telegram&logoColor=white)](https://t.me/denpiligrim_web) [![YouTube Channel Subscribers](https://img.shields.io/youtube/channel/subscribers/UCOv2tFFYDY4mXOM60PVz8zw)](https://www.youtube.com/@denpiligrim)
 
-# 3DP-MANAGER
+# 3DP-MANAGER · K0TD fork
 
 A utility for automatically generating inbounds for the [3x-ui](https://github.com/MHSanaei/3x-ui) panel, creating unified subscriptions, managing multiple 3x-ui nodes, and configuring relay forwarding from intermediate servers to origin servers. Since version 2.0.0, the project has a graphical interface and simple user-facing settings.
 
@@ -28,7 +28,7 @@ A utility for automatically generating inbounds for the [3x-ui](https://github.c
 The main goal of the utility is to make your traffic look less uniform. 3DP-MANAGER generates a set of connections at a configured interval with different parameters:
 
 - protocols: `vless`, `vmess`, `shadowsocks`, `hysteria2`, `trojan`;
-- ports: fixed `443`, `8443`, plus random ports from `10000-60000`;
+- ports: fixed `443`, `8443`, plus random ports from `10000-59999`;
 - transport: `tcp`, `websocket`, `grpc`, `xhttp`;
 - SNI values are taken from the domain whitelist or set manually;
 - node, relay server, port, and flag can be configured separately for each inbound.
@@ -60,10 +60,23 @@ Recommendations:
 - Optional automatic relay forwarding setup
 - Installs the Web UI over HTTP or HTTPS: Let's Encrypt, self-signed, or custom certificates
 
+## Fork capabilities and configuration
+
+1. Add a 3x-ui node and its credentials; the main node is the default. Optionally add a relay server and install forwarding, then configure the SNI domain list and create a subscription. Its `/bus/<UUID>` URL remains stable across rotations.
+2. Connections include VLESS TCP/XHTTP/gRPC Reality, VLESS WS, VLESS TCP/WS/XHTTP TLS, VMess TCP, Shadowsocks TCP, Trojan Reality, Hysteria2, MTProto FakeTLS, AmneziaWG, WireGuard, HTTP/SOCKS/mixed, and custom links. Availability depends on the node's panel and Xray versions. AmneziaWG requires 3x-ui 3.7 or newer. MTProto uses the panel's built-in bridge to Xray.
+3. For Reality, built-in SNI profiles select a fingerprint and associated `spiderX`, XHTTP path and padding. Unmatched domains use the `chrome` fallback. TLS inbounds use the node's certificate paths or explicitly supplied paths and TLS name.
+4. Rotation handles nodes independently, retains the last working generation on failure and schedules old inbounds for cleanup. AmneziaWG, WireGuard and HTTP/SOCKS/mixed are persistent: they are created on save and retain credentials and ports during rotation. To change their type, node, relay or port, remove and save first, then add the new connection.
+5. Node removal modes: `safe` removes panel inbounds first and stops if that fails; inbounds already deleted are not restored; `deferred` hides the node and schedules cleanup; `force` removes local records without contacting 3x-ui, so remaining panel inbounds may need manual deletion. Subscriptions remain; affected configurations are disabled in deferred/force mode and may reactivate on a later rotation when a node is available.
+6. Node routing presets can block Russian domains/IPs or IP-check services and send Google traffic over IPv4. They modify server-side Xray routing, depend on installed geodata and are separate from client routing profiles.
+7. The server API accepts `happ-routing` and `incy-routing` profiles, subscription `note`, `supportUrl`, `websiteUrl`, and `vless-xhttp-get` (XHTTP packet-up, GET, no TLS/SNI). Routing lines precede connection links and do not count toward the 20-connection limit. In the subscription form, select **Happ routing** or **INCY routing** and enter the profile in the multiline field; the form also offers **note**, **support URL**, **website URL**, and the **VLESS XHTTP GET** connection type. The dashboard shows clear operation errors and hints, with technical details collapsed. See [api.md](api.md).
+8. Normal subscription deletion stops if 3x-ui cleanup fails. `force=true` removes the subscription despite the failure; check and remove any remaining inbounds in the 3x-ui panel manually.
+
+Settings include a portable panel backup. Export it from **Settings → Panel transfer**, then run the fork installer with `--restore /root/panel.3dp-backup` on the new server. An optional passphrase protects the archive; subscription UUIDs, nodes, settings and relay credentials are preserved.
+
 ## Requirements
 
 - Ubuntu 20.04 or newer, Debian 12.11 or newer
-- `3x-ui` panel v2.8.4 or newer
+- `3x-ui` panel v2.9.4 or newer
 - Root access on the server
 - Docker and Docker Compose; if missing, the installer will try to install them automatically
 - Domain + SSL certificate (optional)
@@ -242,3 +255,18 @@ Contributions are welcome! Simple contributor workflow:
 
 - Telegram: [@denpiligrim_web](https://t.me/denpiligrim_web)
 - Issues section in this repository
+
+## Authors and acknowledgements
+
+The original project was created by [@DenPiligrim](https://github.com/denpiligrim); [@K0TD](https://github.com/k0td) maintains the fork. Thanks to the contributors:
+
+- [@zangetsuka](https://github.com/zangetsuka) — Happ routing, [PR #53](https://github.com/denpiligrim/3dp-manager/pull/53). Happ support was adapted to the fork and extended with INCY. The original commits were signed `root`.
+- [@xFalconMH](https://github.com/xFalconMH) — create-before-delete rotation and cleanup, [PR #59](https://github.com/denpiligrim/3dp-manager/pull/59). The idea was adapted to the fork's working-generation and cleanup model.
+- [@PavelArs](https://github.com/PavelArs) — 3x-ui client schema compatibility, [PR #62](https://github.com/denpiligrim/3dp-manager/pull/62). The fork includes `tgId` compatibility.
+- [@n1xsi](https://github.com/n1xsi) — 3x-ui compatibility, CSRF, diagnostics, Trojan address and probe, [PR #63](https://github.com/denpiligrim/3dp-manager/pull/63). Corresponding fixes and the diagnostic probe are used in the fork.
+- [@K0TD](https://github.com/k0td) — forced operations and login background, [PR #64](https://github.com/denpiligrim/3dp-manager/pull/64). The fork supports forced deletion and its own node removal modes.
+- [@lunal1ght](https://github.com/lunal1ght) — reported certificate paths in [issue #52](https://github.com/denpiligrim/3dp-manager/issues/52). The fork supports node certificates and custom paths.
+- [@keidos57](https://github.com/keidos57) — confirmed the generation problem in [issue #61](https://github.com/denpiligrim/3dp-manager/issues/61), related to `tgId` compatibility fixed in the fork.
+- [@iqubik](https://github.com/iqubik) — installer, UI, tests and documentation contributions, including [PR #39](https://github.com/denpiligrim/3dp-manager/pull/39). Thanks also to Jules (`google-labs-jules[bot]`) and all other contributors.
+
+See the Git history and contributor pages for the [fork](https://github.com/k0td/3dp-manager/graphs/contributors) and [upstream project](https://github.com/denpiligrim/3dp-manager/graphs/contributors). Licensed under [GPL-3.0](LICENSE).
