@@ -315,6 +315,9 @@ switch_to_k0td_images() {
     -e 's#ghcr.io/denpiligrim/3dp-manager-client:[^[:space:]]*#ghcr.io/k0td/3dp-manager-client:stable#g' \
     -e 's#ghcr.io/k0td/3dp-manager-server:[^[:space:]]*#ghcr.io/k0td/3dp-manager-server:stable#g' \
     -e 's#ghcr.io/k0td/3dp-manager-client:[^[:space:]]*#ghcr.io/k0td/3dp-manager-client:stable#g' \
+    -e 's#^\([[:space:]]*image:[[:space:]]*\)3dp-manager-server:local[[:space:]]*$#\1ghcr.io/k0td/3dp-manager-server:stable#' \
+    -e 's#^\([[:space:]]*image:[[:space:]]*\)3dp-manager-client:local[[:space:]]*$#\1ghcr.io/k0td/3dp-manager-client:stable#' \
+    -e '/^[[:space:]]*build:[[:space:]]*\.\/source\/\(server\|client\)[[:space:]]*$/d' \
     "$compose_file"
 }
 
