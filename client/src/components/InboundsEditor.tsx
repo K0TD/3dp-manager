@@ -27,6 +27,7 @@ import {
   CERTIFICATE_TYPES,
   CONNECTION_OPTIONS,
   PERSISTENT_INBOUND_TYPES,
+  ROUTING_INBOUND_TYPES,
   type CountryOption,
   type Domain,
   type InboundConfigUI,
@@ -93,15 +94,21 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
         }
       }
 
-      if (field === 'type' && value === 'custom') {
+      if (field === 'type' && (value === 'custom' || ROUTING_INBOUND_TYPES.has(value))) {
         next.nodeId = '';
         next.relayServerId = '';
         next.flag = '';
         next.name = '';
+        next.port = '';
+        next.sni = '';
         next.certificateMode = undefined;
         next.tlsServerName = undefined;
         next.certificateFile = '';
         next.keyFile = '';
+      }
+
+      if (field === 'type' && value !== 'custom' && !ROUTING_INBOUND_TYPES.has(value) && !next.port) {
+        next.port = 'random';
       }
 
       if (field === 'type' && CERTIFICATE_TYPES.has(value)) {
@@ -137,7 +144,12 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
         next.sni = 'random';
       }
 
-      if (field === 'type' && value !== 'custom' && !next.nodeId) {
+      if (
+        field === 'type' &&
+        value !== 'custom' &&
+        !ROUTING_INBOUND_TYPES.has(value) &&
+        !next.nodeId
+      ) {
         const defaultNode =
           nodes.find((n) => n.isMain)?.id || nodes[0]?.id || '';
         next.nodeId = defaultNode;
@@ -157,6 +169,14 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
     });
 
     onChange(updated);
+
+    if (field === 'type' && (value === 'custom' || ROUTING_INBOUND_TYPES.has(value))) {
+      if (onPortErrorsChange && portErrors[id]) {
+        const nextErrors = { ...portErrors };
+        delete nextErrors[id];
+        onPortErrorsChange(nextErrors);
+      }
+    }
 
     if (field === 'port' && onPortErrorsChange) {
       const nextErrors = { ...portErrors };
@@ -180,8 +200,12 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
     onChange(reordered);
   };
 
+  const connectionCount = inbounds.filter(
+    (item) => !ROUTING_INBOUND_TYPES.has(item.type),
+  ).length;
+
   const addInbound = () => {
-    if (inbounds.length >= maxInbounds) return;
+    if (connectionCount >= maxInbounds) return;
     onChange([
       ...inbounds,
       createInboundTemplate('vless-tcp-reality', nodes, domains),
@@ -222,7 +246,7 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
         )}
 
       <Typography variant="h6" sx={{ mb: 2 }}>
-        Инбаунды ({inbounds.length}/{maxInbounds})
+        Инбаунды ({connectionCount}/{maxInbounds})
       </Typography>
 
       <Box sx={{ display: 'grid', gap: 2 }}>
@@ -260,7 +284,14 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
               </Typography>
               <Chip
                 size="small"
-                label={inbound.name || inbound.type}
+                label={
+                  inbound.name ||
+                  (inbound.type === 'happ-routing'
+                    ? 'Happ routing'
+                    : inbound.type === 'incy-routing'
+                      ? 'INCY routing'
+                      : inbound.type)
+                }
                 sx={{ maxWidth: '60%' }}
               />
               <Box sx={{ flex: 1 }} />
@@ -329,9 +360,15 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                     inbound.nodeId,
                     nodes,
                   );
+                  const label =
+                    option === 'happ-routing'
+                      ? 'Happ routing'
+                      : option === 'incy-routing'
+                        ? 'INCY routing'
+                        : option;
                   return (
                     <MenuItem key={option} value={option} disabled={!supported}>
-                      {option}
+                      {label}
                       {supported ? '' : ' · несовместимо'}
                     </MenuItem>
                   );
@@ -347,6 +384,31 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                 value={inbound.link || ''}
                 onChange={(e) =>
                   handleInboundChange(inbound.id, 'link', e.target.value)
+                }
+                sx={{ width: '100%', minWidth: 0, gridColumn: '1 / -1' }}
+              />
+            ) : ROUTING_INBOUND_TYPES.has(inbound.type) ? (
+              <TextField
+                size="small"
+                multiline
+                minRows={3}
+                label={
+                  inbound.type === 'happ-routing'
+                    ? 'Профиль Happ routing'
+                    : 'Профиль INCY routing'
+                }
+                placeholder={
+                  inbound.type === 'happ-routing'
+                    ? 'JSON-объект, base64 или happ://routing/...'
+                    : 'JSON-объект, base64, URL или incy://routing/...'
+                }
+                value={inbound.routingProfile || ''}
+                onChange={(e) =>
+                  handleInboundChange(
+                    inbound.id,
+                    'routingProfile',
+                    e.target.value,
+                  )
                 }
                 sx={{ width: '100%', minWidth: 0, gridColumn: '1 / -1' }}
               />
@@ -651,7 +713,7 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
           size="small"
           startIcon={<Add />}
           onClick={addInbound}
-          disabled={inbounds.length >= maxInbounds}
+          disabled={connectionCount >= maxInbounds}
         >
           Добавить инбаунд
         </Button>

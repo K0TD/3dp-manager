@@ -90,4 +90,100 @@ describe('DashboardPage', () => {
       expect(screen.getByText('Не удалось загрузить состояние инфраструктуры')).toBeInTheDocument()
     })
   })
+
+  it('displays normalized errorDetails in timeline and modal dialog', async () => {
+    const errorDetails = {
+      title: 'Панель отклонила защитный токен CSRF',
+      hint: 'Проверьте адрес панели и авторизацию, затем повторите операцию.',
+      code: 'CSRF_FAILED',
+      stage: 'login',
+      node: 'NL Server',
+      inboundType: 'vless-tcp-reality',
+      port: 443,
+      raw: 'CSRF token mismatch at /login',
+    };
+
+    mockGet.mockImplementation((url: string) => {
+      const responses: Record<string, unknown> = {
+        '/nodes': [],
+        '/subscriptions/count': { count: 1 },
+        '/rotation/operations': [
+          {
+            id: 'op-1234',
+            status: 'failed',
+            createdAt: new Date().toISOString(),
+            error: 'CSRF token mismatch',
+            errorDetails,
+            results: [
+              {
+                subscriptionName: 'VIP',
+                nodeName: 'NL Server',
+                status: 'failed',
+                errorDetails,
+              },
+            ],
+          },
+        ],
+        '/rotation/cleanup': [],
+      };
+      return Promise.resolve({ data: responses[url] });
+    });
+
+    renderPage();
+
+    // In timeline
+    expect(await screen.findAllByText(/Панель отклонила защитный токен CSRF/)).toHaveLength(2);
+    expect(screen.getAllByText('Подсказка: Проверьте адрес панели и авторизацию, затем повторите операцию.')).toHaveLength(2);
+    expect(screen.getAllByText('Нода: NL Server · Тип: vless-tcp-reality · Порт: 443')).toHaveLength(2);
+
+    // Open modal dialog
+    const detailsBtn = screen.getByText('Подробности операции');
+    fireEvent.click(detailsBtn);
+
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(screen.getAllByText('Технические детали')).toHaveLength(2);
+    expect(screen.getAllByText('Копировать детали')).toHaveLength(2);
+  });
+
+  it('displays legacy error and message when errorDetails is absent', async () => {
+    mockGet.mockImplementation((url: string) => {
+      const responses: Record<string, unknown> = {
+        '/nodes': [],
+        '/subscriptions/count': { count: 1 },
+        '/rotation/operations': [
+          {
+            id: 'op-legacy',
+            status: 'failed',
+            createdAt: new Date().toISOString(),
+            error: 'Old raw error message from 3x-ui',
+            results: [
+              {
+                subscriptionName: 'Basic',
+                nodeName: 'DE Server',
+                status: 'failed',
+                message: 'Old node failure reason',
+              },
+            ],
+          },
+        ],
+        '/rotation/cleanup': [],
+      };
+      return Promise.resolve({ data: responses[url] });
+    });
+
+    renderPage();
+
+    // Timeline shows legacy texts
+    expect(await screen.findByText('Ошибка: Old raw error message from 3x-ui')).toBeInTheDocument();
+    expect(screen.getByText(/Old node failure reason/)).toBeInTheDocument();
+
+    // Open modal dialog
+    const detailsBtn = screen.getByText('Подробности операции');
+    fireEvent.click(detailsBtn);
+
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByText('Old raw error message from 3x-ui')).toBeInTheDocument();
+    expect(screen.getByText('Old node failure reason')).toBeInTheDocument();
+    expect(screen.queryByText('Технические детали')).not.toBeInTheDocument();
+  });
 })

@@ -17,13 +17,14 @@ import { Logger } from '../utils/logger';
 import { InboundsEditor } from '../components/InboundsEditor';
 import { WorkspaceHeader } from '../components/WorkspaceHeader';
 import type { NodeRecord } from '../types/node';
-import type { CountryOption, Domain, InboundConfigUI, Tunnel } from '../types/inbound';
+import { ROUTING_INBOUND_TYPES, type CountryOption, type Domain, type InboundConfigUI, type Tunnel } from '../types/inbound';
 import {
   createBuiltinDefaultInbounds,
   isListedSni,
   isValidPort,
   parseDefaultInboundsSetting,
   sanitizeInboundForStorage,
+  validateRoutingProfile,
 } from '../utils/inboundUtils';
 
 export default function SettingsPage() {
@@ -146,7 +147,7 @@ export default function SettingsPage() {
   const handleSaveDefaultInbounds = async () => {
     const nextPortErrors: Record<string, string> = {};
     for (const inbound of defaultInbounds) {
-      if (inbound.type !== 'custom' && !isValidPort(inbound.port)) {
+      if (inbound.type !== 'custom' && !ROUTING_INBOUND_TYPES.has(inbound.type) && !isValidPort(inbound.port)) {
         nextPortErrors[inbound.id] = 'Порт: число 1-65535 или random';
       }
     }
@@ -156,6 +157,19 @@ export default function SettingsPage() {
         open: true,
         type: 'error',
         text: 'Пожалуйста, исправьте ошибки с портами',
+      });
+      return;
+    }
+
+    const invalidRouting = defaultInbounds.find(
+      (inbound) => ROUTING_INBOUND_TYPES.has(inbound.type) &&
+        validateRoutingProfile(inbound.type, inbound.routingProfile),
+    );
+    if (invalidRouting) {
+      setMessage({
+        open: true,
+        type: 'error',
+        text: validateRoutingProfile(invalidRouting.type, invalidRouting.routingProfile) || 'Неверный профиль маршрутизации',
       });
       return;
     }

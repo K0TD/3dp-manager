@@ -2,6 +2,7 @@ import type { NodeRecord } from '../types/node';
 import {
   CERTIFICATE_TYPES,
   DEFAULT_INBOUND_TYPES,
+  ROUTING_INBOUND_TYPES,
   type CountryOption,
   type Domain,
   type InboundConfigUI,
@@ -47,7 +48,16 @@ export const getRelayOptions = (
 
 export const hasSni = (type: string): boolean =>
   !CERTIFICATE_TYPES.has(type) &&
-  !['amneziawg', 'wireguard', 'mixed', 'http', 'socks', 'custom'].includes(type);
+  !ROUTING_INBOUND_TYPES.has(type) &&
+  ![
+    'amneziawg',
+    'wireguard',
+    'mixed',
+    'http',
+    'socks',
+    'custom',
+    'vless-xhttp-get',
+  ].includes(type);
 
 export const isListedSni = (sni: string, domains: Domain[]): boolean => {
   const normalizedSni = sni.trim().toLowerCase();
@@ -80,7 +90,7 @@ export const isInboundSupported = (
   nodeId: string | undefined,
   nodes: NodeRecord[],
 ): boolean => {
-  if (type === 'custom') return true;
+  if (type === 'custom' || ROUTING_INBOUND_TYPES.has(type)) return true;
   const capabilities = getSelectedNode(nodeId, nodes)?.capabilities;
   return !capabilities || capabilities.supportedInboundTypes.includes(type);
 };
@@ -95,8 +105,14 @@ export const createInboundTemplate = (
   domains: Domain[],
   partial?: Partial<InboundConfigUI>,
 ): InboundConfigUI => {
+  const isRouting = ROUTING_INBOUND_TYPES.has(type);
+  const isCustom = type === 'custom';
   const defaultNode = getDefaultNodeId(nodes);
-  const nodeId = partial?.nodeId !== undefined ? partial.nodeId : defaultNode;
+  const nodeId = isRouting || isCustom
+    ? ''
+    : partial?.nodeId !== undefined
+      ? partial.nodeId
+      : defaultNode;
   const configId = crypto.randomUUID();
   const isCert = CERTIFICATE_TYPES.has(type);
   const certMode = isCert
@@ -108,14 +124,18 @@ export const createInboundTemplate = (
     id: configId,
     configId,
     type,
-    port: partial?.port ?? 'random',
-    sni: partial?.sni ?? inboundSni(type, domains),
+    port: isRouting || isCustom ? '' : (partial?.port ?? 'random'),
+    sni: isRouting || isCustom ? '' : (partial?.sni ?? inboundSni(type, domains)),
     link: partial?.link ?? '',
+    routingProfile: partial?.routingProfile ?? '',
     nodeId,
-    relayServerId: partial?.relayServerId ?? '',
-    flag:
-      partial?.flag !== undefined ? partial.flag : getNodeFlag(nodeId, nodes),
-    name: partial?.name ?? '',
+    relayServerId: isRouting || isCustom ? '' : (partial?.relayServerId ?? ''),
+    flag: isRouting || isCustom
+      ? ''
+      : partial?.flag !== undefined
+        ? partial.flag
+        : getNodeFlag(nodeId, nodes),
+    name: isRouting || isCustom ? '' : (partial?.name ?? ''),
     certificateMode: certMode,
     tlsServerName: isCert
       ? partial?.tlsServerName || getNodeAddress(nodeId, nodes)
@@ -170,6 +190,12 @@ export const parseDefaultInboundsSetting = (
 export const sanitizeInboundForStorage = (
   inbound: InboundConfigUI,
 ): Partial<InboundConfigUI> => {
+  if (ROUTING_INBOUND_TYPES.has(inbound.type)) {
+    return {
+      type: inbound.type,
+      routingProfile: inbound.routingProfile || '',
+    };
+  }
   const isCustom = inbound.type === 'custom';
   const isCert = CERTIFICATE_TYPES.has(inbound.type);
   return {
@@ -193,5 +219,121 @@ export const sanitizeInboundForStorage = (
         : undefined,
   };
 };
+
+export function validateRoutingProfile(
+  type: string,
+  profile?: string,
+): string | null {
+  const value = profile?.trim() || '';
+  if (!value) {
+    return 'Укажите профиль маршрутизации';
+  }
+  if (type === 'happ-routing') {
+    if (value === 'happ://routing/off') return null;
+    const match = /^happ:\/\/routing\/(add|onadd)\/([^\s]+)$/.exec(value);
+    const payload = match?.[2] || value;
+    try {
+      if (!payload.startsWith('{') && !/^[A-Za-z0-9+/]+={0,2}$/.test(payload)) {
+        return 'Неверный профиль Happ: ожидается JSON-объект, base64 или happ://routing ссылка';
+      }
+      const decoded = payload.startsWith('{')
+        ? payload
+        : atob(payload);
+      const parsed = JSON.parse(decoded);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return 'Неверный профиль Happ: ожидается JSON-объект';
+      }
+      return null;
+    } catch {
+      return 'Неверный профиль Happ: ожидается JSON-объект, base64 или happ://routing ссылка';
+    }
+  }
+  if (type === 'incy-routing') {
+    const match =
+      /^(?:incy)?:\/\/(routing|autorouting)\/(add|onadd)\/([^\s]+)$/.exec(value);
+    const payload = match?.[3] || value;
+    if (match?.[1] === 'autorouting' || /^https?:\/\//.test(payload)) {
+      if (/\s/.test(payload)) return 'Неверный URL автомаршрутизации INCY';
+      try {
+        const url = new URL(payload);
+        if (!['http:', 'https:'].includes(url.protocol) || !url.hostname) {
+          return 'Неверный URL автомаршрутизации INCY';
+        }
+        return null;
+      } catch {
+        return 'Неверный URL автомаршрутизации INCY';
+      }
+    }
+    return validateRoutingProfile(
+      'happ-routing',
+      value.replace(/^(?:incy)?:\/\/routing\//, 'happ://routing/'),
+    );
+  }
+  return null;
+}
+
+// validator.js isURL also caps URL length at 2084 UTF-16 code units.
+const MAX_VALIDATOR_URL_CODE_UNITS = 2084;
+
+const hasInvalidUrlCharacters = (url: string): boolean =>
+  /[\s<>]/u.test(url) ||
+  Array.from(url).some((character) => {
+    const code = character.charCodeAt(0);
+    return code < 0x20 || (code >= 0x7f && code <= 0x9f);
+  });
+
+export function validateSubscriptionMetadata(metadata: {
+  note?: string;
+  supportUrl?: string;
+  websiteUrl?: string;
+}): { note?: string; supportUrl?: string; websiteUrl?: string } {
+  const errors: { note?: string; supportUrl?: string; websiteUrl?: string } = {};
+
+  if (metadata.note && [...metadata.note].length > 200) {
+    errors.note = 'Примечание не должно превышать 200 символов';
+  }
+
+  if (metadata.supportUrl && metadata.supportUrl.trim()) {
+    const url = metadata.supportUrl.trim();
+    if ([...url].length > 2048) {
+      errors.supportUrl = 'Ссылка поддержки не должна превышать 2048 символов';
+    } else {
+      try {
+        if (url.length > MAX_VALIDATOR_URL_CODE_UNITS || hasInvalidUrlCharacters(url)) {
+          throw new Error('Invalid URL');
+        }
+        const parsed = new URL(url);
+        if (!['http:', 'https:', 'tg:'].includes(parsed.protocol)) {
+          errors.supportUrl =
+            'Ссылка поддержки должна начинаться с http://, https:// или tg://';
+        }
+      } catch {
+        errors.supportUrl = 'Некорректный формат ссылки поддержки';
+      }
+    }
+  }
+
+  if (metadata.websiteUrl && metadata.websiteUrl.trim()) {
+    const url = metadata.websiteUrl.trim();
+    if ([...url].length > 2048) {
+      errors.websiteUrl = 'Ссылка на сайт не должна превышать 2048 символов';
+    } else {
+      try {
+        if (url.length > MAX_VALIDATOR_URL_CODE_UNITS || hasInvalidUrlCharacters(url)) {
+          throw new Error('Invalid URL');
+        }
+        const parsed = new URL(url);
+        if (!['http:', 'https:'].includes(parsed.protocol)) {
+          errors.websiteUrl =
+            'Ссылка на сайт должна начинаться с http:// или https://';
+        }
+      } catch {
+        errors.websiteUrl = 'Некорректный формат ссылки на сайт';
+      }
+    }
+  }
+
+  return errors;
+}
 
 export type { CountryOption, Domain, InboundConfigUI, Tunnel };

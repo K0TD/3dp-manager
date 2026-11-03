@@ -126,6 +126,26 @@ describe('SettingsPage', () => {
     expect(await screen.findByText('Стандартные инбаунды сохранены')).toBeInTheDocument()
   })
 
+  it.each([
+    { type: 'happ-routing', profile: 'happ://routing/off' },
+    { type: 'incy-routing', profile: 'https://example.com/rules' },
+  ])('saves valid $type without a port', async ({ type, profile }) => {
+    mockGet.mockImplementation((url: string) => Promise.resolve({ data: url === '/settings' ? { admin_login: 'operator', default_inbounds: JSON.stringify([{ type, routingProfile: profile }]) } : [] }))
+    renderPage()
+    expect(await screen.findByDisplayValue(profile)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить стандартные инбаунды' }))
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith('/settings', { default_inbounds: JSON.stringify([{ type, routingProfile: profile }]) }))
+  })
+
+  it('rejects an invalid default routing profile before saving', async () => {
+    mockGet.mockImplementation((url: string) => Promise.resolve({ data: url === '/settings' ? { admin_login: 'operator', default_inbounds: JSON.stringify([{ type: 'happ-routing', routingProfile: 'invalid' }]) } : [] }))
+    renderPage()
+    expect(await screen.findByDisplayValue('invalid')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить стандартные инбаунды' }))
+    expect(await screen.findByText(/Неверный профиль Happ/)).toBeInTheDocument()
+    expect(mockPost).not.toHaveBeenCalledWith('/settings', expect.anything())
+  })
+
   it('resets standard inbounds to defaults on clicking reset', async () => {
     mockGet.mockImplementation((url: string) => {
       if (url === '/settings') {

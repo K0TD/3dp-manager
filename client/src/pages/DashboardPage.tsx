@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   Box,
   Button,
@@ -19,8 +22,10 @@ import {
   Autorenew,
   CheckCircle,
   CloudOff,
+  ContentCopy,
   DeleteSweep,
   Error as ErrorIcon,
+  ExpandMore,
   Hub,
   People,
 } from '@mui/icons-material';
@@ -29,6 +34,17 @@ import api from '../api';
 import type { NodeRecord } from '../types/node';
 import { FlagIcon } from '../utils/flags';
 import { copyToClipboard } from '../utils/copyToClipboard';
+
+export interface OperationErrorDetails {
+  title: string;
+  hint: string;
+  code: string;
+  stage: string;
+  node?: string;
+  inboundType?: string;
+  port?: number;
+  raw: string;
+}
 
 interface InboundDiagnostic {
   xuiId?: number;
@@ -59,6 +75,7 @@ interface OperationResult {
   nodeName: string;
   status: 'succeeded' | 'preserved' | 'failed';
   message?: string;
+  errorDetails?: OperationErrorDetails | null;
   details?: {
     phase: string;
     inbounds: InboundDiagnostic[];
@@ -71,6 +88,7 @@ interface Operation {
   status: 'queued' | 'running' | 'succeeded' | 'partial' | 'failed';
   createdAt: string;
   error?: string;
+  errorDetails?: OperationErrorDetails | null;
   results?: OperationResult[];
 }
 
@@ -81,6 +99,122 @@ const statusLabel: Record<Operation['status'], string> = {
   partial: 'Частично',
   failed: 'Ошибка',
 };
+
+function ErrorDetailsBlock({
+  errorDetails,
+  titlePrefix,
+}: {
+  errorDetails: OperationErrorDetails;
+  titlePrefix?: string;
+}) {
+  return (
+    <Box
+      sx={{
+        mt: 1,
+        p: 1.5,
+        border: 1,
+        borderColor: 'error.light',
+        borderRadius: 1.5,
+        bgcolor: 'action.hover',
+      }}
+    >
+      <Typography variant="subtitle2" color="error.main" fontWeight={700}>
+        {titlePrefix ? `${titlePrefix} · ` : ''}
+        {errorDetails.title}
+      </Typography>
+      <Stack
+        direction="row"
+        spacing={0.5}
+        sx={{ mt: 0.5, flexWrap: 'wrap', gap: 0.5 }}
+      >
+        {errorDetails.node && (
+          <Chip
+            size="small"
+            variant="outlined"
+            label={`Нода: ${errorDetails.node}`}
+          />
+        )}
+        {errorDetails.inboundType && (
+          <Chip
+            size="small"
+            variant="outlined"
+            label={`Тип: ${errorDetails.inboundType}`}
+          />
+        )}
+        {errorDetails.port && (
+          <Chip
+            size="small"
+            variant="outlined"
+            label={`Порт: ${errorDetails.port}`}
+          />
+        )}
+        {errorDetails.stage && (
+          <Chip
+            size="small"
+            variant="outlined"
+            label={`Этап: ${errorDetails.stage}`}
+          />
+        )}
+      </Stack>
+      {errorDetails.hint && (
+        <Alert
+          severity="info"
+          sx={{ mt: 1, py: 0.25, '& .MuiAlert-message': { fontSize: 13 } }}
+        >
+          {errorDetails.hint}
+        </Alert>
+      )}
+      {errorDetails.raw && (
+        <Accordion
+          disableGutters
+          elevation={0}
+          sx={{
+            mt: 1,
+            border: 1,
+            borderColor: 'divider',
+            '&:before': { display: 'none' },
+            bgcolor: 'background.paper',
+            borderRadius: 1,
+          }}
+        >
+          <AccordionSummary expandIcon={<ExpandMore />}>
+            <Typography variant="body2" fontWeight={600}>
+              Технические детали
+            </Typography>
+          </AccordionSummary>
+          <AccordionDetails>
+            <Box
+              component="pre"
+              sx={{
+                m: 0,
+                p: 1,
+                bgcolor: 'action.hover',
+                borderRadius: 1,
+                whiteSpace: 'pre-wrap',
+                overflowWrap: 'anywhere',
+                fontSize: 12,
+                fontFamily: 'monospace',
+                maxHeight: 200,
+                overflowY: 'auto',
+              }}
+            >
+              {errorDetails.raw}
+            </Box>
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<ContentCopy />}
+              sx={{ mt: 1 }}
+              onClick={() => void copyToClipboard(errorDetails.raw)}
+            >
+              Копировать детали
+            </Button>
+          </AccordionDetails>
+        </Accordion>
+      )}
+    </Box>
+  );
+}
 
 export default function DashboardPage() {
   const navigate = useNavigate();
@@ -443,7 +577,47 @@ export default function DashboardPage() {
                   {operation.status === 'running' && (
                     <LinearProgress sx={{ mt: 1 }} />
                   )}
-                  {operation.error && (
+                  {operation.errorDetails ? (
+                    <Box sx={{ mt: 0.5 }}>
+                      <Typography
+                        variant="caption"
+                        color="error.main"
+                        fontWeight={700}
+                        display="block"
+                      >
+                        {operation.errorDetails.title}
+                      </Typography>
+                      {(operation.errorDetails.node ||
+                        operation.errorDetails.inboundType ||
+                        operation.errorDetails.port) && (
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          display="block"
+                        >
+                          {[
+                            operation.errorDetails.node &&
+                              `Нода: ${operation.errorDetails.node}`,
+                            operation.errorDetails.inboundType &&
+                              `Тип: ${operation.errorDetails.inboundType}`,
+                            operation.errorDetails.port &&
+                              `Порт: ${operation.errorDetails.port}`,
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </Typography>
+                      )}
+                      {operation.errorDetails.hint && (
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          display="block"
+                        >
+                          Подсказка: {operation.errorDetails.hint}
+                        </Typography>
+                      )}
+                    </Box>
+                  ) : operation.error ? (
                     <Typography
                       variant="caption"
                       color="error.main"
@@ -452,7 +626,7 @@ export default function DashboardPage() {
                     >
                       Ошибка: {operation.error}
                     </Typography>
-                  )}
+                  ) : null}
                   {operation.results?.some(
                     (item) => item.status !== 'succeeded',
                   ) && (
@@ -460,25 +634,71 @@ export default function DashboardPage() {
                       {operation.results
                         .filter((item) => item.status !== 'succeeded')
                         .map((item, idx) => (
-                          <Typography
-                            key={idx}
-                            variant="caption"
-                            color="warning.main"
-                            display="block"
-                            sx={{
-                              display: '-webkit-box',
-                              WebkitLineClamp: 2,
-                              WebkitBoxOrient: 'vertical',
-                              overflow: 'hidden',
-                              overflowWrap: 'anywhere',
-                            }}
-                          >
-                            {item.subscriptionName
-                              ? `${item.subscriptionName} · `
-                              : ''}
-                            {item.nodeName}:{' '}
-                            {item.message || 'Старые подключения сохранены'}
-                          </Typography>
+                          <Box key={idx} sx={{ mt: 0.5 }}>
+                            {item.errorDetails ? (
+                              <>
+                                <Typography
+                                  variant="caption"
+                                  color="warning.main"
+                                  fontWeight={700}
+                                  display="block"
+                                >
+                                  {item.subscriptionName
+                                    ? `${item.subscriptionName} · `
+                                    : ''}
+                                  {item.errorDetails.title}
+                                </Typography>
+                                {(item.errorDetails.node ||
+                                  item.errorDetails.inboundType ||
+                                  item.errorDetails.port) && (
+                                  <Typography
+                                    variant="caption"
+                                    color="text.secondary"
+                                    display="block"
+                                  >
+                                    {[
+                                      item.errorDetails.node &&
+                                        `Нода: ${item.errorDetails.node}`,
+                                      item.errorDetails.inboundType &&
+                                        `Тип: ${item.errorDetails.inboundType}`,
+                                      item.errorDetails.port &&
+                                        `Порт: ${item.errorDetails.port}`,
+                                    ]
+                                      .filter(Boolean)
+                                      .join(' · ')}
+                                  </Typography>
+                                )}
+                                {item.errorDetails.hint && (
+                                  <Typography
+                                    variant="caption"
+                                    color="text.secondary"
+                                    display="block"
+                                  >
+                                    Подсказка: {item.errorDetails.hint}
+                                  </Typography>
+                                )}
+                              </>
+                            ) : (
+                              <Typography
+                                variant="caption"
+                                color="warning.main"
+                                display="block"
+                                sx={{
+                                  display: '-webkit-box',
+                                  WebkitLineClamp: 2,
+                                  WebkitBoxOrient: 'vertical',
+                                  overflow: 'hidden',
+                                  overflowWrap: 'anywhere',
+                                }}
+                              >
+                                {item.subscriptionName
+                                  ? `${item.subscriptionName} · `
+                                  : ''}
+                                {item.nodeName}:{' '}
+                                {item.message || 'Старые подключения сохранены'}
+                              </Typography>
+                            )}
+                          </Box>
                         ))}
                     </Box>
                   )}
@@ -514,11 +734,15 @@ export default function DashboardPage() {
                 {new Date(selectedOperation.createdAt).toLocaleString('ru-RU')}{' '}
                 · {statusLabel[selectedOperation.status]}
               </Typography>
-              {selectedOperation.error && (
+              {selectedOperation.errorDetails ? (
+                <ErrorDetailsBlock
+                  errorDetails={selectedOperation.errorDetails}
+                />
+              ) : selectedOperation.error ? (
                 <Alert severity="error" sx={{ overflowWrap: 'anywhere' }}>
                   {selectedOperation.error}
                 </Alert>
-              )}
+              ) : null}
               {selectedOperation.results?.map((result, index) => (
                 <Paper
                   variant="outlined"
@@ -539,7 +763,9 @@ export default function DashboardPage() {
                       Этап: {result.details.phase}
                     </Typography>
                   )}
-                  {result.message && (
+                  {result.errorDetails ? (
+                    <ErrorDetailsBlock errorDetails={result.errorDetails} />
+                  ) : result.message ? (
                     <Box
                       component="pre"
                       sx={{
@@ -550,7 +776,7 @@ export default function DashboardPage() {
                     >
                       {result.message}
                     </Box>
-                  )}
+                  ) : null}
                   {result.details?.blockingInbound && (
                     <Alert severity="warning" sx={{ mt: 1 }}>
                       Запуск блокирует существующий инбаунд{' '}

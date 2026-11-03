@@ -14,6 +14,8 @@ import {
   isValidPort,
   parseDefaultInboundsSetting,
   sanitizeInboundForStorage,
+  validateRoutingProfile,
+  validateSubscriptionMetadata,
 } from '../../src/utils/inboundUtils';
 import type { NodeRecord } from '../../src/types/node';
 import type { Domain, Tunnel } from '../../src/types/inbound';
@@ -178,5 +180,89 @@ describe('inboundUtils', () => {
       certificateFile: undefined,
       keyFile: undefined,
     });
+  });
+
+  it('handles SNI, support and sanitization for routing and xhttp-get types', () => {
+    expect(hasSni('vless-xhttp-get')).toBe(false);
+    expect(hasSni('happ-routing')).toBe(false);
+    expect(hasSni('incy-routing')).toBe(false);
+
+    expect(isInboundSupported('happ-routing', 'node-nl', mockNodes)).toBe(true);
+    expect(isInboundSupported('incy-routing', 'node-nl', mockNodes)).toBe(true);
+
+    const happInbound = createInboundTemplate('happ-routing', mockNodes, mockDomains, {
+      routingProfile: 'happ://routing/off',
+    });
+    expect(happInbound.nodeId).toBe('');
+    expect(happInbound.port).toBe('');
+    expect(happInbound.sni).toBe('');
+    expect(happInbound.routingProfile).toBe('happ://routing/off');
+
+    const sanitized = sanitizeInboundForStorage(happInbound);
+    expect(sanitized).toEqual({
+      type: 'happ-routing',
+      routingProfile: 'happ://routing/off',
+    });
+  });
+
+  it('validates routing profiles properly', () => {
+    expect(validateRoutingProfile('happ-routing', '')).toBe('Укажите профиль маршрутизации');
+    expect(validateRoutingProfile('happ-routing', 'happ://routing/off')).toBeNull();
+    expect(validateRoutingProfile('happ-routing', '{"rules":[]}')).toBeNull();
+    expect(validateRoutingProfile('happ-routing', btoa('{"rules":[]}'))).toBeNull();
+    expect(validateRoutingProfile('happ-routing', `happ://routing/add/${btoa('{"rules":[]}')}`)).toBeNull();
+    expect(validateRoutingProfile('happ-routing', 'invalid profile')).toContain('Неверный профиль Happ');
+
+    expect(validateRoutingProfile('incy-routing', 'https://example.com/rules')).toBeNull();
+    expect(validateRoutingProfile('incy-routing', 'incy://autorouting/add/https://example.com/rules')).toBeNull();
+    expect(validateRoutingProfile('incy-routing', '{"rules":[]}')).toBeNull();
+    expect(validateRoutingProfile('incy-routing', 'invalid incy')).toContain('Неверный профиль Happ');
+  });
+
+  it('counts Unicode code points in metadata limits', () => {
+    expect(validateSubscriptionMetadata({ note: '😀'.repeat(200) })).toEqual({});
+    expect(validateSubscriptionMetadata({ note: '😀'.repeat(201) })).toHaveProperty('note');
+    const prefix = 'https://example.com/';
+    expect(validateSubscriptionMetadata({ websiteUrl: prefix + '😀'.repeat(10) + 'a'.repeat(2038 - [...prefix].length) })).toEqual({});
+    expect(validateSubscriptionMetadata({ websiteUrl: prefix + '😀'.repeat(2048 - [...prefix].length) })).toEqual({ websiteUrl: 'Некорректный формат ссылки на сайт' });
+    expect(validateSubscriptionMetadata({ supportUrl: prefix + '😀'.repeat(2049 - [...prefix].length) })).toHaveProperty('supportUrl');
+  });
+
+  it.each(['https://example.com/a b', 'https://example.com/a\tb', 'https://example.com/<x>', 'https://example.com/a\u0000b', 'https://example.com/a\u001fb', 'https://example.com/a\u007fb', 'https://example.com/a\u009fb'])('rejects invalid URL characters in %s', (url) => {
+    expect(validateSubscriptionMetadata({ supportUrl: url, websiteUrl: url })).toEqual({ supportUrl: 'Некорректный формат ссылки поддержки', websiteUrl: 'Некорректный формат ссылки на сайт' });
+  });
+
+  it('validates subscription metadata properly', () => {
+    expect(
+      validateSubscriptionMetadata({
+        note: 'n'.repeat(201),
+      }),
+    ).toEqual({
+      note: 'Примечание не должно превышать 200 символов',
+    });
+
+    expect(
+      validateSubscriptionMetadata({
+        supportUrl: 'ftp://example.com',
+      }),
+    ).toEqual({
+      supportUrl: 'Ссылка поддержки должна начинаться с http://, https:// или tg://',
+    });
+
+    expect(
+      validateSubscriptionMetadata({
+        websiteUrl: 'tg://resolve?domain=help',
+      }),
+    ).toEqual({
+      websiteUrl: 'Ссылка на сайт должна начинаться с http:// или https://',
+    });
+
+    expect(
+      validateSubscriptionMetadata({
+        note: 'Нормальное примечание',
+        supportUrl: 'tg://resolve?domain=help',
+        websiteUrl: 'https://example.com',
+      }),
+    ).toEqual({});
   });
 });

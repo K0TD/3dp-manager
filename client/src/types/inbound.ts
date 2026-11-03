@@ -5,6 +5,7 @@ export interface InboundConfigUI {
   port: string;
   sni: string;
   link?: string;
+  routingProfile?: string;
   nodeId?: string;
   relayServerId?: string;
   flag?: string;
@@ -43,6 +44,7 @@ export interface CountryOption {
 export const CONNECTION_OPTIONS = [
   'vless-tcp-reality',
   'vless-xhttp-reality',
+  'vless-xhttp-get',
   'vless-grpc-reality',
   'vless-ws',
   'vless-tcp-tls',
@@ -59,7 +61,17 @@ export const CONNECTION_OPTIONS = [
   'http',
   'socks',
   'custom',
+  'happ-routing',
+  'incy-routing',
 ] as const;
+
+export const ROUTING_INBOUND_TYPES = new Set<string>([
+  'happ-routing',
+  'incy-routing',
+]);
+
+export const isRoutingProfile = (type: string): boolean =>
+  ROUTING_INBOUND_TYPES.has(type);
 
 export const PERSISTENT_INBOUND_TYPES = new Set([
   'amneziawg', 'wireguard', 'mixed', 'http', 'socks',

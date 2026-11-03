@@ -92,6 +92,67 @@ describe('SubscriptionsPage', () => {
     expect(await screen.findByText(/Настройки сохранены, но создание подключений не завершено: Panel offline/)).toBeInTheDocument()
   })
 
+  it.each(['happ-routing', 'incy-routing'])('сохраняет %s при реальных capabilities ноды', async (type) => {
+    setupMockGet({ nodes: [{ id: 'node-1', name: 'Main', url: 'https://node.test', isMain: true, capabilities: { supportedInboundTypes: ['vless-tcp-reality'], autoTlsCertificate: true } }], subscriptions: [{ id: 'route', name: 'Routing', uuid: 'route-uuid', inbounds: [], inboundsConfig: [{ configId: 'route-config', type, routingProfile: '{}' }] }] })
+    mockPut.mockResolvedValue({ data: {} })
+    renderSubscriptionsPage()
+    fireEvent.click(await screen.findByTestId('icon-MoreVert'))
+    fireEvent.click(await screen.findByText('Редактировать'))
+    fireEvent.click(await screen.findByText('Сохранить'))
+    await waitFor(() => expect(mockPut).toHaveBeenCalledWith('/subscriptions/route', expect.objectContaining({ inboundsConfig: [expect.objectContaining({ type, routingProfile: '{}' })] })))
+    expect(screen.queryByText(/не поддерживается выбранной нодой/)).not.toBeInTheDocument()
+  })
+
+  it('отправляет пустые метаданные при очистке существующих полей', async () => {
+    setupMockGet({ subscriptions: [{ id: 'meta', name: 'Metadata', uuid: 'meta-uuid', note: 'Old note', supportUrl: 'https://support.test', websiteUrl: 'https://site.test', inbounds: [], inboundsConfig: [] }] })
+    mockPut.mockResolvedValue({ data: {} })
+    renderSubscriptionsPage()
+    fireEvent.click(await screen.findByTestId('icon-MoreVert'))
+    fireEvent.click(await screen.findByText('Редактировать'))
+    for (const label of ['Примечание', 'Ссылка на поддержку', 'Веб-сайт']) fireEvent.change(await screen.findByLabelText(label), { target: { value: '' } })
+    fireEvent.click(screen.getByText('Сохранить'))
+    await waitFor(() => expect(mockPut).toHaveBeenCalledWith('/subscriptions/meta', expect.objectContaining({ note: '', supportUrl: '', websiteUrl: '' })))
+  })
+
+  it.each([
+    { type: 'Happ routing', profile: 'Профиль Happ routing', nodes: [], expected: 'happ-routing' },
+    { type: 'INCY routing', profile: 'Профиль INCY routing', nodes: [], expected: 'incy-routing' },
+    { type: 'vless-xhttp-get', profile: '', nodes: [{ id: 'node-1', name: 'Main', url: 'https://node.test', isMain: true, capabilities: { supportedInboundTypes: ['vless-xhttp-get'], autoTlsCertificate: true } }], expected: 'vless-xhttp-get' },
+  ])('создаёт $expected без SNI-доменов с учётом типа', async ({ type, profile, nodes, expected }) => {
+    setupMockGet({ nodes, domains: [] })
+    mockPost.mockResolvedValue({ data: { id: 'created' } })
+    renderSubscriptionsPage()
+    fireEvent.click(await screen.findByText('Создать'))
+    fireEvent.change(await screen.findByLabelText('Имя подписки'), { target: { value: 'New subscription' } })
+    fireEvent.click(screen.getByText('Удалить все'))
+    fireEvent.click(screen.getByText('Добавить инбаунд'))
+    fireEvent.mouseDown(screen.getAllByRole('combobox')[0])
+    fireEvent.click(await screen.findByRole('option', { name: type }))
+    if (profile) fireEvent.change(screen.getByLabelText(profile), { target: { value: '{}' } })
+    fireEvent.click(screen.getByText('Сохранить'))
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith('/subscriptions', expect.objectContaining({ inboundsConfig: [expect.objectContaining({ type: expected })] })))
+  })
+
+  it('проверяет наличие ноды при сохранении', async () => {
+    setupMockGet({ nodes: [], domains: [] })
+    renderSubscriptionsPage()
+    fireEvent.click(await screen.findByText('Создать'))
+    fireEvent.change(await screen.findByLabelText('Имя подписки'), { target: { value: 'Needs resources' } })
+    fireEvent.click(screen.getByText('Сохранить'))
+    expect(await screen.findByText('Создайте хотя бы одну ноду!')).toBeInTheDocument()
+    expect(mockPost).not.toHaveBeenCalledWith('/subscriptions', expect.anything())
+  })
+
+  it('просит SNI-домен только если выбранному подключению нужен random SNI', async () => {
+    setupMockGet({ domains: [] })
+    renderSubscriptionsPage()
+    fireEvent.click(await screen.findByText('Создать'))
+    fireEvent.change(await screen.findByLabelText('Имя подписки'), { target: { value: 'Needs SNI' } })
+    fireEvent.click(screen.getByText('Сохранить'))
+    expect(await screen.findByText('Создайте хотя бы один домен!')).toBeInTheDocument()
+    expect(mockPost).not.toHaveBeenCalledWith('/subscriptions', expect.anything())
+  })
+
   describe('Рендеринг', () => {
     it('должен рендериться с заголовком', async () => {
       setupMockGet()
@@ -1147,6 +1208,122 @@ describe('SubscriptionsPage', () => {
       await waitFor(() => {
         expect(screen.getByText('Нет активных ссылок (ждите ротации)')).toBeInTheDocument()
       })
+    })
+  })
+
+  describe('Метаданные подписки и routing (Этап 2)', () => {
+    it('валидирует поля метаданных (note, supportUrl, websiteUrl) перед сохранением', async () => {
+      setupMockGet()
+      renderSubscriptionsPage()
+
+      const createBtn = await screen.findByText('Создать')
+      fireEvent.click(createBtn)
+
+      const nameInput = screen.getByLabelText('Имя подписки')
+      fireEvent.change(nameInput, { target: { value: 'Valid Name' } })
+
+      const noteInput = screen.getByLabelText('Примечание')
+      fireEvent.change(noteInput, { target: { value: 'x'.repeat(201) } })
+
+      const saveBtn = screen.getByText('Сохранить')
+      fireEvent.click(saveBtn)
+
+      expect((await screen.findAllByText('Примечание не должно превышать 200 символов')).length).toBeGreaterThan(0)
+      expect(mockPost).not.toHaveBeenCalled()
+
+      // Fix note, enter invalid supportUrl
+      fireEvent.change(noteInput, { target: { value: 'Короткое примечание' } })
+      const supportInput = screen.getByLabelText('Ссылка на поддержку')
+      fireEvent.change(supportInput, { target: { value: 'ftp://bad-protocol.com' } })
+      fireEvent.click(saveBtn)
+
+      expect((await screen.findAllByText('Ссылка поддержки должна начинаться с http://, https:// или tg://')).length).toBeGreaterThan(0)
+      expect(mockPost).not.toHaveBeenCalled()
+    })
+
+    it('сохраняет метаданные и routingProfile в payload', async () => {
+      setupMockGet()
+      mockPost.mockResolvedValue({ data: { id: 'new-sub-id', success: true } })
+      renderSubscriptionsPage()
+
+      const createBtn = await screen.findByText('Создать')
+      fireEvent.click(createBtn)
+
+      fireEvent.change(screen.getByLabelText('Имя подписки'), { target: { value: 'Sub with Metadata' } })
+      fireEvent.change(screen.getByLabelText('Примечание'), { target: { value: 'Моё примечание' } })
+      fireEvent.change(screen.getByLabelText('Ссылка на поддержку'), { target: { value: 'tg://resolve?domain=mychannel' } })
+      fireEvent.change(screen.getByLabelText('Веб-сайт'), { target: { value: 'https://mysite.com' } })
+
+      // Clear default inbounds
+      fireEvent.click(screen.getByText('Удалить все'))
+
+      // Add one inbound
+      fireEvent.click(screen.getByText('Добавить инбаунд'))
+
+      // Change inbound to happ-routing using type combobox
+      const typeSelect = (await screen.findAllByRole('combobox'))[0]
+      fireEvent.mouseDown(typeSelect)
+      const happOption = await screen.findByText('Happ routing')
+      fireEvent.click(happOption)
+
+      const profileInput = await screen.findByLabelText('Профиль Happ routing')
+      fireEvent.change(profileInput, { target: { value: 'happ://routing/off' } })
+
+      const saveBtn = screen.getByText('Сохранить')
+      fireEvent.click(saveBtn)
+
+      await waitFor(() => {
+        expect(mockPost).toHaveBeenCalledWith(
+          '/subscriptions',
+          expect.objectContaining({
+            name: 'Sub with Metadata',
+            note: 'Моё примечание',
+            supportUrl: 'tg://resolve?domain=mychannel',
+            websiteUrl: 'https://mysite.com',
+            inboundsConfig: [
+              expect.objectContaining({
+                type: 'happ-routing',
+                routingProfile: 'happ://routing/off',
+                enabled: true,
+              }),
+            ],
+          }),
+        )
+      })
+    })
+
+    it('загружает метаданные и routingProfile при редактировании', async () => {
+      const mockSub = {
+        id: 'sub-meta-1',
+        name: 'Existing Sub',
+        uuid: 'meta-uuid-1',
+        note: 'Существующее примечание',
+        supportUrl: 'https://t.me/support',
+        websiteUrl: 'https://example.com',
+        inbounds: [],
+        inboundsConfig: [
+          {
+            configId: 'cfg-incy-1',
+            type: 'incy-routing',
+            routingProfile: 'https://example.com/rules',
+            enabled: true,
+          },
+        ],
+      }
+      setupMockGet({ subscriptions: [mockSub] })
+      renderSubscriptionsPage()
+
+      const menuButton = await screen.findByTestId('icon-MoreVert')
+      fireEvent.click(menuButton)
+
+      const editOption = await screen.findByText('Редактировать')
+      fireEvent.click(editOption)
+
+      expect(await screen.findByDisplayValue('Existing Sub')).toBeInTheDocument()
+      expect(screen.getByDisplayValue('Существующее примечание')).toBeInTheDocument()
+      expect(screen.getByDisplayValue('https://t.me/support')).toBeInTheDocument()
+      expect(screen.getByDisplayValue('https://example.com')).toBeInTheDocument()
+      expect(screen.getByDisplayValue('https://example.com/rules')).toBeInTheDocument()
     })
   })
 })

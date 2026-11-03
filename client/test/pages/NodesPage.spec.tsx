@@ -57,7 +57,9 @@ describe('NodesPage', () => {
     // Verify last-node alert is displayed with correct wording:
     const alert = screen.getByText(/Это последняя нода/);
     expect(alert).toBeInTheDocument();
-    expect(alert.textContent).toContain('Подписки сохранятся, но их подключения будут переведены на «Основную ноду» и отключены до добавления новой ноды');
+    expect(alert.textContent).toContain(
+      'Это последняя нода. Подписки сохранятся, но их подключения останутся без рабочей ноды. При принудительном или отложенном удалении подключения будут отключены — после добавления новой ноды откройте подписку и сохраните её, чтобы активировать их заново.',
+    );
     // Ensure it does NOT claim subscriptions will be deleted
     expect(alert.textContent).not.toContain('будут удалены все подписки');
   });

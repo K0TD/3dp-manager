@@ -192,4 +192,71 @@ describe('InboundsEditor', () => {
     renderEditor({ extraActions: <button type="button">Extra Action</button> });
     expect(screen.getByText('Extra Action')).toBeInTheDocument();
   });
+
+  it('renders routing profiles with multiline field and without port/node/sni', () => {
+    const { handleChange } = renderEditor({
+      inbounds: [
+        {
+          id: 'inb-happ',
+          configId: 'cfg-happ',
+          type: 'happ-routing',
+          port: '',
+          sni: '',
+          routingProfile: 'happ://routing/off',
+        },
+      ],
+    });
+
+    expect(screen.getByLabelText('Профиль Happ routing')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('happ://routing/off')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Порт')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Нода')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('SNI')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Профиль Happ routing'), {
+      target: { value: '{"rules":[]}' },
+    });
+    expect(handleChange).toHaveBeenCalledWith([
+      expect.objectContaining({
+        id: 'inb-happ',
+        routingProfile: '{"rules":[]}',
+      }),
+    ]);
+  });
+
+  it.each(['custom', 'happ-routing', 'incy-routing'])('restores a random port when switching %s to an ordinary type', async (type) => {
+    const { handleChange } = renderEditor({ inbounds: [{ id: 'row', configId: 'cfg', type, port: '', sni: '' }] });
+    fireEvent.mouseDown(screen.getAllByRole('combobox')[0]);
+    fireEvent.click(await screen.findByRole('option', { name: 'vless-tcp-reality' }));
+    expect(handleChange).toHaveBeenCalledWith([expect.objectContaining({ type: 'vless-tcp-reality', port: 'random' })]);
+  });
+
+  it('does not count routing profiles in the connection count limit', () => {
+    // 2 connections + 2 routing profiles = 2/20
+    renderEditor({
+      inbounds: [
+        initialInbounds[0],
+        initialInbounds[1],
+        {
+          id: 'inb-happ',
+          configId: 'cfg-happ',
+          type: 'happ-routing',
+          port: '',
+          sni: '',
+          routingProfile: '{}',
+        },
+        {
+          id: 'inb-incy',
+          configId: 'cfg-incy',
+          type: 'incy-routing',
+          port: '',
+          sni: '',
+          routingProfile: '{}',
+        },
+      ],
+    });
+
+    expect(screen.getByText('Инбаунды (2/20)')).toBeInTheDocument();
+    expect(screen.getByText('Добавить инбаунд')).toBeEnabled();
+  });
 });

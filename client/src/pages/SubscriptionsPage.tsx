@@ -47,13 +47,25 @@ import { Logger } from '../utils/logger';
 import type { NodeRecord } from '../types/node';
 import { InboundsEditor } from '../components/InboundsEditor';
 import { WorkspaceHeader } from '../components/WorkspaceHeader';
-import { hasSni, parseDefaultInboundsSetting } from '../utils/inboundUtils';
-import { PERSISTENT_INBOUND_TYPES } from '../types/inbound';
+import {
+  hasSni,
+  isInboundSupported,
+  parseDefaultInboundsSetting,
+  validateRoutingProfile,
+  validateSubscriptionMetadata,
+} from '../utils/inboundUtils';
+import {
+  PERSISTENT_INBOUND_TYPES,
+  ROUTING_INBOUND_TYPES,
+} from '../types/inbound';
 
 interface Subscription {
   id: string;
   name: string;
   uuid: string;
+  note?: string;
+  supportUrl?: string;
+  websiteUrl?: string;
   inbounds: Array<{
     protocol?: string;
     configId?: string;
@@ -89,6 +101,7 @@ interface InboundConfigUI {
   port: string;
   sni: string;
   link?: string;
+  routingProfile?: string;
   nodeId?: string;
   relayServerId?: string;
   flag?: string;
@@ -141,6 +154,14 @@ export default function SubscriptionsPage() {
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState('');
+  const [note, setNote] = useState('');
+  const [supportUrl, setSupportUrl] = useState('');
+  const [websiteUrl, setWebsiteUrl] = useState('');
+  const [metadataErrors, setMetadataErrors] = useState<{
+    note?: string;
+    supportUrl?: string;
+    websiteUrl?: string;
+  }>({});
   const [inbounds, setInbounds] = useState<InboundConfigUI[]>([]);
   const [portErrors, setPortErrors] = useState<Record<string, string>>({});
   const [linksOpen, setLinksOpen] = useState(false);
@@ -268,12 +289,6 @@ export default function SubscriptionsPage() {
   const getSelectedNode = (nodeId?: string) =>
     nodes.find((node) => node.id === (nodeId || getDefaultNodeId()));
 
-  const isInboundSupported = (type: string, nodeId?: string) => {
-    if (type === 'custom') return true;
-    const capabilities = getSelectedNode(nodeId)?.capabilities;
-    return !capabilities || capabilities.supportedInboundTypes.includes(type);
-  };
-
   const isValidPort = (value: string) =>
     value === 'random' ||
     (/^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= 65535);
@@ -301,25 +316,12 @@ export default function SubscriptionsPage() {
   };
 
   const handleOpenCreate = () => {
-    if (nodes.length === 0) {
-      setSnackbar({
-        open: true,
-        type: 'error',
-        message: 'Создайте хотя бы одну ноду!',
-      });
-      return;
-    }
-    if (domains.length === 0) {
-      setSnackbar({
-        open: true,
-        type: 'error',
-        message: 'Создайте хотя бы один домен!',
-      });
-      return;
-    }
-
     setEditingId(null);
     setName('');
+    setNote('');
+    setSupportUrl('');
+    setWebsiteUrl('');
+    setMetadataErrors({});
     const parsedDefaults = parseDefaultInboundsSetting(
       defaultInboundsSetting,
       nodes,
@@ -343,6 +345,10 @@ export default function SubscriptionsPage() {
   const handleOpenEdit = (sub: Subscription) => {
     setEditingId(sub.id);
     setName(sub.name);
+    setNote(sub.note || '');
+    setSupportUrl(sub.supportUrl || '');
+    setWebsiteUrl(sub.websiteUrl || '');
+    setMetadataErrors({});
     setInbounds(
       (sub.inboundsConfig || []).map((item) => {
         const activePersistent = sub.inbounds?.find(
@@ -397,6 +403,7 @@ export default function SubscriptionsPage() {
           port: item.port ? item.port.toString() : 'random',
           sni: inboundSni(item.type || '', item.sni),
           link: item.link || '',
+          routingProfile: item.routingProfile || '',
           nodeId,
           relayServerId,
           flag,
@@ -431,7 +438,11 @@ export default function SubscriptionsPage() {
     if (saving) return;
     const nextPortErrors = inbounds.reduce<Record<string, string>>(
       (acc, inbound) => {
-        if (inbound.type !== 'custom' && !isValidPort(inbound.port)) {
+        if (
+          inbound.type !== 'custom' &&
+          !ROUTING_INBOUND_TYPES.has(inbound.type) &&
+          !isValidPort(inbound.port)
+        ) {
           acc[inbound.id] = 'Порт: число 1-65535 или random';
         }
         return acc;
@@ -454,6 +465,63 @@ export default function SubscriptionsPage() {
         type: 'error',
         message: 'Введите имя подписки',
       });
+      return;
+    }
+    const metaErrors = validateSubscriptionMetadata({
+      note,
+      supportUrl,
+      websiteUrl,
+    });
+    if (Object.keys(metaErrors).length > 0) {
+      setMetadataErrors(metaErrors);
+      setSnackbar({
+        open: true,
+        type: 'error',
+        message: Object.values(metaErrors)[0],
+      });
+      return;
+    }
+    const invalidRouting = inbounds.find(
+      (inbound) =>
+        ROUTING_INBOUND_TYPES.has(inbound.type) &&
+        validateRoutingProfile(inbound.type, inbound.routingProfile),
+    );
+    if (invalidRouting) {
+      setSnackbar({
+        open: true,
+        type: 'error',
+        message:
+          validateRoutingProfile(
+            invalidRouting.type,
+            invalidRouting.routingProfile,
+          ) || 'Неверный профиль маршрутизации',
+      });
+      return;
+    }
+    const connectionCount = inbounds.filter(
+      (inbound) => !ROUTING_INBOUND_TYPES.has(inbound.type),
+    ).length;
+    if (connectionCount > 20) {
+      setSnackbar({
+        open: true,
+        type: 'error',
+        message: 'Подписка может содержать не более 20 подключений',
+      });
+      return;
+    }
+    const needsNode = inbounds.some(
+      (inbound) => inbound.type !== 'custom' && !ROUTING_INBOUND_TYPES.has(inbound.type),
+    );
+    if (needsNode && nodes.length === 0) {
+      setSnackbar({ open: true, type: 'error', message: 'Создайте хотя бы одну ноду!' });
+      return;
+    }
+    const needsDomain = inbounds.some(
+      (inbound) => hasSni(inbound.type) &&
+        (inbound.type === 'mtproto-faketls' || inbound.sni.trim() === 'random'),
+    );
+    if (needsDomain && domains.length === 0) {
+      setSnackbar({ open: true, type: 'error', message: 'Создайте хотя бы один домен!' });
       return;
     }
     if (
@@ -491,7 +559,7 @@ export default function SubscriptionsPage() {
       return;
     }
     const incompatibleInbound = inbounds.find(
-      (inbound) => !isInboundSupported(inbound.type, inbound.nodeId),
+      (inbound) => !isInboundSupported(inbound.type, inbound.nodeId, nodes),
     );
     if (incompatibleInbound) {
       setSnackbar({
@@ -504,47 +572,59 @@ export default function SubscriptionsPage() {
 
     const payload = {
       name,
-      inboundsConfig: inbounds.map((inbound) =>
-        inbound.type === 'custom'
-          ? {
-              configId: inbound.configId,
-              type: inbound.type,
-              link: inbound.link,
-              enabled: true,
-            }
-          : {
-              configId: inbound.configId,
-              type: inbound.type,
-              port:
-                inbound.port === 'random'
-                  ? 'random'
-                  : parseInt(inbound.port, 10),
-              sni: hasSni(inbound.type) ? inbound.sni : undefined,
-              nodeId: inbound.nodeId || undefined,
-              relayServerId: inbound.relayServerId
-                ? parseInt(inbound.relayServerId, 10)
-                : undefined,
-              flag: inbound.flag || getNodeFlag(inbound.nodeId) || undefined,
-              name: inbound.name?.trim() || undefined,
-              enabled: true,
-              certificateMode: CERTIFICATE_TYPES.has(inbound.type)
-                ? inbound.certificateMode || 'node'
-                : undefined,
-              tlsServerName: CERTIFICATE_TYPES.has(inbound.type)
-                ? inbound.tlsServerName?.trim() || undefined
-                : undefined,
-              certificateFile:
-                CERTIFICATE_TYPES.has(inbound.type) &&
-                inbound.certificateMode === 'custom'
-                  ? inbound.certificateFile?.trim() || undefined
-                  : undefined,
-              keyFile:
-                CERTIFICATE_TYPES.has(inbound.type) &&
-                inbound.certificateMode === 'custom'
-                  ? inbound.keyFile?.trim() || undefined
-                  : undefined,
-            },
-      ),
+      note: note.trim(),
+      supportUrl: supportUrl.trim(),
+      websiteUrl: websiteUrl.trim(),
+      inboundsConfig: inbounds.map((inbound) => {
+        if (inbound.type === 'custom') {
+          return {
+            configId: inbound.configId,
+            type: inbound.type,
+            link: inbound.link,
+            enabled: true,
+          };
+        }
+        if (ROUTING_INBOUND_TYPES.has(inbound.type)) {
+          return {
+            configId: inbound.configId,
+            type: inbound.type,
+            routingProfile: inbound.routingProfile || '',
+            enabled: true,
+          };
+        }
+        return {
+          configId: inbound.configId,
+          type: inbound.type,
+          port:
+            inbound.port === 'random'
+              ? 'random'
+              : parseInt(inbound.port, 10),
+          sni: hasSni(inbound.type) ? inbound.sni : undefined,
+          nodeId: inbound.nodeId || undefined,
+          relayServerId: inbound.relayServerId
+            ? parseInt(inbound.relayServerId, 10)
+            : undefined,
+          flag: inbound.flag || getNodeFlag(inbound.nodeId) || undefined,
+          name: inbound.name?.trim() || undefined,
+          enabled: true,
+          certificateMode: CERTIFICATE_TYPES.has(inbound.type)
+            ? inbound.certificateMode || 'node'
+            : undefined,
+          tlsServerName: CERTIFICATE_TYPES.has(inbound.type)
+            ? inbound.tlsServerName?.trim() || undefined
+            : undefined,
+          certificateFile:
+            CERTIFICATE_TYPES.has(inbound.type) &&
+            inbound.certificateMode === 'custom'
+              ? inbound.certificateFile?.trim() || undefined
+              : undefined,
+          keyFile:
+            CERTIFICATE_TYPES.has(inbound.type) &&
+            inbound.certificateMode === 'custom'
+              ? inbound.keyFile?.trim() || undefined
+              : undefined,
+        };
+      }),
     };
 
     setSaving(true);
@@ -562,7 +642,7 @@ export default function SubscriptionsPage() {
         }>('/subscriptions', payload);
         setCreatedSubscriptionId(
           inbounds.some(
-            (inbound) => !PERSISTENT_INBOUND_TYPES.has(inbound.type),
+            (inbound) => !PERSISTENT_INBOUND_TYPES.has(inbound.type) && !ROUTING_INBOUND_TYPES.has(inbound.type),
           )
             ? res.data?.id || null
             : null,
@@ -1131,6 +1211,67 @@ export default function SubscriptionsPage() {
             onChange={(e) => setName(e.target.value)}
             sx={{ mb: 2 }}
           />
+          <TextField
+            margin="dense"
+            label="Примечание"
+            placeholder="Краткое описание или объявление"
+            fullWidth
+            value={note}
+            onChange={(e) => {
+              setNote(e.target.value);
+              if (metadataErrors.note) {
+                setMetadataErrors((prev) => ({ ...prev, note: undefined }));
+              }
+            }}
+            error={!!metadataErrors.note}
+            helperText={metadataErrors.note || `${[...note].length}/200`}
+            sx={{ mb: 2 }}
+          />
+          <Box
+            sx={{
+              display: 'grid',
+              gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' },
+              gap: 2,
+              mb: 2,
+            }}
+          >
+            <TextField
+              margin="dense"
+              label="Ссылка на поддержку"
+              placeholder="https://t.me/... или tg://..."
+              fullWidth
+              value={supportUrl}
+              onChange={(e) => {
+                setSupportUrl(e.target.value);
+                if (metadataErrors.supportUrl) {
+                  setMetadataErrors((prev) => ({
+                    ...prev,
+                    supportUrl: undefined,
+                  }));
+                }
+              }}
+              error={!!metadataErrors.supportUrl}
+              helperText={metadataErrors.supportUrl || ''}
+            />
+            <TextField
+              margin="dense"
+              label="Веб-сайт"
+              placeholder="https://example.com"
+              fullWidth
+              value={websiteUrl}
+              onChange={(e) => {
+                setWebsiteUrl(e.target.value);
+                if (metadataErrors.websiteUrl) {
+                  setMetadataErrors((prev) => ({
+                    ...prev,
+                    websiteUrl: undefined,
+                  }));
+                }
+              }}
+              error={!!metadataErrors.websiteUrl}
+              helperText={metadataErrors.websiteUrl || ''}
+            />
+          </Box>
           {inbounds.some((i) => i.enabled === false || i.disabledReason) && (
             <Alert severity="warning" sx={{ mb: 2 }}>
               Внимание: некоторые конфигурации были отключены (удалена нода).
