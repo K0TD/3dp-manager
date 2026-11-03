@@ -38,6 +38,7 @@ import {
 } from '../xui/xui-contract';
 import { supportsInboundType } from '../nodes/node-capabilities';
 import { SubscriptionLockService } from '../subscriptions/subscription-lock.service';
+import { NodeDeletionService } from '../nodes/node-deletion.service';
 import { renameAmneziaVpnLink } from '../inbounds/amnezia-vpn-link';
 import {
   RotationNodeResult,
@@ -101,6 +102,7 @@ export class RotationService implements OnModuleInit {
     private xuiService: XuiService,
     private inboundBuilder: InboundBuilderService,
     private subscriptionLock: SubscriptionLockService,
+    private nodeDeletion: NodeDeletionService,
   ) {}
 
   async onModuleInit() {
@@ -953,6 +955,9 @@ export class RotationService implements OnModuleInit {
   }
 
   private async createInbound(request: CreateInboundRequest) {
+    if (request.node && this.nodeDeletion.isDeleting(request.node.id)) {
+      throw new Error(`Нода «${request.node.name}» удаляется`);
+    }
     const {
       subscription,
       positionedConfig: { config, position },
@@ -1040,12 +1045,18 @@ export class RotationService implements OnModuleInit {
     request.diagnostics?.push(diagnostic);
 
     const randomPort = config.port === 'random' || !config.port;
+    if (this.nodeDeletion.isDeleting(node.id)) {
+      throw new Error(`Нода «${node.name}» удаляется`);
+    }
     let result = await this.xuiService.addInbound(built, node);
     for (let attempt = 1; !result && randomPort && attempt < 3; attempt++) {
       if (!isPortConflict(this.xuiService.getLastInboundError(node))) break;
       built.port = await this.getFreePort(usedPorts);
       diagnostic.port = built.port;
       usedPorts.add(built.port);
+      if (this.nodeDeletion.isDeleting(node.id)) {
+        throw new Error(`Нода «${node.name}» удаляется`);
+      }
       result = await this.xuiService.addInbound(built, node);
     }
     if (!result) return null;
@@ -1626,7 +1637,7 @@ export class RotationService implements OnModuleInit {
         .where('node.id = :nodeId', { nodeId: targetId })
         .andWhere('node.deletedAt IS NULL')
         .getOne();
-      if (node) return node;
+      if (node && !this.nodeDeletion.isDeleting(node.id)) return node;
       this.logger.warn(
         `[RotationService] Нода с ID "${targetId}" не найдена или была удалена. Выполняется откат на резервную ноду.`,
       );
@@ -1642,7 +1653,7 @@ export class RotationService implements OnModuleInit {
         })
         .andWhere('node.deletedAt IS NULL')
         .getOne();
-      if (matchingNode) {
+      if (matchingNode && !this.nodeDeletion.isDeleting(matchingNode.id)) {
         this.logger.log(
           `[RotationService] Для подписки «${subscriptionName}» найдена активная нода с совпадающим именем: «${matchingNode.name}» [${matchingNode.id}]`,
         );
@@ -1650,7 +1661,9 @@ export class RotationService implements OnModuleInit {
       }
     }
 
-    return defaultNode ?? undefined;
+    return defaultNode && !this.nodeDeletion.isDeleting(defaultNode.id)
+      ? defaultNode
+      : undefined;
   }
 
   private async resolveInboundNode(

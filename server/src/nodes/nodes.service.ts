@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -22,6 +23,9 @@ import { COUNTRIES } from '../settings/countries';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InboundStatus } from '../inbounds/entities/inbound.entity';
 import { buildNodeCapabilities } from './node-capabilities';
+import { Setting } from '../settings/entities/setting.entity';
+import { SubscriptionLockService } from '../subscriptions/subscription-lock.service';
+import { NodeDeletionService } from './node-deletion.service';
 
 type GeoResult = {
   ip: string;
@@ -35,6 +39,7 @@ const getDomainFromHost = (host?: string) =>
 
 @Injectable()
 export class NodesService {
+  private readonly logger = new Logger(NodesService.name);
   constructor(
     @InjectRepository(Node)
     private readonly nodesRepo: Repository<Node>,
@@ -45,6 +50,10 @@ export class NodesService {
     @InjectRepository(Inbound)
     private readonly inboundsRepo: Repository<Inbound>,
     private readonly xuiService: XuiService,
+    @InjectRepository(Setting)
+    private readonly settingsRepo: Repository<Setting>,
+    private readonly subscriptionLock: SubscriptionLockService,
+    private readonly nodeDeletion: NodeDeletionService,
   ) {}
 
   findAll() {
@@ -165,45 +174,34 @@ export class NodesService {
 
   async remove(id: string, mode: 'safe' | 'deferred' | 'force' = 'safe') {
     const node = await this.findOneWithSecrets(id, mode === 'force');
-    if (mode === 'force') return this.forcePurgeNode(node);
-    if (mode === 'deferred') return this.deferRemoval(node);
-    await this.cleanupNodeDependencies(node);
-    await this.nodesRepo.remove(node);
-
-    await this.ensureMainNode();
-    return { success: true };
+    this.nodeDeletion.begin(id);
+    let removed = false;
+    try {
+      if (mode === 'force') {
+        const result = await this.forcePurgeNode(node);
+        removed = true;
+        return result;
+      }
+      if (mode === 'deferred') {
+        const result = await this.deferRemoval(node);
+        removed = true;
+        return result;
+      }
+      await this.waitForNodeSubscriptions(node);
+      await this.cleanupNodeDependencies(node);
+      await this.nodesRepo.remove(node);
+      removed = true;
+      await this.ensureMainNode();
+      return { success: true };
+    } finally {
+      this.nodeDeletion.end(id, removed);
+    }
   }
 
   private async forcePurgeNode(node: Node) {
     const id = node.id;
 
-    const subscriptions = await this.subscriptionsRepo.find();
-    for (const subscription of subscriptions) {
-      const inheritedDeletedNode = subscription.nodeId === node.id;
-      let changed = inheritedDeletedNode;
-      subscription.inboundsConfig = (subscription.inboundsConfig || []).map(
-        (item) => {
-          if (
-            item.nodeId !== node.id &&
-            !(inheritedDeletedNode && !item.nodeId)
-          ) {
-            return item;
-          }
-          changed = true;
-          const { nodeId: _nodeId, relayServerId: _relayId, ...rest } = item;
-          return {
-            ...rest,
-            enabled: false,
-            disabledReason: `Нода «${node.name}» удалена`,
-          };
-        },
-      );
-      if (inheritedDeletedNode) {
-        subscription.nodeId = undefined;
-        subscription.node = undefined;
-      }
-      if (changed) await this.subscriptionsRepo.save(subscription);
-    }
+    await this.detachNodeSubscriptions(node, true);
 
     const tunnels = await this.tunnelsRepo.find({ where: { nodeId: node.id } });
     for (const tunnel of tunnels) {
@@ -226,6 +224,8 @@ export class NodesService {
     node.healthStatus = NodeHealthStatus.Deleting;
     node.isMain = false;
 
+    await this.detachNodeSubscriptions(node, true);
+
     const inbounds = await this.inboundsRepo.find({
       where: { nodeId: node.id },
     });
@@ -234,34 +234,6 @@ export class NodesService {
       inbound.nextCleanupAt = now;
     }
     if (inbounds.length) await this.inboundsRepo.save(inbounds);
-
-    const subscriptions = await this.subscriptionsRepo.find();
-    for (const subscription of subscriptions) {
-      const inheritedDeletedNode = subscription.nodeId === node.id;
-      let changed = inheritedDeletedNode;
-      subscription.inboundsConfig = (subscription.inboundsConfig || []).map(
-        (item) => {
-          if (
-            item.nodeId !== node.id &&
-            !(inheritedDeletedNode && !item.nodeId)
-          ) {
-            return item;
-          }
-          changed = true;
-          const { nodeId: _nodeId, relayServerId: _relayId, ...rest } = item;
-          return {
-            ...rest,
-            enabled: false,
-            disabledReason: `Нода «${node.name}» удалена`,
-          };
-        },
-      );
-      if (inheritedDeletedNode) {
-        subscription.nodeId = undefined;
-        subscription.node = undefined;
-      }
-      if (changed) await this.subscriptionsRepo.save(subscription);
-    }
 
     const tunnels = await this.tunnelsRepo.find({ where: { nodeId: node.id } });
     for (const tunnel of tunnels) {
@@ -292,41 +264,116 @@ export class NodesService {
   private async cleanupNodeDependencies(node: Node) {
     await this.deleteNodeInbounds(node);
     const id = node.id;
+    await this.detachNodeSubscriptions(node, false);
 
     await this.tunnelsRepo.delete({ nodeId: id });
     await this.inboundsRepo.delete({ nodeId: id });
-    await this.detachNodeSubscriptions(node);
   }
 
-  private async detachNodeSubscriptions(node: Node) {
-    const id = node.id;
-    const subscriptions = await this.subscriptionsRepo.find({
-      where: [{ nodeId: id }],
-    });
-
-    for (const sub of subscriptions) {
-      sub.nodeId = undefined;
-      sub.node = undefined;
-      await this.subscriptionsRepo.save(sub);
-    }
-
-    const configuredSubscriptions = await this.subscriptionsRepo.find();
-    for (const sub of configuredSubscriptions) {
-      const config = sub.inboundsConfig || [];
-      const nextConfig = config.map((item) => {
-        if (item.nodeId !== id) return item;
-        const {
-          nodeId: _nodeId,
-          relayServerId: _relayServerId,
-          ...rest
-        } = item;
-        return rest;
-      });
-
-      if (JSON.stringify(nextConfig) !== JSON.stringify(config)) {
-        sub.inboundsConfig = nextConfig;
-        await this.subscriptionsRepo.save(sub);
+  private async detachNodeSubscriptions(node: Node, disable: boolean) {
+    const tunnels = await this.tunnelsRepo.find({ where: { nodeId: node.id } });
+    const relayIds = new Set(tunnels.map((tunnel) => String(tunnel.id)));
+    const rewrite = <
+      T extends {
+        nodeId?: string;
+        relayServerId?: number | string;
+        flag?: string;
+        name?: string;
+        enabled?: boolean;
+        disabledReason?: string;
+      },
+    >(
+      item: T,
+      inherited = false,
+      disableMatched = disable,
+    ): T => {
+      const matched = item.nodeId === node.id || (inherited && !item.nodeId);
+      const relayMatched =
+        item.relayServerId != null && relayIds.has(String(item.relayServerId));
+      if (!matched && !relayMatched) return item;
+      const next = { ...item };
+      if (matched) {
+        delete next.nodeId;
+        delete next.flag;
+        delete next.name;
+        if (disableMatched) {
+          next.enabled = false;
+          next.disabledReason = `Нода «${node.name}» удалена — подключение переведено на основную ноду`;
+        }
       }
+      if (matched || relayMatched) delete next.relayServerId;
+      return next;
+    };
+    const subscriptions = await this.subscriptionsRepo.find();
+    for (const found of subscriptions.filter((sub) =>
+      this.referencesNode(sub, node, relayIds),
+    )) {
+      await this.subscriptionLock.run(found.id, async () => {
+        const sub = await this.subscriptionsRepo.findOne({
+          where: { id: found.id },
+        });
+        if (!sub || !this.referencesNode(sub, node, relayIds)) return;
+        const inherited = sub.nodeId === node.id;
+        const config = sub.inboundsConfig || [];
+        const next = config.map((item) => rewrite(item, inherited));
+        if (inherited) {
+          sub.nodeId = null;
+          sub.node = null;
+        }
+        if (inherited || JSON.stringify(next) !== JSON.stringify(config)) {
+          sub.inboundsConfig = next;
+          await this.subscriptionsRepo.save(sub);
+        }
+      });
+    }
+    const setting = await this.settingsRepo.findOne({
+      where: { key: 'default_inbounds' },
+    });
+    if (!setting) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(setting.value);
+      if (!Array.isArray(parsed)) throw new Error('expected an array');
+    } catch {
+      this.logger.warn(
+        'Не удалось прочитать default_inbounds при удалении ноды',
+      );
+      return;
+    }
+    const next = parsed.map((item: unknown) =>
+      item && typeof item === 'object' && !Array.isArray(item)
+        ? rewrite(item, false, false)
+        : item,
+    );
+    if (JSON.stringify(next) !== JSON.stringify(parsed)) {
+      setting.value = JSON.stringify(next);
+      await this.settingsRepo.save(setting);
+    }
+  }
+
+  private referencesNode(sub: Subscription, node: Node, relayIds: Set<string>) {
+    return (
+      sub.nodeId === node.id ||
+      (sub.inboundsConfig || []).some(
+        (item) =>
+          item.nodeId === node.id ||
+          (item.relayServerId != null &&
+            relayIds.has(String(item.relayServerId))),
+      )
+    );
+  }
+
+  private async waitForNodeSubscriptions(node: Node) {
+    const tunnels = await this.tunnelsRepo.find({ where: { nodeId: node.id } });
+    const relayIds = new Set(tunnels.map((tunnel) => String(tunnel.id)));
+    const subscriptions = await this.subscriptionsRepo.find();
+    for (const sub of subscriptions.filter((item) =>
+      this.referencesNode(item, node, relayIds),
+    )) {
+      await this.subscriptionLock.run(sub.id, async () => {
+        // A running rotation finishes before we inspect and remove its inbounds.
+        await this.subscriptionsRepo.findOne({ where: { id: sub.id } });
+      });
     }
   }
 

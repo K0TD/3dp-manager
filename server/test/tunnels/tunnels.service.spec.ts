@@ -78,7 +78,6 @@ describe('TunnelsService', () => {
 
     service = module.get<TunnelsService>(TunnelsService);
     tunnelRepo = module.get<Repository<Tunnel>>(getRepositoryToken(Tunnel));
-    settingRepo = module.get<Repository<Setting>>(getRepositoryToken(Setting));
     sshService = module.get<SshService>(SshService);
   });
 
@@ -88,7 +87,12 @@ describe('TunnelsService', () => {
 
   describe('create', () => {
     it('должен создать туннель', async () => {
-      const dto = { ip: '192.168.1.1', sshPort: 22, username: 'root' };
+      const dto = {
+        name: 'Relay',
+        ip: '192.168.1.1',
+        sshPort: 22,
+        username: 'root',
+      };
       const node = { id: 'node-1', isMain: true };
       const mockTunnel = { id: 1, ...dto, node, nodeId: node.id };
 

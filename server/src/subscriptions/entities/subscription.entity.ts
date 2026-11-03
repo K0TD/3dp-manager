@@ -47,14 +47,14 @@ export class Subscription {
     disabledReason?: string;
   }>;
 
-  @Column({ nullable: true })
-  nodeId?: string;
+  @Column({ type: 'uuid', nullable: true })
+  nodeId?: string | null;
 
   @ManyToOne(() => Node, (node) => node.subscriptions, {
     nullable: true,
     onDelete: 'SET NULL',
   })
-  node?: Node;
+  node?: Node | null;
 
   @Column({ nullable: true })
   relayServerId?: number;

@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-call */
 
 import cookieParser from 'cookie-parser';
-import type { Response, NextFunction } from 'express';
+import type { Response } from 'express';
 
 describe('main.ts - CORS и middleware', () => {
   describe('CORS конфигурация', () => {
@@ -80,10 +80,7 @@ describe('main.ts - CORS и middleware', () => {
         }),
       } as unknown as Response;
 
-      const next = jest.fn<
-        ReturnType<NextFunction>,
-        Parameters<NextFunction>
-      >();
+      const next = jest.fn<void, []>();
 
       // Симуляция middleware
       const startedAt = Date.now();
@@ -98,10 +95,7 @@ describe('main.ts - CORS и middleware', () => {
     });
 
     it('должен вызвать next() для продолжения обработки', () => {
-      const next = jest.fn<
-        ReturnType<NextFunction>,
-        Parameters<NextFunction>
-      >();
+      const next = jest.fn<void, []>();
 
       // Симуляция middleware
       next();

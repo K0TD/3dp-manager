@@ -35,7 +35,12 @@ describe('TunnelsController', () => {
 
   describe('create', () => {
     it('должен создать туннель', async () => {
-      const dto = { ip: '192.168.1.1', sshPort: 22 };
+      const dto = {
+        name: 'Relay',
+        ip: '192.168.1.1',
+        sshPort: 22,
+        username: 'root',
+      };
       const mockTunnel = { id: 1, ...dto };
 
       mockTunnelsService.create.mockResolvedValue(mockTunnel);

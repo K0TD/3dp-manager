@@ -154,7 +154,10 @@ describe('SshService', () => {
       const execError = new Error('Command not found');
 
       mockConnExec.mockImplementationOnce(
-        (_command: string, cb: (err: Error | null) => void) => {
+        (
+          _command: string,
+          cb: (err: Error | null, stream: unknown) => void,
+        ) => {
           cb(execError, null);
         },
       );

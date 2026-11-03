@@ -7,14 +7,18 @@ import { XuiModule } from '../xui/xui.module';
 import { Subscription } from '../subscriptions/entities/subscription.entity';
 import { Tunnel } from '../tunnels/entities/tunnel.entity';
 import { Inbound } from '../inbounds/entities/inbound.entity';
+import { Setting } from '../settings/entities/setting.entity';
+import { SubscriptionLockService } from '../subscriptions/subscription-lock.service';
+import { NodeDeletionModule } from './node-deletion.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Node, Subscription, Tunnel, Inbound]),
+    TypeOrmModule.forFeature([Node, Subscription, Tunnel, Inbound, Setting]),
     XuiModule,
+    NodeDeletionModule,
   ],
   controllers: [NodesController],
-  providers: [NodesService],
+  providers: [NodesService, SubscriptionLockService],
   exports: [NodesService, TypeOrmModule],
 })
 export class NodesModule {}

@@ -1,5 +1,6 @@
 import { Repository } from 'typeorm';
 import { SubscriptionLockService } from 'src/subscriptions/subscription-lock.service';
+import { NodeDeletionService } from 'src/nodes/node-deletion.service';
 import { RotationService } from 'src/rotation/rotation.service';
 import { Subscription } from 'src/subscriptions/entities/subscription.entity';
 import { Inbound, InboundStatus } from 'src/inbounds/entities/inbound.entity';
@@ -12,10 +13,11 @@ import { XuiService } from 'src/xui/xui.service';
 import { InboundBuilderService } from 'src/inbounds/inbound-builder.service';
 
 describe('RotationService resilient generations', () => {
-  const manager = {
+  const manager: { update: jest.Mock; transaction: jest.Mock } = {
     update: jest.fn().mockResolvedValue({}),
     transaction: jest.fn(
-      async (work: (value: typeof manager) => Promise<void>) => work(manager),
+      async (work: (value: { update: jest.Mock }) => Promise<void>) =>
+        work(manager),
     ),
   };
   const subRepo = {
@@ -28,6 +30,7 @@ describe('RotationService resilient generations', () => {
     save: jest.fn(async (value) => ({ id: value.id || 500, ...value })),
     update: jest.fn(),
     findOne: jest.fn(),
+    find: jest.fn(),
     delete: jest.fn(),
     count: jest.fn(),
     manager,
@@ -74,6 +77,7 @@ describe('RotationService resilient generations', () => {
     buildInboundLink: jest.fn(),
   };
 
+  const nodeDeletion = new NodeDeletionService();
   const service = new RotationService(
     subRepo as unknown as Repository<Subscription>,
     inboundRepo as unknown as Repository<Inbound>,
@@ -87,6 +91,7 @@ describe('RotationService resilient generations', () => {
     {
       run: jest.fn(async (_id, work) => work()),
     } as unknown as SubscriptionLockService,
+    nodeDeletion,
   );
 
   afterEach(() => {
@@ -291,7 +296,7 @@ describe('RotationService resilient generations', () => {
       expect(inboundRepo.update).not.toHaveBeenCalled();
     });
 
-    it.each([undefined, ['awg-sub']])(
+    it.each<[string[] | undefined]>([[undefined], [['awg-sub']]])(
       'reloads the subscription under the lock for scheduled and manual rotation (%s)',
       async (ids) => {
         const sub = subscription();
@@ -609,6 +614,7 @@ describe('RotationService resilient generations', () => {
       '203.0.113.10',
       '',
       expect.any(String),
+      'mtproto-faketls',
     );
     expect(inboundRepo.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -668,6 +674,58 @@ describe('RotationService resilient generations', () => {
     expect(result).toEqual({ success: true, purgedCount: 2 });
     expect(inboundRepo.delete).toHaveBeenCalledWith(101);
     expect(inboundRepo.delete).toHaveBeenCalledWith(102);
+  });
+
+  it('skips a deleting node during resolution and before panel creation', async () => {
+    const node = { id: 'being-deleted', name: 'Being deleted' } as Node;
+    const fallback = { id: 'fallback', name: 'Fallback' } as Node;
+    nodeRepo.createQueryBuilder.mockReturnValue({
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockResolvedValue(node),
+    });
+    nodeDeletion.begin(node.id);
+    try {
+      await expect(
+        (service as any).resolveNode(node.id, { name: node.name }, fallback),
+      ).resolves.toBe(fallback);
+      await expect(
+        (service as any).resolveNode(undefined, undefined, node),
+      ).resolves.toBeUndefined();
+      await expect((service as any).createInbound({ node })).rejects.toThrow(
+        'удаляется',
+      );
+      expect(xuiService.addInbound).not.toHaveBeenCalled();
+    } finally {
+      nodeDeletion.end(node.id, false);
+    }
+  });
+
+  it('does not use a node when removal begins while resolution is in progress', async () => {
+    const node = { id: 'racing-node', name: 'Racing' } as Node;
+    let finishLookup!: (node: Node) => void;
+    const lookup = new Promise<Node>((resolve) => {
+      finishLookup = resolve;
+    });
+    nodeRepo.createQueryBuilder.mockReturnValue({
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockReturnValue(lookup),
+    });
+    const resolution = (service as any).resolveNode(
+      node.id,
+      undefined,
+      node,
+    ) as Promise<Node | undefined>;
+    nodeDeletion.begin(node.id);
+    try {
+      finishLookup(node);
+      await expect(resolution).resolves.toBeUndefined();
+    } finally {
+      nodeDeletion.end(node.id, false);
+    }
   });
 
   it('falls back to default node when the configured nodeId is deleted or not found', async () => {
@@ -990,6 +1048,7 @@ describe('RotationService resilient generations', () => {
         'public.example',
         '',
         expect.any(String),
+        'vmess-tcp',
       );
       expect(xuiService.addInbound).toHaveBeenCalledTimes(2);
     });

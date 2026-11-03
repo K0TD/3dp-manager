@@ -50,9 +50,7 @@ describe('AuthService', () => {
     }).compile();
 
     service = module.get<AuthService>(AuthService);
-    settingsRepo = module.get<Repository<Repository<Setting>>>(
-      getRepositoryToken(Setting),
-    );
+    settingsRepo = module.get<Repository<Setting>>(getRepositoryToken(Setting));
     jwtService = module.get<JwtService>(JwtService);
     configService = module.get<ConfigService>(ConfigService);
   });
