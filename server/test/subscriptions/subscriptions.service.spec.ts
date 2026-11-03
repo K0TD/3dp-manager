@@ -154,7 +154,9 @@ describe('SubscriptionsService', () => {
         isAutoRotationEnabled: false,
         inboundsConfig: [config],
       });
-      expect(mockRotationService.provisionPersistentInbounds).toHaveBeenCalledTimes(1);
+      expect(
+        mockRotationService.provisionPersistentInbounds,
+      ).toHaveBeenCalledTimes(1);
       expect(result).toMatchObject({
         awgProvisioning: { status: 'succeeded' },
       });
@@ -174,11 +176,15 @@ describe('SubscriptionsService', () => {
           nextCleanupAt: expect.any(Date),
         }),
       );
-      expect(mockRotationService.provisionPersistentInbounds).not.toHaveBeenCalled();
+      expect(
+        mockRotationService.provisionPersistentInbounds,
+      ).not.toHaveBeenCalled();
       await service.update(subscription.id, {
         inboundsConfig: [{ ...config, configId: 'new-awg-config' }],
       });
-      expect(mockRotationService.provisionPersistentInbounds).toHaveBeenCalledWith(
+      expect(
+        mockRotationService.provisionPersistentInbounds,
+      ).toHaveBeenCalledWith(
         expect.objectContaining({
           inboundsConfig: [
             expect.objectContaining({ configId: 'new-awg-config' }),
@@ -646,26 +652,30 @@ describe('SubscriptionsService', () => {
       inboundsConfig: [],
       inbounds: [
         {
-          id: '1',
+          id: 1,
           xuiId: 101,
           port: 443,
           protocol: 'vless',
           remark: 'test',
           link: 'link',
+          position: 0,
+          status: InboundStatus.Active,
+          cleanupAttempts: 0,
           subscription: null as any,
           createdAt: new Date(),
-          updatedAt: new Date(),
         },
         {
-          id: '2',
+          id: 2,
           xuiId: 102,
           port: 8443,
           protocol: 'vmess',
           remark: 'test2',
           link: 'link2',
+          position: 0,
+          status: InboundStatus.Active,
+          cleanupAttempts: 0,
           subscription: null as any,
           createdAt: new Date(),
-          updatedAt: new Date(),
         },
       ],
       createdAt: new Date(),
@@ -682,6 +692,31 @@ describe('SubscriptionsService', () => {
       expect(xuiService.deleteInbound).toHaveBeenCalledWith(102, undefined);
       expect(subRepo.remove).toHaveBeenCalledWith(subWithInbounds);
     });
+
+    it.each(['false', 'throw', 'resolve'])(
+      'handles %s panel failure with and without force',
+      async (failure) => {
+        mockSubRepo.findOne.mockResolvedValue(subWithInbounds);
+        if (failure === 'false')
+          mockXuiService.deleteInbound.mockResolvedValue(false);
+        if (failure === 'throw')
+          mockXuiService.deleteInbound.mockRejectedValue(new Error('offline'));
+        if (failure === 'resolve')
+          jest
+            .spyOn(service as any, 'resolveInboundNode')
+            .mockRejectedValue(new Error('offline'));
+        await expect(service.remove('test-id')).rejects.toMatchObject({
+          response: expect.objectContaining({
+            code: 'INBOUND_DELETE_FAILED',
+            message: expect.stringContaining('101'),
+          }),
+        });
+        expect(mockSubRepo.remove).not.toHaveBeenCalled();
+        await service.remove('test-id', true);
+        expect(mockSubRepo.remove).toHaveBeenCalledWith(subWithInbounds);
+        jest.restoreAllMocks();
+      },
+    );
 
     it('должен удалить подписку без инбаундов', async () => {
       const subWithoutInbounds: Subscription = {

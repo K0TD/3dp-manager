@@ -79,6 +79,22 @@ describe('HttpExceptionFilter', () => {
       });
     });
 
+    it('передаёт код ошибки в JSON', () => {
+      filter.catch(
+        new HttpException(
+          { code: 'INBOUND_DELETE_FAILED', message: 'failed' },
+          400,
+        ),
+        mockHost,
+      );
+      expect(mockResponse.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          code: 'INBOUND_DELETE_FAILED',
+          message: 'failed',
+        }),
+      );
+    });
+
     it('должен вернуть JSON для не-браузера на /bus/', () => {
       mockRequest.headers['user-agent'] = 'curl/7.68.0';
       mockRequest.url = '/bus/test-uuid';

@@ -5,6 +5,7 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   Put,
   HttpCode,
   HttpStatus,
@@ -93,7 +94,7 @@ export class SubscriptionsController {
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.subscriptionsService.remove(id);
+  remove(@Param('id') id: string, @Query('force') force?: string) {
+    return this.subscriptionsService.remove(id, force === 'true');
   }
 }

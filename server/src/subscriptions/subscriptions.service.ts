@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, In, Repository } from 'typeorm';
 import { Subscription } from './entities/subscription.entity';
@@ -42,6 +42,7 @@ const TLS_SERVER_NAME_PATTERN =
 
 @Injectable()
 export class SubscriptionsService {
+  private readonly logger = new Logger(SubscriptionsService.name);
   constructor(
     @InjectRepository(Subscription)
     private subRepo: Repository<Subscription>,
@@ -185,11 +186,11 @@ export class SubscriptionsService {
     return this.provisionPersistentInbounds(saved);
   }
 
-  async remove(id: string) {
-    return this.subscriptionLock.run(id, () => this.removeLocked(id));
+  async remove(id: string, force = false) {
+    return this.subscriptionLock.run(id, () => this.removeLocked(id, force));
   }
 
-  private async removeLocked(id: string) {
+  private async removeLocked(id: string, force: boolean) {
     const sub = await this.subRepo.findOne({
       where: { id },
       relations: ['inbounds', 'inbounds.node'],
@@ -200,15 +201,24 @@ export class SubscriptionsService {
       for (const inbound of sub.inbounds) {
         if (!inbound.xuiId || inbound.xuiId <= 0) continue;
 
-        const isDeleted = await this.xuiService.deleteInbound(
-          inbound.xuiId,
-          await this.resolveInboundNode(inbound),
-        );
-
-        if (!isDeleted) {
-          throw new BadRequestException(
-            `Failed to delete inbound ${inbound.xuiId} from 3x-ui`,
+        let node = inbound.node;
+        let isDeleted = false;
+        try {
+          node = await this.resolveInboundNode(inbound);
+          isDeleted = await this.xuiService.deleteInbound(inbound.xuiId, node);
+        } catch (error) {
+          this.logger.warn(
+            `Ошибка удаления инбаунда ${inbound.xuiId}: ${String(error)}`,
           );
+        }
+        if (!isDeleted) {
+          const message = `Не удалось удалить инбаунд ${inbound.xuiId} (${inbound.protocol || inbound.remark || 'неизвестный тип'}) на ноде «${node?.name || inbound.node?.name || 'основная'}» из 3x-ui. Можно удалить подписку принудительно.`;
+          if (!force)
+            throw new BadRequestException({
+              code: 'INBOUND_DELETE_FAILED',
+              message,
+            });
+          this.logger.warn(message);
         }
       }
     }

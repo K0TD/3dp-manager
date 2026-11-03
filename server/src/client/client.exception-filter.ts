@@ -36,6 +36,11 @@ export class HttpExceptionFilter implements ExceptionFilter {
     } else {
       // Для API запросов возвращаем JSON
       response.status(status).json({
+        ...(typeof exceptionResponse === 'object' &&
+        exceptionResponse !== null &&
+        typeof (exceptionResponse as { code?: unknown }).code === 'string'
+          ? { code: (exceptionResponse as { code: string }).code }
+          : {}),
         statusCode: status,
         message: errorMessage,
         timestamp: new Date().toISOString(),

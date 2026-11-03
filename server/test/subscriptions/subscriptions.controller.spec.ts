@@ -197,7 +197,11 @@ describe('SubscriptionsController', () => {
 
       await controller.remove('id1');
 
-      expect(service.remove).toHaveBeenCalledWith('id1');
+      expect(service.remove).toHaveBeenCalledWith('id1', false);
+      await controller.remove('id1', 'true');
+      expect(service.remove).toHaveBeenCalledWith('id1', true);
+      await controller.remove('id1', 'false');
+      expect(service.remove).toHaveBeenLastCalledWith('id1', false);
     });
   });
 });
