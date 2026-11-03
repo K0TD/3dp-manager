@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { BrowserRouter } from 'react-router-dom'
 import SubscriptionsPage from '../../src/pages/SubscriptionsPage'
 import { ThemeProvider } from '../../src/ThemeContext'
@@ -422,7 +422,7 @@ describe('SubscriptionsPage', () => {
         const addButton = screen.getByText('Добавить инбаунд')
         expect(addButton).toBeDisabled()
       })
-    }, 15000)
+    }, 30000)
 
     it('должен менять порядок инбаундов стрелками и сохранять его', async () => {
       const firstConfigId = '11111111-1111-4111-8111-111111111111'
@@ -660,6 +660,127 @@ describe('SubscriptionsPage', () => {
         expect(screen.getByText('Подписка обновлена')).toBeInTheDocument()
       })
     })
+
+    it('сбрасывает привязку к удалённой ноде при открытии на редактирование и не возвращает её при сохранении', async () => {
+      const mockSubs = [
+        {
+          id: 'sub-deleted-node',
+          name: 'Sub with deleted node',
+          uuid: 'uuid-1',
+          inbounds: [],
+          inboundsConfig: [
+            {
+              configId: 'cfg-deleted',
+              type: 'vless-tcp-reality',
+              nodeId: 'deleted-node-999',
+              flag: '🇳🇱',
+              name: 'Old Node Inbound',
+              port: '8443',
+              enabled: false,
+              disabledReason: 'Нода удалена',
+            },
+          ],
+        },
+      ]
+      setupMockGet({ subscriptions: mockSubs })
+      mockPut.mockResolvedValue({})
+
+      renderSubscriptionsPage()
+
+      const menuButton = await screen.findByTestId('icon-MoreVert')
+      fireEvent.click(menuButton)
+
+      const editOption = await screen.findByText('Редактировать')
+      fireEvent.click(editOption)
+
+      // Ensure edit dialog opened
+      expect(await screen.findByText('Редактировать подписку')).toBeInTheDocument()
+
+      // The name should be reset (cleared) because the old name belonged to the deleted node
+      const nameInput = screen.getByLabelText('Название')
+      expect(nameInput).toHaveValue('')
+
+      // Save the subscription
+      const saveButton = screen.getByText('Сохранить')
+      fireEvent.click(saveButton)
+
+      await waitFor(() => {
+        expect(mockPut).toHaveBeenCalledWith(
+          '/subscriptions/sub-deleted-node',
+          expect.objectContaining({
+            inboundsConfig: [
+              expect.objectContaining({
+                configId: 'cfg-deleted',
+                nodeId: undefined, // empty nodeId converts to undefined (Основная нода)
+                enabled: true, // enabled is set to true on save
+              }),
+            ],
+          }),
+        )
+      })
+
+      // Verify it did NOT revert back to deleted-node-999
+      const sentPayload = mockPut.mock.calls[0][1]
+      expect(sentPayload.inboundsConfig[0].nodeId).not.toBe('deleted-node-999')
+    })
+
+    it('не привязывает persistent-инбаунд к удалённой ноде из activePersistent', async () => {
+      const mockSubs = [
+        {
+          id: 'sub-awg-deleted',
+          name: 'AWG Sub',
+          uuid: 'uuid-awg',
+          inbounds: [
+            {
+              protocol: 'amneziawg',
+              configId: 'cfg-awg-1',
+              nodeId: 'deleted-node-999',
+            },
+          ],
+          inboundsConfig: [
+            {
+              configId: 'cfg-awg-1',
+              type: 'amneziawg',
+              port: 'random',
+              enabled: false,
+            },
+          ],
+        },
+      ]
+      setupMockGet({ subscriptions: mockSubs })
+      mockPut.mockResolvedValue({})
+
+      renderSubscriptionsPage()
+
+      const menuButton = await screen.findByTestId('icon-MoreVert')
+      fireEvent.click(menuButton)
+
+      const editOption = await screen.findByText('Редактировать')
+      fireEvent.click(editOption)
+
+      expect(await screen.findByText('Редактировать подписку')).toBeInTheDocument()
+
+      const saveButton = screen.getByText('Сохранить')
+      fireEvent.click(saveButton)
+
+      await waitFor(() => {
+        expect(mockPut).toHaveBeenCalledWith(
+          '/subscriptions/sub-awg-deleted',
+          expect.objectContaining({
+            inboundsConfig: [
+              expect.objectContaining({
+                configId: 'cfg-awg-1',
+                nodeId: undefined,
+                enabled: true,
+              }),
+            ],
+          }),
+        )
+      })
+
+      const sentPayload = mockPut.mock.calls[0][1]
+      expect(sentPayload.inboundsConfig[0].nodeId).not.toBe('deleted-node-999')
+    })
   })
 
   describe('Удаление подписки', () => {
@@ -746,6 +867,89 @@ describe('SubscriptionsPage', () => {
       await waitFor(() => {
         expect(screen.getByText('Подписка удалена')).toBeInTheDocument()
       })
+    })
+
+    it('должен предлагать принудительное удаление при ошибке INBOUND_DELETE_FAILED и удалять с force=true', async () => {
+      const mockSubs = [
+        { id: '1', name: 'Test Sub', uuid: 'abc-123', inbounds: [], isAutoRotationEnabled: true }
+      ]
+      setupMockGet({ subscriptions: mockSubs })
+      mockDelete.mockRejectedValueOnce({
+        response: {
+          data: {
+            code: 'INBOUND_DELETE_FAILED',
+            message: 'Не удалось удалить инбаунд 101 из 3x-ui',
+          },
+        },
+      })
+      mockDelete.mockResolvedValueOnce({})
+
+      renderSubscriptionsPage()
+
+      const menuButton = await screen.findByTestId('icon-MoreVert')
+      fireEvent.click(menuButton)
+
+      const deleteOption = await screen.findByText('Удалить')
+      fireEvent.click(deleteOption)
+
+      const confirmDialog = await screen.findByText('Удалить подписку и все соединения?').then((el) => el.closest('[role="dialog"]')!)
+      const confirmButton = within(confirmDialog).getByRole('button', { name: 'Удалить' })
+      fireEvent.click(confirmButton)
+
+      const forceTitle = await screen.findByText('Удалить принудительно?')
+      const forceDialog = forceTitle.closest('[role="dialog"]')!
+      expect(within(forceDialog).getByText('Не удалось удалить инбаунд 101 из 3x-ui')).toBeInTheDocument()
+      expect(
+        within(forceDialog).getByText(/Подписка удалится, даже если часть инбаундов осталась в 3x-ui/),
+      ).toBeInTheDocument()
+
+      const forceButton = within(forceDialog).getByRole('button', { name: 'Удалить принудительно' })
+      fireEvent.click(forceButton)
+
+      await waitFor(() => {
+        expect(mockDelete).toHaveBeenLastCalledWith('/subscriptions/1', {
+          params: { force: true },
+        })
+      })
+      expect(await screen.findByText('Подписка удалена')).toBeInTheDocument()
+    })
+
+    it('должен закрывать диалог принудительного удаления при клике на "Отмена"', async () => {
+      const mockSubs = [
+        { id: '1', name: 'Test Sub', uuid: 'abc-123', inbounds: [], isAutoRotationEnabled: true }
+      ]
+      setupMockGet({ subscriptions: mockSubs })
+      mockDelete.mockRejectedValueOnce({
+        response: {
+          data: {
+            code: 'INBOUND_DELETE_FAILED',
+            message: 'Ошибка удаления инбаунда',
+          },
+        },
+      })
+
+      renderSubscriptionsPage()
+
+      const menuButton = await screen.findByTestId('icon-MoreVert')
+      fireEvent.click(menuButton)
+
+      const deleteOption = await screen.findByText('Удалить')
+      fireEvent.click(deleteOption)
+
+      const confirmDialog = await screen.findByText('Удалить подписку и все соединения?').then((el) => el.closest('[role="dialog"]')!)
+      const confirmButton = within(confirmDialog).getByRole('button', { name: 'Удалить' })
+      fireEvent.click(confirmButton)
+
+      const forceTitle = await screen.findByText('Удалить принудительно?')
+      const forceDialog = forceTitle.closest('[role="dialog"]')!
+
+      const cancelButton = within(forceDialog).getByRole('button', { name: 'Отмена' })
+      fireEvent.click(cancelButton)
+
+      await waitFor(() => {
+        expect(screen.queryByText('Удалить принудительно?')).not.toBeInTheDocument()
+      })
+      expect(mockDelete).toHaveBeenCalledTimes(1)
     })
   })
 

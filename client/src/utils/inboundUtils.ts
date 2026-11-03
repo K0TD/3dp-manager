@@ -150,12 +150,16 @@ export const parseDefaultInboundsSetting = (
       const nodeExists = item.nodeId
         ? nodes.some((n) => n.id === item.nodeId)
         : true;
-      const targetNodeId = nodeExists
-        ? item.nodeId || ''
-        : getDefaultNodeId(nodes);
+      const targetNodeId = nodeExists ? item.nodeId || '' : '';
+      const flag = nodeExists ? item.flag : '';
+      const name = nodeExists ? item.name : '';
+      const relayServerId = nodeExists ? item.relayServerId : '';
       return createInboundTemplate(type, nodes, domains, {
         ...item,
         nodeId: targetNodeId,
+        flag,
+        name,
+        relayServerId,
       });
     });
   } catch {

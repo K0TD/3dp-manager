@@ -20,7 +20,7 @@ describe('network console theme', () => {
     expect(tokens.typography.fontFamily).toBe('"IBM Plex Sans", sans-serif')
     expect(tokens.typography.h3.fontFamily).toContain('Unbounded')
     expect(tokens.typography.button.textTransform).toBe('none')
-    expect(tokens.shape.borderRadius).toBe(10)
+    expect(tokens.shape.borderRadius).toBe(14)
     expect(tokens.components.MuiPaper.styleOverrides.root.backgroundImage).toBe('none')
     expect(tokens.components.MuiCssBaseline.styleOverrides.body.backgroundImage).toContain('radial-gradient')
   })

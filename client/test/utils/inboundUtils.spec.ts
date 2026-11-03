@@ -136,15 +136,18 @@ describe('inboundUtils', () => {
     const raw = JSON.stringify([
       { type: 'vless-tcp-reality', nodeId: 'node-main', port: '8443' },
       { type: 'vless-xhttp-reality', nodeId: 'node-nl', port: 'random' },
-      { type: 'hysteria2-udp', nodeId: 'deleted-node', port: '443' },
+      { type: 'hysteria2-udp', nodeId: 'deleted-node', port: '443', flag: '🇫🇮', name: 'Old Node', relayServerId: '99' },
     ]);
 
     const parsed = parseDefaultInboundsSetting(raw, mockNodes, mockDomains);
     expect(parsed).toHaveLength(3);
     expect(parsed![0].nodeId).toBe('node-main');
     expect(parsed![1].nodeId).toBe('node-nl');
-    // deleted node falls back to default node
-    expect(parsed![2].nodeId).toBe('node-main');
+    // deleted node falls back to Main Node ('') and resets flag, name, relayServerId
+    expect(parsed![2].nodeId).toBe('');
+    expect(parsed![2].flag).toBe('');
+    expect(parsed![2].name).toBe('');
+    expect(parsed![2].relayServerId).toBe('');
   });
 
   it('returns null on invalid or empty JSON', () => {

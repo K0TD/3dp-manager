@@ -170,6 +170,11 @@ export default function SubscriptionsPage() {
     confirmColor: 'error' as 'error' | 'primary',
     onConfirm: () => {},
   });
+  const [deleteFailure, setDeleteFailure] = useState<{
+    id: string;
+    message: string;
+  } | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
@@ -345,25 +350,57 @@ export default function SubscriptionsPage() {
             PERSISTENT_INBOUND_TYPES.has(inbound.protocol || '') &&
             inbound.configId === item.configId,
         );
-        const nodeId =
-          item.nodeId || activePersistent?.nodeId || getDefaultNodeId();
+        const persistentNodeExists = activePersistent?.nodeId
+          ? nodes.some((n) => n.id === activePersistent.nodeId)
+          : false;
+        const persistentLocked = Boolean(
+          activePersistent && persistentNodeExists,
+        );
+
+        let nodeId = '';
+        let flag = item.flag || '';
+        let name = item.name || '';
+        let relayServerId = item.relayServerId
+          ? item.relayServerId.toString()
+          : '';
+
+        if (item.nodeId) {
+          const itemNodeExists = nodes.some((n) => n.id === item.nodeId);
+          if (itemNodeExists) {
+            nodeId = item.nodeId;
+            if (!flag) {
+              flag = getNodeFlag(nodeId);
+            }
+          } else {
+            nodeId = '';
+            flag = '';
+            name = '';
+            relayServerId = '';
+          }
+        } else if (persistentLocked && activePersistent?.nodeId) {
+          nodeId = activePersistent.nodeId;
+          if (!flag) {
+            flag = getNodeFlag(nodeId);
+          }
+        } else {
+          nodeId = '';
+        }
+
         const certificateMode =
           item.certificateMode === 'custom' ? 'custom' : 'node';
         const configId = item.configId || crypto.randomUUID();
         return {
           id: configId,
           configId,
-          persistentLocked: Boolean(activePersistent),
+          persistentLocked,
           type: item.type || 'vless-tcp-reality',
           port: item.port ? item.port.toString() : 'random',
           sni: inboundSni(item.type || '', item.sni),
           link: item.link || '',
           nodeId,
-          relayServerId: item.relayServerId
-            ? item.relayServerId.toString()
-            : '',
-          flag: item.flag || getNodeFlag(nodeId),
-          name: item.name || '',
+          relayServerId,
+          flag,
+          name,
           enabled: item.enabled,
           disabledReason: item.disabledReason,
           certificateMode: CERTIFICATE_TYPES.has(item.type)
@@ -555,20 +592,45 @@ export default function SubscriptionsPage() {
     }
   };
 
+  const deleteSubscription = async (id: string, force = false) => {
+    setDeleting(true);
+    try {
+      if (force) {
+        await api.delete(`/subscriptions/${id}`, { params: { force: true } });
+      } else {
+        await api.delete(`/subscriptions/${id}`);
+      }
+      setDeleteFailure(null);
+      loadSubs();
+      setSnackbar({
+        open: true,
+        type: 'success',
+        message: 'Подписка удалена',
+      });
+    } catch (error: unknown) {
+      const data = (
+        error as {
+          response?: { data?: { code?: string; message?: string } };
+        }
+      )?.response?.data;
+      const message = data?.message || 'Не удалось удалить подписку';
+      setSnackbar({ open: true, type: 'error', message });
+      if (!force && data?.code === 'INBOUND_DELETE_FAILED') {
+        setDeleteFailure({ id, message });
+      }
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const handleDelete = (id: string) => {
     setConfirmDialog({
       open: true,
       title: 'Удалить подписку и все соединения?',
       confirmText: 'Удалить',
       confirmColor: 'error',
-      onConfirm: async () => {
-        await api.delete(`/subscriptions/${id}`);
-        loadSubs();
-        setSnackbar({
-          open: true,
-          type: 'success',
-          message: 'Подписка удалена',
-        });
+      onConfirm: () => {
+        void deleteSubscription(id);
       },
     });
   };
@@ -1152,6 +1214,38 @@ export default function SubscriptionsPage() {
             color={confirmDialog.confirmColor}
           >
             {confirmDialog.confirmText}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={deleteFailure !== null}
+        onClose={() => {
+          if (!deleting) setDeleteFailure(null);
+        }}
+      >
+        <DialogTitle>Удалить принудительно?</DialogTitle>
+        <DialogContent>
+          {deleteFailure?.message && (
+            <Typography sx={{ mb: 1 }}>{deleteFailure.message}</Typography>
+          )}
+          <Typography>
+            Подписка удалится, даже если часть инбаундов осталась в 3x-ui; их нужно удалить в панели вручную.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button disabled={deleting} onClick={() => setDeleteFailure(null)}>
+            Отмена
+          </Button>
+          <Button
+            disabled={deleting}
+            color="error"
+            variant="contained"
+            onClick={() => {
+              if (deleteFailure) void deleteSubscription(deleteFailure.id, true);
+            }}
+          >
+            Удалить принудительно
           </Button>
         </DialogActions>
       </Dialog>

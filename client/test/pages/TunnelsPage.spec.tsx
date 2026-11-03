@@ -76,6 +76,40 @@ describe('TunnelsPage', () => {
     expect(await screen.findByText('Relay сервер добавлен')).toBeInTheDocument()
   })
 
+  it('offers forwarding script installation immediately after successful relay creation', async () => {
+    mockPost.mockResolvedValueOnce({ data: { id: 42 } })
+    arrange()
+    await openForm()
+    fireEvent.change(screen.getByLabelText(/^Название/), { target: { value: 'Relay DE' } })
+    fireEvent.change(screen.getByLabelText(/^IP или домен relay сервера/), { target: { value: 'relay.example.com' } })
+    fireEvent.change(screen.getByLabelText(/^SSH пароль/), { target: { value: 'secret' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }))
+
+    expect(await screen.findByText('Relay сервер добавлен. Установить скрипт перенаправления сейчас?')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Установить' }))
+
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith('/tunnels/42/install'))
+    expect(await screen.findByText('Перенаправление установлено')).toBeInTheDocument()
+  })
+
+  it('allows canceling the forwarding script prompt after relay creation', async () => {
+    mockPost.mockResolvedValueOnce({ data: { id: 42 } })
+    arrange()
+    await openForm()
+    fireEvent.change(screen.getByLabelText(/^Название/), { target: { value: 'Relay DE' } })
+    fireEvent.change(screen.getByLabelText(/^IP или домен relay сервера/), { target: { value: 'relay.example.com' } })
+    fireEvent.change(screen.getByLabelText(/^SSH пароль/), { target: { value: 'secret' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }))
+
+    expect(await screen.findByText('Relay сервер добавлен. Установить скрипт перенаправления сейчас?')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Отмена' }))
+
+    await waitFor(() => {
+      expect(screen.queryByText('Relay сервер добавлен. Установить скрипт перенаправления сейчас?')).not.toBeInTheDocument()
+    })
+    expect(mockPost).toHaveBeenCalledTimes(1)
+  })
+
   it('installs forwarding after confirmation', async () => {
     arrange([{ id: 7, name: 'Relay', ip: '1.2.3.4', sshPort: 22, username: 'root', isInstalled: false }])
     fireEvent.click(await screen.findByRole('button', { name: /Установить/ }))

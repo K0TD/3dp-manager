@@ -514,6 +514,11 @@ export default function NodesPage() {
       <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
         <DialogTitle>Удалить ноду {deleteTarget?.name}?</DialogTitle>
         <DialogContent>
+          {nodes.length === 1 && (
+            <Alert severity="warning" sx={{ mb: 2 }}>
+              Это последняя нода. Подписки сохранятся, но их подключения будут переведены на «Основную ноду» и отключены до добавления новой ноды.
+            </Alert>
+          )}
           <Typography>
             Выберите способ удаления в зависимости от доступности сервера:
           </Typography>
