@@ -28,7 +28,7 @@
 Guralyň esasy maksady trafigiňiziň birmeňzeş görünmezligini gazanmakdyr. 3DP-MANAGER bellenen aralykda dürli parametrli baglanyşyklar toplumyny döredýär:
 
 - protokollar: `vless`, `vmess`, `shadowsocks`, `hysteria2`, `trojan`;
-- portlar: hemişelik `443`, `8443` we `10000-59999` aralygyndaky tötänleýin portlar;
+- portlar: hemişelik `443`, `8443` we `10000-60000` aralygyndaky tötänleýin portlar;
 - transport: `tcp`, `websocket`, `grpc`, `xhttp`;
 - SNI domen whitelist-den alynýar ýa-da el bilen berilýär;
 - her inbound üçin node, relay serwer, port we baýdak aýratyn sazlanýar.
@@ -71,7 +71,7 @@ Maslahatlar:
 7. Serwer API-si `happ-routing`, `incy-routing`, abunanyň `note`, `supportUrl`, `websiteUrl` meýdanlaryny we `vless-xhttp-get` görnüşini (XHTTP packet-up, GET, TLS/SNI ýok) goldaýar. Routing setirleri baglanyşyklardan öň gelýär we 20 baglanyşyk çägine goşulmaýar. Abuna formasynda **Happ routing** ýa-da **INCY routing** görnüşini saýlap, profili köp setirli meýdana giriziň; formada **bellik**, **goldaw salgysy**, **web sahypasy** we **VLESS XHTTP GET** baglanyşyk görnüşi hem bar. Baş sahypa operasiýa ýalňyşlaryny düşnükli tekst we maslahat bilen görkezýär, tehniki maglumatlar bolsa ýapyk bölümde saklanýar. [api.md](api.md) serediň.
 8. Adaty abuna pozmasy 3x-ui arassalamasy şowsuz bolsa durýar. `force=true` abunany barybir pozýar; panelde galan inbound-lary barlap el bilen aýyryň.
 
-Sazlamalardaky panel göçürme bölüminden ätiýaçlyk nusgasyny alyň, soň täze serwerde fork gurnawçysyny `--restore /root/panel.3dp-backup` bilen işlediň. Aýratyn parol ulanyp bolýar; abuna UUID-leri, node-lar, sazlamalar we relay maglumatlary saklanýar.
+Sazlamalardaky panel göçürme bölüminden ätiýaçlyk nusgasyny alyň, soň täze serwerde fork gurnawçysyny `--restore /root/panel.3dp-backup` bilen işlediň. Aýratyn parol ulanyp bolýar; abuna UUID-leri, node-lar, sazlamalar we relay maglumatlary saklanýar. Dikeltmek diňe 3DP-MANAGER gurnalmadyk serwerde işleýär: `/opt/3dp-manager/docker-compose.yml` bar bolsa, gurnawçy adaty täzelenmäni ýerine ýetirýär we arhiwi ulanmaýar, şonuň üçin ilki köne gurnamany pozuň.
 
 ## Talaplar
 
@@ -117,6 +117,8 @@ Soňky wersiýa çenli täzelemek:
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/install.sh)
 ```
+
+Şol buýruk bar bolan gurnamany (şol sanda `denpiligrim` repozitoriýasyndan edilen gurnamany) tapýar, PostgreSQL-iň ätiýaçlyk nusgasyny `/opt/3dp-manager/backups/` içinde döredýär, obrazlary K0TD-e geçirýär we Docker volume-y pozmazdan migrasiýalary ulanýar. Täzelenmeden soň node sany azalsa, täzelenme saklanýar we ätiýaçlyk nusganyň ýoluny görkezýär.
 
 <sup>Gysgaça: soňky üýtgeşmeleri alýar, laýyk konfigurasiýa düzedişlerini ulanýar, konteýnerleri täzeleýär we hyzmaty gaýtadan işledýär.</sup>
 

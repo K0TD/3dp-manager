@@ -28,7 +28,7 @@ A utility for automatically generating inbounds for the [3x-ui](https://github.c
 The main goal of the utility is to make your traffic look less uniform. 3DP-MANAGER generates a set of connections at a configured interval with different parameters:
 
 - protocols: `vless`, `vmess`, `shadowsocks`, `hysteria2`, `trojan`;
-- ports: fixed `443`, `8443`, plus random ports from `10000-59999`;
+- ports: fixed `443`, `8443`, plus random ports from `10000-60000`;
 - transport: `tcp`, `websocket`, `grpc`, `xhttp`;
 - SNI values are taken from the domain whitelist or set manually;
 - node, relay server, port, and flag can be configured separately for each inbound.
@@ -71,7 +71,7 @@ Recommendations:
 7. The server API accepts `happ-routing` and `incy-routing` profiles, subscription `note`, `supportUrl`, `websiteUrl`, and `vless-xhttp-get` (XHTTP packet-up, GET, no TLS/SNI). Routing lines precede connection links and do not count toward the 20-connection limit. In the subscription form, select **Happ routing** or **INCY routing** and enter the profile in the multiline field; the form also offers **note**, **support URL**, **website URL**, and the **VLESS XHTTP GET** connection type. The dashboard shows clear operation errors and hints, with technical details collapsed. See [api.md](api.md).
 8. Normal subscription deletion stops if 3x-ui cleanup fails. `force=true` removes the subscription despite the failure; check and remove any remaining inbounds in the 3x-ui panel manually.
 
-Settings include a portable panel backup. Export it from **Settings → Panel transfer**, then run the fork installer with `--restore /root/panel.3dp-backup` on the new server. An optional passphrase protects the archive; subscription UUIDs, nodes, settings and relay credentials are preserved.
+Settings include a portable panel backup. Export it from **Settings → Panel transfer**, then run the fork installer with `--restore /root/panel.3dp-backup` on the new server. An optional passphrase protects the archive; subscription UUIDs, nodes, settings and relay credentials are preserved. Restore works only on a server without 3DP-MANAGER: if `/opt/3dp-manager/docker-compose.yml` exists, the installer performs a regular update and ignores the archive, so remove the old installation first.
 
 ## Requirements
 
@@ -117,6 +117,8 @@ Update to the latest version:
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/install.sh)
 ```
+
+The same command detects an existing installation (including one made from the `denpiligrim` repository), backs up PostgreSQL to `/opt/3dp-manager/backups/`, switches images to K0TD and applies migrations without removing the Docker volume. If the node count drops after the update, the update stops and prints the backup path.
 
 <sup>Short description: pulls the latest changes, applies compatible configuration fixes, updates containers, and restarts the service.</sup>
 

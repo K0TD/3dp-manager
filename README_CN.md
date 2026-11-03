@@ -28,7 +28,7 @@
 该工具的主要目标是让您的流量看起来不那么单一。3DP-MANAGER 会按设定间隔生成一组具有不同参数的连接：
 
 - 协议：`vless`、`vmess`、`shadowsocks`、`hysteria2`、`trojan`；
-- 端口：固定的 `443`、`8443`，以及 `10000-59999` 范围内的随机端口；
+- 端口：固定的 `443`、`8443`，以及 `10000-60000` 范围内的随机端口；
 - 传输：`tcp`、`websocket`、`grpc`、`xhttp`；
 - SNI 可从域名白名单中选择，也可以手动指定；
 - 每个 inbound 都可以单独设置节点、relay 服务器、端口和旗帜。
@@ -71,7 +71,7 @@
 7. 服务器 API 支持 `happ-routing`、`incy-routing`，订阅的 `note`、`supportUrl`、`websiteUrl`，以及 `vless-xhttp-get`（XHTTP packet-up、GET、无 TLS/SNI）。路由配置排在连接前，不计入 20 个连接的限制。在订阅表单中选择 **Happ routing** 或 **INCY routing**，并在多行字段中输入配置；表单还提供**备注**、**支持链接**、**网站**和 **VLESS XHTTP GET** 连接类型。首页以易懂的文字和提示显示操作错误，技术详情默认折叠。详见 [api.md](api.md)。
 8. 普通删除订阅在 3x-ui 清理失败时停止；`force=true` 会继续删除，需手动检查并清除面板残留 inbound。
 
-可在设置的面板迁移功能中导出备份，然后在新服务器运行分支安装脚本并传入 `--restore /root/panel.3dp-backup`。备份可用独立密码保护，包含订阅 UUID、节点、设置和 relay 凭据。
+可在设置的面板迁移功能中导出备份，然后在新服务器运行分支安装脚本并传入 `--restore /root/panel.3dp-backup`。备份可用独立密码保护，包含订阅 UUID、节点、设置和 relay 凭据。恢复仅适用于尚未安装 3DP-MANAGER 的服务器：如果 `/opt/3dp-manager/docker-compose.yml` 已存在，安装脚本会执行普通更新并忽略备份，请先删除旧安装。
 
 ## 要求
 
@@ -117,6 +117,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/instal
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/install.sh)
 ```
+
+同一命令会识别已有安装（包括来自 `denpiligrim` 仓库的安装），将 PostgreSQL 备份到 `/opt/3dp-manager/backups/`，把镜像切换为 K0TD，并在不删除 Docker volume 的情况下执行迁移。若更新后节点数量减少，更新会停止并显示备份路径。
 
 <sup>简要说明：拉取最新更改，应用兼容的配置修复，更新容器并重启服务。</sup>
 
