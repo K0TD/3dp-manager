@@ -145,7 +145,9 @@ export class ClientController {
     @Req() req: Request,
     @Res() res: Response,
   ) {
-    const tunnel = await this.tunnelRepo.findOne({ where: { id: +tunnelId } });
+    const tunnel = /^\d+$/.test(tunnelId)
+      ? await this.tunnelRepo.findOne({ where: { id: Number(tunnelId) } })
+      : null;
     if (!tunnel) {
       return res.status(HttpStatus.NOT_FOUND).send('Relay server not found');
     }

@@ -6,7 +6,13 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import axios, { AxiosInstance, AxiosError, AxiosResponse } from 'axios';
+import axios, {
+  AxiosInstance,
+  AxiosError,
+  AxiosResponse,
+  InternalAxiosRequestConfig,
+} from 'axios';
+import * as http from 'http';
 import * as https from 'https';
 import { Setting } from '../settings/entities/setting.entity';
 import { XuiCertResult, XuiInboundRaw, XuiDiscoveredNode } from './xui.types';
@@ -40,6 +46,16 @@ import {
   verifyTlsIdentity,
 } from './xui-contract';
 
+// Panel hosts often rate-limit new TCP connections (connlimit/hashlimit), so a
+// burst of fresh connections is refused. Requests to one panel share a single
+// keep-alive socket, and a refused connect is retried after a short pause.
+const PANEL_SOCKET_IDLE_MS = 30_000;
+const REFUSED_RETRY_DELAYS_MS = [1_200, 2_500];
+
+type RetriableRequestConfig = InternalAxiosRequestConfig & {
+  refusedRetries?: number;
+};
+
 export type XuiConnectionError = 'auth' | 'network' | 'api';
 export interface XuiConnectionStatus {
   success: boolean;
@@ -69,6 +85,7 @@ export interface XuiCreatedInbound {
 export class XuiService {
   private readonly logger = new Logger(XuiService.name);
   private readonly lastInboundErrors = new Map<string, string>();
+  private readonly panelAgents = new Map<string, http.Agent>();
 
   constructor(
     @InjectRepository(Setting) private settingsRepo: Repository<Setting>,
@@ -91,7 +108,8 @@ export class XuiService {
       proxy: false,
       withCredentials: true,
       maxRedirects: 0,
-      httpsAgent: new https.Agent({ rejectUnauthorized: !allowInvalidTls }),
+      httpAgent: this.panelAgent(cleanBaseURL, false, allowInvalidTls),
+      httpsAgent: this.panelAgent(cleanBaseURL, true, allowInvalidTls),
     });
     api.interceptors.request.use((config) => {
       config.signal ??= AbortSignal.timeout(config.timeout || 8000);
@@ -102,12 +120,54 @@ export class XuiService {
         this.acceptCookies(api, response);
         return response;
       },
-      (error: AxiosError) => {
+      async (error: AxiosError) => {
         if (error.response) this.acceptCookies(api, error.response);
+        // A refused connect never reached the panel, so any method is safe to retry.
+        const config = error.config as RetriableRequestConfig | undefined;
+        const attempt = config?.refusedRetries ?? 0;
+        if (
+          config &&
+          error.code === 'ECONNREFUSED' &&
+          attempt < REFUSED_RETRY_DELAYS_MS.length &&
+          !config.signal?.aborted
+        ) {
+          config.refusedRetries = attempt + 1;
+          await new Promise((resolve) =>
+            setTimeout(resolve, REFUSED_RETRY_DELAYS_MS[attempt]),
+          );
+          return api.request(config);
+        }
         return Promise.reject(error);
       },
     );
     return api;
+  }
+
+  private panelAgent(
+    baseURL: string,
+    secure: boolean,
+    allowInvalidTls: boolean,
+  ): http.Agent {
+    let origin: string;
+    try {
+      origin = new URL(baseURL).origin;
+    } catch {
+      origin = baseURL;
+    }
+    const key = `${secure ? 'https' : 'http'}|${origin}|${allowInvalidTls}`;
+    let agent = this.panelAgents.get(key);
+    if (!agent) {
+      const options = {
+        keepAlive: true,
+        maxSockets: 1,
+        timeout: PANEL_SOCKET_IDLE_MS,
+      };
+      agent = secure
+        ? new https.Agent({ ...options, rejectUnauthorized: !allowInvalidTls })
+        : new http.Agent(options);
+      this.panelAgents.set(key, agent);
+    }
+    return agent;
   }
 
   private acceptCookies(api: AxiosInstance, response?: AxiosResponse<unknown>) {
@@ -763,8 +823,11 @@ export class XuiService {
         );
         return this.parseCertificateFiles(responsePayload(response.data));
       });
-    } catch {
-      return null;
+    } catch (error) {
+      // Only a panel answer means "no certificate"; transport failures must not
+      // be reported as a missing certificate.
+      if (error instanceof XuiApiError) return null;
+      throw error;
     }
   }
 
