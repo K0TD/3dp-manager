@@ -467,6 +467,8 @@ export class ConnectionProfilesService {
     checkedAt: string;
   }> {
     const profile = await this.findOne(id);
+    const activeInbound = await this.findActiveInboundForProfile(profile);
+    const deployed = Boolean(activeInbound);
     const node = profile.nodeId
       ? await this.loadNodeWithSecrets(profile.nodeId)
       : null;
@@ -482,7 +484,9 @@ export class ConnectionProfilesService {
       | undefined;
     if (node) {
       const liveNode = await this.queryLiveNodeState(node);
-      occupiedPorts = liveNode.occupiedPorts;
+      occupiedPorts = liveNode.occupiedPorts?.filter(
+        (p) => !activeInbound || p !== activeInbound.port,
+      );
       nodeResources = liveNode.nodeResources;
     }
 
@@ -500,12 +504,33 @@ export class ConnectionProfilesService {
               ? (profile.spec?.destPort ?? profile.port ?? 443)
               : (profile.port ?? 443)
             : (profile.spec?.publicPort ?? profile.port ?? 443);
+        const expectedIps = this.resolveExpectedNodeIps(node, domainToResolve);
         tlsProbe = await this.probe.probeDomainAndTls({
           domain: domainToResolve,
           port: probePort,
-          expectedHostIps: this.resolveExpectedNodeIps(node, domainToResolve),
+          expectedHostIps: expectedIps,
           checkHttpSite: true,
         });
+        // For undeployed drafts on a custom Xray port (e.g. 24443), the Xray port is
+        // expected to be closed before deployment; try port 443 to still validate the
+        // domain's TLS certificate if Nginx/Caddy is already serving HTTPS on 443.
+        if (
+          !deployed &&
+          probePort !== 443 &&
+          !tlsProbe.reachable &&
+          !tlsProbe.dnsError &&
+          /ECONNREFUSED/i.test(tlsProbe.error || '')
+        ) {
+          const fallback443 = await this.probe.probeDomainAndTls({
+            domain: domainToResolve,
+            port: 443,
+            expectedHostIps: expectedIps,
+            checkHttpSite: true,
+          });
+          if (fallback443.reachable) {
+            tlsProbe = fallback443;
+          }
+        }
         dnsResolvedIps = tlsProbe.dnsResolvedIps;
         dnsError = tlsProbe.dnsError;
       } else {
@@ -531,6 +556,7 @@ export class ConnectionProfilesService {
       dnsError,
       tlsProbe,
       nodeResources,
+      deployed,
     });
 
     const checkedAt = new Date();

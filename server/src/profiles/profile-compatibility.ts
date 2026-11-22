@@ -113,6 +113,7 @@ export interface ProfileCompatibilityInput {
     diskPercent?: number;
     xrayState?: string;
   };
+  deployed?: boolean;
 }
 
 export function parseSemver(version?: string): [number, number, number] | null {
@@ -863,14 +864,29 @@ export function evaluateProfileCompatibility(
     }
 
     if (!probe.reachable && !probe.dnsError) {
-      checks.push({
-        code: 'TLS_PROBE_FAILED',
-        severity: input.kind === 'xhttp-stable' ? 'warning' : 'error',
-        title: 'TLS-соединение с доменом не установлено',
-        message:
-          probe.error ||
-          `Не удалось выполнить TLS handshake с ${probe.domain}:${probe.port}.`,
-      });
+      const isExpectedDraftPortClosed =
+        input.deployed === false &&
+        /ECONNREFUSED/i.test(probe.error || '') &&
+        ((input.kind === 'self-sni' && normalized.webServer !== 'none') ||
+          (input.kind === 'https-fallback' &&
+            (normalized.reverseProxy ?? 'none') === 'none'));
+      if (isExpectedDraftPortClosed) {
+        checks.push({
+          code: 'TLS_PROBE_DRAFT_PORT_CLOSED',
+          severity: 'warning',
+          title: `Порт ${probe.port} пока не открыт (черновик)`,
+          message: `Профиль ещё не развёрнут на ноде 3x-ui, поэтому на порту ${probe.port} пока ничего не слушает — это нормально до деплоя. Добавьте профиль в подписку, выполните ротацию и повторите проверку.`,
+        });
+      } else {
+        checks.push({
+          code: 'TLS_PROBE_FAILED',
+          severity: input.kind === 'xhttp-stable' ? 'warning' : 'error',
+          title: 'TLS-соединение с доменом не установлено',
+          message:
+            probe.error ||
+            `Не удалось выполнить TLS handshake с ${probe.domain}:${probe.port}.`,
+        });
+      }
     } else if (probe.reachable) {
       if (probe.tlsProtocol === 'TLSv1.3') {
         checks.push({

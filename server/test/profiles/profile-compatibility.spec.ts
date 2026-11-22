@@ -281,4 +281,41 @@ describe('profile-compatibility', () => {
       ]),
     );
   });
+
+  it('treats ECONNREFUSED on an undeployed Self-SNI draft port as warning instead of blocking error', () => {
+    const draftReport = evaluateProfileCompatibility({
+      kind: 'self-sni',
+      port: 24443,
+      deployed: false,
+      settings: {
+        domain: 'mscone.samx.pw',
+        webServer: 'nginx',
+        localHttpsPort: 8443,
+      },
+      node: {
+        name: 'mscone',
+        xrayVersion: '26.7.11',
+      },
+      tlsProbe: {
+        domain: 'mscone.samx.pw',
+        port: 24443,
+        reachable: false,
+        dnsResolvedIps: ['31.59.126.121'],
+        error:
+          'Ошибка TLS-подключения к mscone.samx.pw:24443: connect ECONNREFUSED 31.59.126.121:24443',
+        durationMs: 12,
+      },
+    });
+
+    expect(draftReport.compatible).toBe(true);
+    expect(draftReport.status).toBe('warning');
+    expect(draftReport.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'TLS_PROBE_DRAFT_PORT_CLOSED',
+          severity: 'warning',
+        }),
+      ]),
+    );
+  });
 });
