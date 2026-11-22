@@ -19,6 +19,7 @@ import { XuiCertResult, XuiInboundRaw, XuiDiscoveredNode } from './xui.types';
 import { SessionService } from '../session/session.service';
 import { Node, NodeAuthType } from '../nodes/entities/node.entity';
 import { isSafeAbsoluteRemotePath } from '../inbounds/tls-config';
+import { formatClientEmail } from '../inbounds/client-email';
 import { RoutingStore } from '../nodes/routing/routing-store.service';
 import {
   emptyRoutingState,
@@ -82,6 +83,11 @@ export interface XuiCreatedInbound {
   // A persisted inbound must remain available to the caller for cleanup even
   // when the subsequent detail request fails.
   verificationError?: string;
+}
+
+export function hasSeparateClientApi(node?: Pick<Node, 'version'>): boolean {
+  const version = node?.version?.trim().match(/^v?(\d+)\./i);
+  return Boolean(version && Number(version[1]) >= 3);
 }
 
 @Injectable()
@@ -487,6 +493,8 @@ export class XuiService {
     const key = node?.id || 'main';
     this.lastInboundErrors.delete(key);
     const clientId = typeof client.id === 'string' ? client.id : '';
+    const email = typeof client.email === 'string' ? client.email : '';
+    const separateClients = hasSeparateClientApi(node);
     let accepted: XuiInboundRaw | undefined;
     try {
       return await this.authenticatedRequest(node, async (api) => {
@@ -494,6 +502,9 @@ export class XuiService {
           `/panel/api/inbounds/get/${inboundId}`,
         );
         const current = normalizeInbound(responsePayload(currentResp.data));
+        if (current.id !== inboundId) {
+          throw new XuiApiError('3x-ui вернула другой инбаунд');
+        }
         if (!current.enable) {
           throw new XuiApiError(
             `Общий inbound ${inboundId} отключён на панели 3x-ui`,
@@ -506,58 +517,77 @@ export class XuiService {
           );
         }
 
-        try {
-          const addResp = await api.post<unknown>(
-            '/panel/api/inbounds/addClient',
-            {
-              id: inboundId,
-              settings: JSON.stringify({ clients: [client] }),
-            },
-          );
-          responsePayload(addResp.data);
-          accepted = current;
-        } catch (addError) {
-          const status = (addError as AxiosError).response?.status;
-          if (status === 401 || status === 403) throw addError;
-          // Fallback to /panel/api/inbounds/update/:id for panels without addClient
-          const parsedSettings = jsonObject(
-            typeof current.settings === 'string'
-              ? JSON.parse(current.settings)
-              : current.settings,
-            'inbound settings',
-          );
-          const existingClients = Array.isArray(parsedSettings.clients)
-            ? (parsedSettings.clients as Array<Record<string, unknown>>)
-            : [];
-          const nextClients = existingClients.some((c) => c.id === clientId)
-            ? existingClients
-            : [...existingClients, client];
-          const body: Record<string, unknown> = {
-            ...current,
-            settings: JSON.stringify({
-              ...parsedSettings,
-              clients: nextClients,
-            }),
-          };
-          for (const field of ['streamSettings', 'sniffing']) {
-            if (typeof body[field] !== 'string')
-              body[field] = JSON.stringify(body[field] ?? {});
+        if (separateClients) {
+          if (!clientId || !email) {
+            throw new XuiApiError('Для добавления клиента требуются UUID и email');
           }
-          for (const field of [
-            'up',
-            'down',
-            'allTime',
-            'clientStats',
-            'lastTrafficResetTime',
-          ]) {
-            delete body[field];
+          const { clients } = jsonObject(current.settings, 'inbound settings');
+          if (Array.isArray(clients) && clients.some(
+            (item) => item?.id === clientId && item.email === email && item.enable !== false,
+          )) {
+            return { id: inboundId, inbound: current };
           }
-          const updateResp = await api.post<unknown>(
-            `/panel/api/inbounds/update/${inboundId}`,
-            body,
-          );
-          responsePayload(updateResp.data);
+          // A write may have succeeded before the response reached us.
           accepted = current;
+          const response = await api.post<unknown>('/panel/api/clients/add', {
+            client,
+            inboundIds: [inboundId],
+          });
+          responsePayload(response.data);
+        } else {
+          try {
+            const addResp = await api.post<unknown>(
+              '/panel/api/inbounds/addClient',
+              {
+                id: inboundId,
+                settings: JSON.stringify({ clients: [client] }),
+              },
+            );
+            responsePayload(addResp.data);
+            accepted = current;
+          } catch (addError) {
+            const status = (addError as AxiosError).response?.status;
+            if (status === 401 || status === 403) throw addError;
+            // Fallback to /panel/api/inbounds/update/:id for panels without addClient
+            const parsedSettings = jsonObject(
+              typeof current.settings === 'string'
+                ? JSON.parse(current.settings)
+                : current.settings,
+              'inbound settings',
+            );
+            const existingClients = Array.isArray(parsedSettings.clients)
+              ? (parsedSettings.clients as Array<Record<string, unknown>>)
+              : [];
+            const nextClients = existingClients.some((c) => c.id === clientId)
+              ? existingClients
+              : [...existingClients, client];
+            const body: Record<string, unknown> = {
+              ...current,
+              settings: JSON.stringify({
+                ...parsedSettings,
+                clients: nextClients,
+              }),
+            };
+            for (const field of ['streamSettings', 'sniffing']) {
+              if (typeof body[field] !== 'string')
+                body[field] = JSON.stringify(body[field] ?? {});
+            }
+            for (const field of [
+              'up',
+              'down',
+              'allTime',
+              'clientStats',
+              'lastTrafficResetTime',
+            ]) {
+              delete body[field];
+            }
+            const updateResp = await api.post<unknown>(
+              `/panel/api/inbounds/update/${inboundId}`,
+              body,
+            );
+            responsePayload(updateResp.data);
+            accepted = current;
+          }
         }
 
         const savedResp = await api.get<unknown>(
@@ -573,9 +603,16 @@ export class XuiService {
         const savedClients = Array.isArray(savedSettings.clients)
           ? (savedSettings.clients as Array<Record<string, unknown>>)
           : [];
-        if (clientId && !savedClients.some((c) => c.id === clientId)) {
+        if (
+          saved.id !== inboundId ||
+          saved.enable !== true ||
+          saved.protocol !== current.protocol ||
+          (clientId && !savedClients.some(
+            (c) => c?.id === clientId && (!separateClients || (c.email === email && c.enable !== false)),
+          ))
+        ) {
           throw new XuiApiError(
-            `3x-ui не сохранила клиента ${clientId} в общем inbound ${inboundId}`,
+            `3x-ui не подтвердила привязку клиента к общему inbound ${inboundId}`,
           );
         }
         return { id: inboundId, inbound: saved };
@@ -610,6 +647,8 @@ export class XuiService {
   ): Promise<boolean> {
     try {
       return await this.authenticatedRequest(node, async (api) => {
+        if (hasSeparateClientApi(node))
+          return this.removeSeparateClient(api, inboundId, clientId);
         try {
           const resp = await api.post<unknown>(
             `/panel/api/inbounds/${inboundId}/delClient/${encodeURIComponent(clientId)}`,
@@ -700,13 +739,120 @@ export class XuiService {
     }
   }
 
-  async deleteInbound(id: number, node?: Node): Promise<boolean> {
-    if (!node || !this.routingStore) return this.removeInbound(id, node);
-    return this.routingStore.withLock(node.id, async () => {
+  private async removeSeparateClient(
+    api: AxiosInstance,
+    inboundId: number,
+    clientId: string,
+    knownEmail?: string,
+  ): Promise<boolean> {
+    let email: unknown = knownEmail;
+    if (!knownEmail) {
+      const inbound = await api
+        .get<unknown>(`/panel/api/inbounds/get/${inboundId}`)
+        .catch((error: AxiosError) => {
+          if (error.response?.status === 404) return undefined;
+          throw error;
+        });
+      if (inbound && !this.panelRecordMissing(inbound.data)) {
+        const current = normalizeInbound(responsePayload(inbound.data));
+        const { clients } = jsonObject(current.settings, 'inbound settings');
+        if (current.id !== inboundId || !Array.isArray(clients)) return false;
+        email = clients.find((client) => asRecord(client)?.id === clientId)?.email;
+      }
+    }
+    if (typeof email !== 'string') {
+      // The first read may find an orphan or an inbound removed in a previous retry.
+      const list = await api.get<unknown>('/panel/api/clients/list');
+      const clients = responsePayload(list.data);
+      if (!Array.isArray(clients))
+        throw new XuiApiError('Недопустимый список клиентов 3x-ui');
+      const matches = clients.filter((client) => asRecord(client)?.uuid === clientId);
+      if (matches.length === 0) return true;
+      if (matches.length !== 1) return false;
+      email = asRecord(matches[0])?.email;
+    }
+    if (typeof email !== 'string' || !email) return false;
+
+    const encodedEmail = encodeURIComponent(email);
+    const details = await api.get<unknown>(`/panel/api/clients/get/${encodedEmail}`);
+    if (this.panelRecordMissing(details.data)) return true;
+    const row = asRecord(responsePayload(details.data));
+    const client = asRecord(row?.client);
+    if (client?.uuid !== clientId || client.email !== email) return false;
+    const attachments = row?.inboundIds === null ? [] : row?.inboundIds;
+    if (!Array.isArray(attachments)) return false;
+    const shortId = formatClientEmail(null, clientId);
+    const managedEmail = email === shortId || email.endsWith(`-${shortId}`);
+    const emptyExternalLinks = row?.externalLinks === null ||
+      (Array.isArray(row?.externalLinks) && row.externalLinks.length === 0);
+    const canDelete = managedEmail && emptyExternalLinks &&
+      attachments.every((id) => id === inboundId);
+    if (canDelete) {
+      const deleted = await api.post<unknown>(`/panel/api/clients/del/${encodedEmail}`);
+      if (!this.panelRecordMissing(deleted.data)) responsePayload(deleted.data);
+    } else if (attachments.includes(inboundId)) {
+      const detached = await api.post<unknown>(
+        `/panel/api/clients/${encodedEmail}/detach`,
+        { inboundIds: [inboundId] },
+      );
+      if (!this.panelRecordMissing(detached.data)) responsePayload(detached.data);
+    }
+    return true;
+  }
+
+  private panelRecordMissing(data: unknown): boolean {
+    const body = asRecord(data);
+    return body?.success === false && typeof body.msg === 'string' &&
+      /not found|does not exist|record not found|не найден/i.test(body.msg);
+  }
+
+  async deleteInbound(id: number, node?: Node, ownedClientId?: string): Promise<boolean> {
+    const run = async () => {
+      if (ownedClientId && hasSeparateClientApi(node))
+        return this.removeOwnedInbound(id, ownedClientId, node);
       const removed = await this.removeInbound(id, node);
-      if (removed) await this.routingStore.forgetInbound(node.id, id);
+      if (removed && node && this.routingStore) {
+        await this.routingStore.forgetInbound(node.id, id);
+      }
       return removed;
-    });
+    };
+    if (!node || !this.routingStore) return run();
+    return this.routingStore.withLock(node.id, run);
+  }
+
+  private async removeOwnedInbound(
+    id: number,
+    clientId: string,
+    node?: Node,
+  ): Promise<boolean> {
+    try {
+      const current = await this.authenticatedRequest(node, async (api) => {
+        const { data } = await api.get<unknown>(`/panel/api/inbounds/get/${id}`);
+        if (this.panelRecordMissing(data)) return null;
+        return normalizeInbound(responsePayload(data));
+      });
+      let email: string | undefined;
+      if (current) {
+        const { clients } = jsonObject(current.settings, 'inbound settings');
+        if (!Array.isArray(clients)) return false;
+        // Do not delete a reused panel ID or an inbound with someone else's clients.
+        if (current.id !== id) return false;
+        const client = asRecord(clients[0]);
+        if (current.protocol !== 'vless' || clients.length !== 1 ||
+          client?.id !== clientId)
+          return this.removeInboundClient(id, clientId, node);
+        if (typeof client.email === 'string') email = client.email;
+        if (!(await this.removeInbound(id, node))) return false;
+      }
+      if (node && this.routingStore)
+        await this.routingStore.forgetInbound(node.id, id);
+      return await this.authenticatedRequest(node, (api) =>
+        this.removeSeparateClient(api, id, clientId, email),
+      );
+    } catch (error) {
+      this.logger.warn(`Managed inbound deletion (${id}): ${this.errorMessage(error)}`);
+      return false;
+    }
   }
 
   private async removeInbound(id: number, node?: Node): Promise<boolean> {

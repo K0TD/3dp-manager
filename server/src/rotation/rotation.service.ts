@@ -21,7 +21,11 @@ import { Domain } from '../domains/entities/domain.entity';
 import { Setting } from '../settings/entities/setting.entity';
 import { Node, NodeHealthStatus } from '../nodes/entities/node.entity';
 import { Tunnel } from '../tunnels/entities/tunnel.entity';
-import { XuiCertificateFiles, XuiService } from '../xui/xui.service';
+import {
+  hasSeparateClientApi,
+  XuiCertificateFiles,
+  XuiService,
+} from '../xui/xui.service';
 import { InboundBuilderService } from '../inbounds/inbound-builder.service';
 import {
   XuiInboundRaw,
@@ -45,6 +49,7 @@ import {
   isPortConflict,
   XuiRuntimeError,
   inboundDiagnostic,
+  jsonObject,
   verifyTlsIdentity,
 } from '../xui/xui-contract';
 import { supportsInboundType } from '../nodes/node-capabilities';
@@ -123,6 +128,7 @@ interface SaveStagedInboundRequest {
   remark?: string;
   link: string;
   clientId?: string;
+  ownedVlessId?: string;
 }
 
 @Injectable()
@@ -963,6 +969,11 @@ export class RotationService implements OnModuleInit {
       result: RotationConfigResult;
     }> = [];
     const preservedPositions: Array<{ id: number; position: number }> = [];
+    const missingProfiles: Array<{
+      config: InboundConfig;
+      previous?: Inbound;
+      result: RotationConfigResult;
+    }> = [];
     let nodeCheck: Promise<unknown> | undefined;
     let runtimeUnhealthy = false;
     let rolledBack = false;
@@ -1157,6 +1168,8 @@ export class RotationService implements OnModuleInit {
         result.status = 'activated';
       } catch (error) {
         if (candidate) {
+          result.xuiId = candidate.xuiId || undefined;
+          result.port = candidate.port;
           rolledBack = true;
           result.cleanupQueued = await this.discardStagedInbound(
             candidate,
@@ -1183,6 +1196,9 @@ export class RotationService implements OnModuleInit {
           panelRejected:
             stage === 'create' && diagnostics.length > diagnosticStart,
         });
+        if (error instanceof MissingConnectionProfileError && !operation?.target) {
+          missingProfiles.push({ config, previous: previous[0], result });
+        }
         this.logger.warn(
           `Ротация ${subscription.id}/${config.configId || position}: ${result.error.raw}`,
         );
@@ -1234,6 +1250,35 @@ export class RotationService implements OnModuleInit {
     const old = replacements.flatMap((item) =>
       item.previous ? [item.previous] : [],
     );
+    const superseded = new Set<InboundConfig>();
+    for (const { config, previous, result } of missingProfiles) {
+      if (!config.name?.trim()) continue;
+      const matching = configs.filter(({ config: item }) =>
+        item !== config &&
+        item.type === config.type &&
+        item.profileId &&
+        item.profileId !== config.profileId &&
+        item.name?.trim() === config.name.trim(),
+      );
+      if (matching.length !== 1) continue;
+      const replacement = inboundResults.find(
+        (item) => item.configId === matching[0].config.configId,
+      );
+      if (!replacement?.configId) continue;
+      const existing = active.find(
+        (inbound) => inbound.configId === replacement.configId,
+      );
+      if (replacement.status !== 'activated' &&
+        !(replacement.status === 'unchanged' && existing && node &&
+          await this.hasActivePanelClient(existing, node))) continue;
+      superseded.add(config);
+      if (previous) old.push(previous);
+      result.status = 'superseded';
+      result.error = undefined;
+    }
+    const nextConfigs = superseded.size
+      ? desired.filter((config) => !superseded.has(config))
+      : undefined;
     const failures = inboundResults.filter((item) => item.error);
     const firstError = failures[0]?.error;
     const pendingCleanup =
@@ -1271,7 +1316,7 @@ export class RotationService implements OnModuleInit {
         inbounds: diagnostics,
       },
     };
-    if (replacements.length || preservedPositions.length) {
+    if (replacements.length || preservedPositions.length || nextConfigs) {
       try {
         await this.inboundRepo.manager.transaction(async (manager) => {
           if (old.length)
@@ -1297,6 +1342,12 @@ export class RotationService implements OnModuleInit {
               { id: item.id },
               { position: item.position },
             );
+          if (nextConfigs)
+            await manager.update(
+              Subscription,
+              { id: subscription.id },
+              { inboundsConfig: nextConfigs },
+            );
           if (operation?.target?.patch && result.status === 'succeeded') {
             const configured = [...subscription.inboundsConfig];
             configured[configs[0].position] = configs[0].config;
@@ -1313,6 +1364,7 @@ export class RotationService implements OnModuleInit {
               { results: [result] },
             );
         });
+        if (nextConfigs) subscription.inboundsConfig = nextConfigs;
       } catch (error) {
         const ids = replacements.map((item) => item.candidate.id);
         if (ids.length) {
@@ -1331,6 +1383,20 @@ export class RotationService implements OnModuleInit {
       }
     }
     return result;
+  }
+
+  private async hasActivePanelClient(inbound: Inbound, node: Node) {
+    const clientId = extractInboundClientId(inbound);
+    if (!clientId || !inbound.xuiId) return false;
+    try {
+      const current = await this.xuiService.getInbound(inbound.xuiId, node);
+      const clients = jsonObject(current.settings, 'inbound settings').clients;
+      return current.id === inbound.xuiId && current.enable === true &&
+        Array.isArray(clients) &&
+        clients.some((client) => client?.id === clientId && client.enable !== false);
+    } catch {
+      return false;
+    }
   }
 
   private async discardStagedInbound(candidate: Inbound, node?: Node) {
@@ -1517,13 +1583,38 @@ export class RotationService implements OnModuleInit {
     }
   }
 
+  private matchesXhttpStableListener(
+    expected: XuiInboundRaw,
+    actual: XuiInboundRaw,
+    sni: string,
+  ) {
+    try {
+      const desired = JSON.parse(expected.streamSettings) as XuiStreamSettings;
+      const saved = JSON.parse(actual.streamSettings) as XuiStreamSettings;
+      const xhttp = desired.xhttpSettings;
+      return actual.port === expected.port &&
+        actual.protocol === expected.protocol &&
+        (!xhttp || (
+          saved.network === desired.network &&
+          saved.security === desired.security &&
+          saved.xhttpSettings?.path === xhttp.path &&
+          (saved.xhttpSettings?.mode || 'auto') === xhttp.mode &&
+          saved.xhttpSettings?.host === xhttp.host &&
+          saved.realitySettings?.serverNames?.includes(xhttp.host || sni)
+        ));
+    } catch {
+      return false;
+    }
+  }
+
   private async findSharedManagedInbound(
     config: InboundConfig,
     nodeId: string,
     sni: string,
     expected: XuiInboundRaw,
     node: Node,
-  ): Promise<Inbound | null> {
+    domains: Domain[],
+  ): Promise<{ inbound: Inbound; sni: string } | null> {
     if (
       !isManagedProfileKind(config.type) ||
       typeof this.inboundRepo.find !== 'function'
@@ -1583,7 +1674,7 @@ export class RotationService implements OnModuleInit {
             node,
           );
           if (this.matchesFallbackListener(expectedAtPort, current))
-            return candidate;
+            return { inbound: candidate, sni };
         } catch {
           // A missing or stale panel record is not a safe target for attaching a client.
         }
@@ -1621,9 +1712,20 @@ export class RotationService implements OnModuleInit {
         const parsed = JSON.parse(
           candidate.clientProfileJson,
         ) as SeparatedClientProfile;
-        if (sni && normalize(parsed.sni) !== normalize(sni)) continue;
+        const adoptSharedSni =
+          config.type === 'xhttp-stable' &&
+          Boolean(config.profileId) &&
+          candidate.profileId === config.profileId &&
+          !explicitXhttpStableSni(config.sni, config.profileSettings?.domain) &&
+          domains.some(
+            (domain) =>
+              normalize(domain.name) === normalize(parsed.sni) &&
+              !isExcludedSniDomain(domain.name),
+          );
+        const sharedSni = adoptSharedSni ? parsed.sni : sni;
+        if (sharedSni && normalize(parsed.sni) !== normalize(sharedSni)) continue;
         if (config.type === 'xhttp-stable') {
-          const auto = xhttpStableSniSettings(sni);
+          const auto = xhttpStableSniSettings(sharedSni);
           if (
             parsed.xhttp?.path !== auto.path ||
             parsed.xhttp?.host !== auto.host ||
@@ -1637,7 +1739,7 @@ export class RotationService implements OnModuleInit {
           parsed.xhttp?.mode !== config.profileSettings.mode
         )
           continue;
-        return candidate;
+        return { inbound: candidate, sni: sharedSni };
       } catch {
         continue;
       }
@@ -1692,7 +1794,12 @@ export class RotationService implements OnModuleInit {
       return false;
     }
 
-    return this.xuiService.deleteInbound(inbound.xuiId, node);
+    const ownedClientId = inbound.protocol === 'vless' && hasSeparateClientApi(node)
+      ? extractInboundClientId(inbound)
+      : null;
+    return ownedClientId
+      ? this.xuiService.deleteInbound(inbound.xuiId, node, ownedClientId)
+      : this.xuiService.deleteInbound(inbound.xuiId, node);
   }
 
   private assertNodeCompatibility(config: InboundConfig, node?: Node) {
@@ -1958,12 +2065,12 @@ export class RotationService implements OnModuleInit {
     usedPorts.add(port);
     const uuid = uuidv4();
     const email = formatClientEmail(subscription.name, uuid);
-    const sni = this.resolveInboundSni(config, domains, subscription);
+    let sni = this.resolveInboundSni(config, domains, subscription);
 
     const resolvedTls = requiresPanelTlsCertificate(config)
       ? this.resolveTlsConfig(config, node, nodeCertificate)
       : undefined;
-    const built =
+    let built =
       config.type === 'hysteria2-udp'
         ? this.inboundBuilder.buildHysteria2Inbound({
             port,
@@ -1997,18 +2104,29 @@ export class RotationService implements OnModuleInit {
     }
     let result: Awaited<ReturnType<XuiService['addInbound']>> = null;
     let attachedToShared = false;
+    let staged: Inbound | undefined;
+    const stagedParams = { subscription, config, position, node, relayServer, generationId };
     if (
       isManagedProfileKind(config.type) &&
       typeof this.xuiService.addInboundClient === 'function'
     ) {
-      const shared = await this.findSharedManagedInbound(
+      const match = await this.findSharedManagedInbound(
         config,
         node.id,
         sni,
         built,
         node,
+        domains,
       );
-      if (shared) {
+      if (match) {
+        const shared = match.inbound;
+        if (match.sni !== sni) {
+          sni = match.sni;
+          built = this.buildPanelInbound({
+            config, port: shared.port, uuid, email, sni, realityKeys, tls: resolvedTls,
+          });
+          if (!built) throw new Error('Не удалось подготовить общий инбаунд');
+        }
         const clientEntry = {
           id: uuid,
           flow: config.type === 'self-sni' ? 'xtls-rprx-vision' : '',
@@ -2020,35 +2138,47 @@ export class RotationService implements OnModuleInit {
           subId: '',
           reset: 0,
         };
-        const attached =
-          config.type === 'https-fallback'
-            ? await this.xuiService.addInboundClient(
-                shared.xuiId,
-                clientEntry,
-                node,
-                (current) =>
-                  this.matchesFallbackListener(
-                    { ...built, port: shared.port },
-                    current,
-                  ),
-              )
-            : await this.xuiService.addInboundClient(
-                shared.xuiId,
-                clientEntry,
-                node,
-              );
-        if (!attached && config.type === 'https-fallback') {
-          throw new Error(
-            this.xuiService.getLastInboundError(node) ||
-              '3x-ui отклонила добавление клиента в общий HTTPS Fallback',
+        const expected = { ...built, port: shared.port };
+        // The shared listener ID is known before the write to 3x-ui. Persist
+        // ownership first so an interrupted rotation can still clean up its client.
+        staged = await this.saveStagedInbound({
+          ...stagedParams,
+          xuiId: shared.xuiId,
+          port: shared.port,
+          protocol: expected.protocol,
+          remark: expected.remark,
+          link: '',
+          clientId: uuid,
+        });
+        request.onStaged?.(staged);
+        try {
+          result = await this.xuiService.addInboundClient(
+            shared.xuiId,
+            clientEntry,
+            node,
+            (current) => {
+              if (config.type === 'https-fallback')
+                return this.matchesFallbackListener(expected, current);
+              if (config.type === 'xhttp-stable')
+                return this.matchesXhttpStableListener(expected, current, sni);
+              return current.protocol === expected.protocol && current.port === expected.port;
+            },
           );
+          if (!result) {
+            throw new Error(
+              this.xuiService.getLastInboundError(node) ||
+                '3x-ui отклонила добавление клиента в общий инбаунд',
+            );
+          }
+        } catch (error) {
+          if (!request.onStaged) await this.queueCleanup([staged]);
+          throw error;
         }
-        if (attached) {
-          result = attached;
-          attachedToShared = true;
-          diagnostic.port = attached.inbound.port;
+        attachedToShared = true;
+        diagnostic.port = result.inbound.port;
+        if (!result.verificationError) {
           this.logger.log(
-            `[RotationService] Подписка «${subscription.name}» добавлена клиентом в общий inbound ${shared.xuiId} (порт ${attached.inbound.port}, профиль «${config.name || config.type}») на ноде «${node.name}»`,
+            `[RotationService] Подписка «${subscription.name}» добавлена клиентом в общий inbound ${shared.xuiId} (порт ${result.inbound.port}, профиль «${config.name || config.type}») на ноде «${node.name}»`,
           );
         }
       }
@@ -2070,54 +2200,38 @@ export class RotationService implements OnModuleInit {
     const saved = result.inbound;
     Object.assign(diagnostic, inboundDiagnostic(saved));
     usedPorts.add(saved.port);
-    let staged: Inbound;
-    try {
-      // Persist ownership before building the link, so failures can be cleaned
-      // up by the existing durable cleanup queue.
-      staged = await this.saveStagedInbound({
-        subscription,
-        config,
-        position,
-        node,
-        relayServer,
-        generationId,
-        xuiId: result.id,
-        port: saved.port,
-        protocol: saved.protocol === 'hysteria' ? 'hysteria2' : saved.protocol,
-        remark: saved.remark,
-        link: '',
-        clientId: attachedToShared ? uuid : undefined,
-      });
-    } catch (error) {
-      const deleted = attachedToShared
-        ? await this.xuiService.deleteInboundClient(result.id, uuid, node)
-        : await this.xuiService.deleteInbound(result.id, node);
-      if (!deleted)
-        this.logger.error(
-          `Не удалось сохранить или удалить новый инбаунд ${result.id} на ноде «${node.name}»; требуется очистка на панели`,
-        );
-      throw error;
+    if (!staged) {
+      try {
+        staged = await this.saveStagedInbound({
+          ...stagedParams,
+          xuiId: result.id,
+          port: saved.port,
+          protocol: saved.protocol === 'hysteria' ? 'hysteria2' : saved.protocol,
+          remark: saved.remark,
+          link: '',
+          ownedVlessId: saved.protocol === 'vless' ? uuid : undefined,
+        });
+      } catch (error) {
+        const deleted = saved.protocol === 'vless' && hasSeparateClientApi(node)
+          ? await this.xuiService.deleteInbound(result.id, node, uuid)
+          : await this.xuiService.deleteInbound(result.id, node);
+        if (!deleted)
+          this.logger.error(
+            `Не удалось сохранить или удалить новый инбаунд ${result.id} на ноде «${node.name}»; требуется очистка на панели`,
+          );
+        throw error;
+      }
+      request.onStaged?.(staged);
     }
-    request.onStaged?.(staged);
+    staged.remark = saved.remark;
     try {
       if (result.verificationError) throw new Error(result.verificationError);
-      if (config.type === 'xhttp-stable') {
-        const expected = JSON.parse(built.streamSettings) as XuiStreamSettings;
-        const actual = JSON.parse(saved.streamSettings) as XuiStreamSettings;
-        const xhttp = expected.xhttpSettings;
-        if (
-          xhttp &&
-          (actual.network !== expected.network ||
-            actual.security !== expected.security ||
-            actual.xhttpSettings?.path !== xhttp.path ||
-            (actual.xhttpSettings?.mode || 'auto') !== xhttp.mode ||
-            actual.xhttpSettings?.host !== xhttp.host ||
-            !actual.realitySettings?.serverNames?.includes(xhttp.host || sni))
-        ) {
-          throw new Error(
-            '3x-ui не сохранила SNI, Host, Path или режим XHTTP по запрошенной конфигурации',
-          );
-        }
+      if (config.type === 'xhttp-stable' &&
+        !this.matchesXhttpStableListener({ ...built, port: saved.port }, saved, sni)
+      ) {
+        throw new Error(
+          '3x-ui не сохранила SNI, Host, Path или режим XHTTP по запрошенной конфигурации',
+        );
       }
       if (
         config.type === 'xhttp-stable' ||
@@ -2176,6 +2290,7 @@ export class RotationService implements OnModuleInit {
       if (!link)
         throw new Error(`Не удалось сформировать ссылку ${config.type}`);
       staged.link = link;
+      if (staged.clientProfileJson) staged.clientProfileJson = null;
       return await this.inboundRepo.save(staged);
     } catch (error) {
       if (!request.onStaged) await this.queueCleanup([staged]);
@@ -2318,6 +2433,9 @@ export class RotationService implements OnModuleInit {
         remark,
         link,
         clientId: request.clientId,
+        clientProfileJson: request.ownedVlessId
+          ? JSON.stringify({ uuid: request.ownedVlessId })
+          : undefined,
         configId: config.configId,
         position,
         subscription,

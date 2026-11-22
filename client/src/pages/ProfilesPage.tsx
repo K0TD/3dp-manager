@@ -619,6 +619,23 @@ export default function ProfilesPage() {
   const countProfileSubscriptions = (profile: ConnectionProfileRecord): number =>
     subscriptions.filter((sub) => isProfileInSubscription(profile, sub)).length;
 
+  const findObsoleteProfileConfig = (
+    profile: ConnectionProfileRecord,
+    sub: SubscriptionBrief,
+  ) => {
+    const matches = (sub.inboundsConfig ?? []).filter(
+      (config) =>
+        typeof config.profileId === 'string' &&
+        !profiles.some((item) => item.id === config.profileId) &&
+        config.type === profile.kind &&
+        typeof config.name === 'string' &&
+        config.name.trim() === profile.name.trim() &&
+        (config.nodeId || sub.nodeId) === profile.nodeId &&
+        Boolean(config.configId),
+    );
+    return matches.length === 1 ? matches[0] : undefined;
+  };
+
   const buildInboundFromProfile = (
     profile: ConnectionProfileRecord,
     forceRandomPort: boolean,
@@ -713,6 +730,7 @@ export default function ProfilesPage() {
     try {
       const updatedSubIds: string[] = [];
       let addedCount = 0;
+      let replacedCount = 0;
       let skippedDuplicates = 0;
       let skippedLimit = 0;
       const forceRandom =
@@ -727,9 +745,20 @@ export default function ProfilesPage() {
         ).length;
 
         const toAdd: Array<Record<string, unknown>> = [];
+        const replaced = new Map<Record<string, unknown>, Record<string, unknown>>();
         for (const profile of deployTargets) {
           if (skipExistingInSub && isProfileInSubscription(profile, sub)) {
             skippedDuplicates += 1;
+            continue;
+          }
+          const previous = findObsoleteProfileConfig(profile, sub);
+          if (previous && !replaced.has(previous)) {
+            replaced.set(previous, {
+              ...buildInboundFromProfile(profile, forceRandom),
+              configId: previous.configId,
+              relayServerId: previous.relayServerId,
+              flag: previous.flag,
+            });
             continue;
           }
           if (currentConnectionCount + toAdd.length >= 20) {
@@ -739,7 +768,7 @@ export default function ProfilesPage() {
           toAdd.push(buildInboundFromProfile(profile, forceRandom));
         }
 
-        if (toAdd.length === 0) continue;
+        if (!toAdd.length && !replaced.size) continue;
 
         await api.put(`/subscriptions/${sub.id}`, {
           name: sub.name,
@@ -749,10 +778,14 @@ export default function ProfilesPage() {
           isAutoRotationEnabled: sub.isAutoRotationEnabled ?? true,
           nodeId: sub.nodeId || undefined,
           relayServerId: sub.relayServerId || undefined,
-          inboundsConfig: [...existingConfigs, ...toAdd],
+          inboundsConfig: [
+            ...existingConfigs.map((config) => replaced.get(config) ?? config),
+            ...toAdd,
+          ],
         });
         updatedSubIds.push(sub.id);
         addedCount += toAdd.length;
+        replacedCount += replaced.size;
       }
 
       if (rotateAfterAttach && updatedSubIds.length > 0) {
@@ -768,7 +801,7 @@ export default function ProfilesPage() {
       setDeployTargets([]);
       setSelectedProfileIds([]);
 
-      if (addedCount === 0) {
+      if (!addedCount && !replacedCount) {
         setSnackbar({
           open: true,
           severity: 'info',
@@ -778,6 +811,10 @@ export default function ProfilesPage() {
               : 'Все выбранные профили уже добавлены в выбранные подписки',
         });
       } else {
+        const changes = [
+          addedCount ? `добавлено ${addedCount}` : '',
+          replacedCount ? `обновлено ${replacedCount}` : '',
+        ].filter(Boolean).join(', ');
         const extraParts: string[] = [];
         if (skippedDuplicates > 0) {
           extraParts.push(`пропущено дублей: ${skippedDuplicates}`);
@@ -789,9 +826,9 @@ export default function ProfilesPage() {
         setSnackbar({
           open: true,
           severity: 'success',
-          message: rotateAfterAttach
-            ? `Добавлено подключений: ${addedCount} в подписок: ${updatedSubIds.length}${suffix} — запущена ротация`
-            : `Добавлено подключений: ${addedCount} в подписок: ${updatedSubIds.length}${suffix}`,
+          message: `Изменено подписок: ${updatedSubIds.length} · ${changes}${suffix}${
+            rotateAfterAttach ? ' · запущена ротация' : ''
+          }`,
         });
       }
       await loadData();
@@ -1870,6 +1907,13 @@ export default function ProfilesPage() {
             ).length;
             return acc + count;
           }, 0);
+        const hasReplacements = subscriptions.some(
+          (sub) => targetSubIds.includes(sub.id) && deployTargets.some(
+            (profile) =>
+              (!skipExistingInSub || !isProfileInSubscription(profile, sub)) &&
+              findObsoleteProfileConfig(profile, sub),
+          ),
+        );
 
         return (
           <Dialog
@@ -2044,7 +2088,7 @@ export default function ProfilesPage() {
               >
                 {attaching
                   ? 'Применение…'
-                  : `Добавить (${plannedAdditions})`}
+                  : `${hasReplacements ? 'Применить' : 'Добавить'} (${plannedAdditions})`}
               </Button>
             </DialogActions>
           </Dialog>

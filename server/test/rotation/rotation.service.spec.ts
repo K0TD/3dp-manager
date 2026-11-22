@@ -1503,6 +1503,77 @@ describe('RotationService resilient generations', () => {
       xrayVersion: '26.7.11',
     } as Node;
 
+    it('shares the established SNI for a fixed-port XHTTP profile with automatic SNI', async () => {
+      const config = {
+        type: 'xhttp-stable',
+        port: 12443,
+        sni: 'random',
+        profileId: 'stable-profile',
+        profileSettings: { mode: 'auto' },
+      };
+      const existing = {
+        xuiId: 10,
+        port: 12443,
+        configId: 'owner-config',
+        profileId: config.profileId,
+        subscription: { inboundsConfig: [{ ...config, configId: 'owner-config' }] },
+        clientProfileJson: JSON.stringify({
+          sni: 'www.samsung.com',
+          fingerprint: 'android',
+          spiderX: '/assets/',
+          xhttp: { host: 'www.samsung.com', path: '/sec/assets/', mode: 'auto' },
+        }),
+      };
+      inboundRepo.find.mockResolvedValueOnce([existing]);
+      const selected = await (service as any).findSharedManagedInbound(
+        config, node.id, 'other.example.com', {}, node,
+        [{ name: 'www.samsung.com', isEnabled: true }],
+      );
+      expect(selected).toEqual({ inbound: existing, sni: 'www.samsung.com' });
+    });
+
+    it('retires the stale entry only after activating its unique replacement', async () => {
+      const config = {
+        configId: 'old-config',
+        profileId: 'old-profile',
+        name: 'Stable',
+        type: 'xhttp-stable',
+        port: 'random',
+        sni: 'random',
+        nodeId: node.id,
+      };
+      const replacement = { ...config, configId: 'replacement', profileId: 'new-profile', port: '12443' };
+      const previous = {
+        id: 700, configId: config.configId, nodeId: node.id, protocol: 'vless',
+        status: InboundStatus.Active,
+      };
+      const subscription = {
+        id: 'sub-xhttp', name: 'SubXhttp',
+        inboundsConfig: [config, replacement],
+        inbounds: [previous],
+      } as Subscription;
+      xuiService.assertXrayHealthy.mockResolvedValue(undefined);
+      xuiService.getNewX25519Cert.mockResolvedValue({ privateKey: 'private', publicKey: 'public' });
+      const group = { node, configs: subscription.inboundsConfig.map((entry, position) => ({ config: entry, position })) };
+      const create = jest.spyOn(service as any, 'createInbound');
+      manager.existsBy.mockResolvedValueOnce(false);
+      create.mockResolvedValueOnce(null);
+      const failed = await (service as any).rotateNodeGroup(subscription, node.id, group, []);
+      expect(failed.inboundResults[0].status).toBe('preserved');
+      expect(manager.transaction).not.toHaveBeenCalled();
+      expect(subscription.inboundsConfig).toEqual([config, replacement]);
+
+      manager.existsBy.mockResolvedValueOnce(false);
+      create.mockResolvedValueOnce({ id: 501, port: 12443, xuiId: 10 });
+      const activated = await (service as any).rotateNodeGroup(subscription, node.id, group, []);
+      expect(activated.inboundResults.map((item) => item.status))
+        .toEqual(['superseded', 'activated']);
+      expect(manager.update).toHaveBeenCalledWith(Inbound, { id: In([previous.id]) },
+        expect.objectContaining({ status: InboundStatus.PendingCleanup }));
+      expect(manager.update).toHaveBeenCalledWith(Subscription,
+        { id: subscription.id }, { inboundsConfig: [replacement] });
+    });
+
     it('queues cleanup without saving a rejected profile reference again', async () => {
       const config = {
         configId: '33333333-3333-4333-8333-333333333333',
@@ -2324,7 +2395,7 @@ describe('RotationService resilient generations', () => {
       // Working generation was NEVER deactivated
       expect(inboundRepo.manager.transaction).not.toHaveBeenCalled();
       // Staged panel inbound was immediately rolled back
-      expect(xuiService.deleteInbound).toHaveBeenCalledWith(99, node);
+      expect(xuiService.deleteInbound).toHaveBeenCalledWith(99, node, 'u-can');
 
       // 2) Canary probe SUCCEEDS -> generation switches cleanly
       mockClientProbe.probeClientProfile.mockResolvedValueOnce({
@@ -2864,6 +2935,10 @@ describe('RotationService resilient generations', () => {
           flow: 'xtls-rprx-vision',
         }),
         node,
+        expect.any(Function),
+      );
+      expect(inboundRepo.save.mock.invocationCallOrder[0]).toBeLessThan(
+        (xuiService as Record<string, jest.Mock>).addInboundClient.mock.invocationCallOrder[0],
       );
       expect(inboundBuilder.buildSelfSniClientBundle).toHaveBeenCalledWith(
         expect.objectContaining({ id: 82 }),

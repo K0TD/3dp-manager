@@ -467,6 +467,92 @@ describe('3x-ui API contracts', () => {
     expect(api.post).toHaveBeenCalledTimes(1);
   });
 
+  it('uses the separate client API and verifies membership of the requested inbound', async () => {
+    const node = { ...tokenNode, version: '3.11.0-awg.2' };
+    const client = { id: '11111111-2222-4333-8444-555555555555', email: 'User-11111111', enable: true };
+    const updated = {
+      ...inbound,
+      settings: { ...inbound.settings, clients: [...inbound.settings.clients, client] },
+    };
+    api.get
+      .mockResolvedValueOnce({ data: { success: true, obj: inbound } })
+      .mockResolvedValueOnce({ data: { success: true, obj: updated } });
+    await expect(service.addInboundClient(42, client, node)).resolves.toMatchObject({
+      id: 42,
+      inbound: { settings: JSON.stringify(updated.settings) },
+    });
+    expect(api.post).toHaveBeenCalledTimes(1);
+    expect(api.post).toHaveBeenCalledWith('/panel/api/clients/add', {
+      client, inboundIds: [42],
+    });
+
+    await expect(service.addInboundClient(42, client, node)).resolves.toMatchObject({
+      id: 42,
+      verificationError: '3x-ui не подтвердила привязку клиента к общему inbound 42',
+    });
+    expect(api.post).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { inboundIds: [], externalLinks: [], expected: 'delete' },
+    { inboundIds: [42], externalLinks: [], expected: 'delete' },
+    { inboundIds: [42, 56], externalLinks: [], expected: 'detach' },
+    { inboundIds: [42], externalLinks: [{}], expected: 'detach' },
+  ])('cleans up exactly the owned client when attachment data is %j', async ({
+    inboundIds, externalLinks, expected,
+  }) => {
+    const node = { ...tokenNode, version: '3.11.0-awg.2' };
+    const uuid = '11111111-2222-4333-8444-555555555555';
+    const email = 'User-11111111';
+    api.get
+      .mockResolvedValueOnce({ data: { success: true, obj: inbound } })
+      .mockResolvedValueOnce({ data: { success: true, obj: [{ uuid, email }] } })
+      .mockResolvedValueOnce({
+        data: { success: true, obj: { client: { uuid, email }, inboundIds, externalLinks } },
+      });
+    await expect(service.deleteInboundClient(42, uuid, node)).resolves.toBe(true);
+    expect(api.post).toHaveBeenCalledTimes(1);
+    if (expected === 'delete') {
+      expect(api.post).toHaveBeenCalledWith(`/panel/api/clients/del/${email}`);
+    } else {
+      expect(api.post).toHaveBeenCalledWith(`/panel/api/clients/${email}/detach`, {
+        inboundIds: [42],
+      });
+    }
+  });
+
+  it('preserves an inbound when its ID has been reused for a different client', async () => {
+    const node = { ...tokenNode, version: '3.11.0-awg.2' };
+    api.get
+      .mockResolvedValueOnce({ data: { success: true, obj: inbound } })
+      .mockResolvedValueOnce({ data: { success: true, obj: inbound } })
+      .mockResolvedValueOnce({ data: { success: true, obj: [] } });
+    await expect(service.deleteInbound(42, node, 'old-client')).resolves.toBe(true);
+    expect(api.post).not.toHaveBeenCalled();
+  });
+
+  it('cleans up the known client after deleting a newly created VLESS inbound', async () => {
+    const node = { ...tokenNode, version: '3.11.0-awg.2' };
+    const uuid = '11111111-2222-4333-8444-555555555555';
+    const email = 'User-11111111';
+    const saved = {
+      ...inbound,
+      settings: { ...inbound.settings, clients: [{ id: uuid, email }] },
+    };
+    api.get
+      .mockResolvedValueOnce({ data: { success: true, obj: saved } })
+      .mockResolvedValueOnce({
+        data: {
+          success: true, obj: { client: { uuid, email }, inboundIds: [], externalLinks: [] },
+        },
+      });
+    await expect(service.deleteInbound(42, node, uuid)).resolves.toBe(true);
+    expect(api.post.mock.calls.map(([path]) => path)).toEqual([
+      '/panel/api/inbounds/del/42', `/panel/api/clients/del/${email}`,
+    ]);
+    expect(api.get).not.toHaveBeenCalledWith('/panel/api/clients/list');
+  });
+
   it('does not silently change a port or retry a network failure', async () => {
     const config = normalizeInbound(inbound);
     api.post.mockRejectedValue({ message: 'timeout' });

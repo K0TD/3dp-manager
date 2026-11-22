@@ -204,6 +204,7 @@ export class AutomationService {
         status: result.status,
         created: result.created,
         pendingCleanup: result.pendingCleanup,
+        rolledBack: result.rolledBack,
         error: errorSummary(result.errorDetails, result.message),
         canary: result.inboundResults?.length
           ? undefined

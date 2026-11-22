@@ -258,7 +258,7 @@ describe('DashboardPage', () => {
 
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
     expect(
-      screen.getByText('Автооткат · рабочее поколение сохранено'),
+      screen.getByText('Откат неудачных подключений'),
     ).toBeInTheDocument();
     expect(screen.getByText('Сохранено постоянных: 1')).toBeInTheDocument();
     expect(screen.getByText('Canary-проверки подключения')).toBeInTheDocument();

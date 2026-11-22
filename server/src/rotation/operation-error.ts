@@ -141,6 +141,10 @@ export function normalizeOperationError(
     code = 'AMBIGUOUS_CONFIG';
     title = 'Не удалось определить предыдущий инбаунд';
     hint = 'Проверьте связь конфигурации с действующим инбаундом.';
+  } else if (/3x-ui не подтвердила привязку клиента/i.test(raw)) {
+    code = 'SHARED_CLIENT_NOT_ATTACHED';
+    title = '3x-ui не подтвердила привязку клиента';
+    hint = 'Проверьте ответ API клиентов на ноде 3x-ui и повторите ротацию подключения.';
   } else if (/не предоставила сертификат|TLS-конфигурация/i.test(raw)) {
     code = 'TLS_CERTIFICATE_UNAVAILABLE';
     title = 'Сертификат ноды недоступен';

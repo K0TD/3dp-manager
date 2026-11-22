@@ -272,6 +272,46 @@ describe('ProfilesPage', () => {
     });
   });
 
+  it('updates an obsolete reference in place when attaching its replacement', async () => {
+    const originalGet = vi.mocked(api.get).getMockImplementation()!;
+    vi.mocked(api.get).mockImplementation((url: string) =>
+      url === '/subscriptions'
+        ? Promise.resolve({
+            data: [{
+              id: 'sub-1',
+              name: 'Main Sub',
+              inboundsConfig: [{
+                configId: 'kept-config',
+                profileId: 'obsolete-profile',
+                type: 'self-sni',
+                name: 'SelfSNI Main',
+                nodeId: 'node-1',
+                port: 'random',
+              }],
+            }],
+          })
+        : originalGet(url),
+    );
+    vi.mocked(api.put).mockResolvedValue({ data: {} });
+    vi.mocked(api.post).mockResolvedValue({ data: { id: 'op-1' } });
+    render(
+      <ThemeProvider>
+        <ProfilesPage />
+      </ThemeProvider>,
+    );
+
+    fireEvent.click((await screen.findAllByRole('button', { name: /В подписки$/ }))[0]);
+    fireEvent.click(await screen.findByRole('button', { name: 'Применить (1)' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith(
+      '/subscriptions/sub-1',
+      expect.objectContaining({
+        inboundsConfig: [expect.objectContaining({
+          configId: 'kept-config', profileId: 'prof-1', port: 443,
+        })],
+      }),
+    ));
+  });
+
   it('shows dedicated "Nginx и инструкция" button on Self-SNI card and opens directly on the Nginx tab', async () => {
     vi.mocked(api.post).mockResolvedValue({
       data: {

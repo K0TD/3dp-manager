@@ -26,7 +26,7 @@ export interface RotationConfigResult {
   configId?: string;
   type?: string;
   name?: string;
-  status: 'activated' | 'unchanged' | 'preserved' | 'failed';
+  status: 'activated' | 'unchanged' | 'superseded' | 'preserved' | 'failed';
   previousActive: boolean;
   port?: number;
   cleanupQueued?: boolean;

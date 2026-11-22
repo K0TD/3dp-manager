@@ -110,7 +110,7 @@ interface OperationResult {
     port?: number;
     xuiId?: number;
     cleanupQueued?: boolean;
-    status: 'activated' | 'unchanged' | 'preserved' | 'failed';
+    status: 'activated' | 'unchanged' | 'superseded' | 'preserved' | 'failed';
     error?: OperationErrorDetails;
     conflict?: { xuiId?: number; listen?: string; subscriptionId?: string };
     canary?: CanaryProbeResult & { stage?: string; tcpReachable?: boolean; sni?: string; host?: string; path?: string; mode?: string };
@@ -843,7 +843,7 @@ export default function DashboardPage() {
                       <Chip
                         size="small"
                         color="warning"
-                        label="Автооткат · рабочее поколение сохранено"
+                        label="Откат неудачных подключений"
                       />
                     )}
                     {typeof result.preserved === 'number' &&
@@ -863,6 +863,7 @@ export default function DashboardPage() {
                           <Typography variant="body2" fontWeight={600}>
                             {item.name || item.type}{item.port ? ` · ${item.port}` : ''} · {{
                               activated: 'Обновлён', unchanged: 'Оставлен без изменений',
+                              superseded: 'Заменён действующим профилем',
                               preserved: 'Старое подключение сохранено', failed: 'Создание не удалось',
                             }[item.status]}
                           </Typography>
