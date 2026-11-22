@@ -1021,7 +1021,7 @@ export default function DashboardPage() {
           <Button
             onClick={() => selectedOperation && void copyDiagnostics(selectedOperation.id)}
           >
-            Копировать диагностику для ИИ
+            Копировать диагностику
           </Button>
           <Button onClick={() => setSelectedOperation(null)}>Закрыть</Button>
         </DialogActions>

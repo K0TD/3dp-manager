@@ -207,7 +207,7 @@ describe('DashboardPage', () => {
 
     renderPage()
     fireEvent.click(await screen.findByText('Подробности операции'))
-    fireEvent.click(screen.getByRole('button', { name: 'Копировать диагностику для ИИ' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Копировать диагностику' }))
     await waitFor(() => {
       expect(copyToClipboard).toHaveBeenCalledWith(JSON.stringify(report, null, 2))
     })
