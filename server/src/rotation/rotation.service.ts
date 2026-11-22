@@ -736,7 +736,37 @@ export class RotationService implements OnModuleInit {
   ): Promise<RotationNodeResult> {
     const generationId = uuidv4();
     const created: Inbound[] = [];
+    const preservedManaged: Array<{ inbound: Inbound; position: number }> = [];
+    const preservedIds = new Set<number>();
     const usedPorts = new Set<number>();
+    for (const existing of subscription.inbounds || []) {
+      if (
+        existing.status === InboundStatus.Active &&
+        existing.port > 0 &&
+        (key === '__custom'
+          ? existing.protocol === 'custom'
+          : existing.nodeId === group.node?.id)
+      ) {
+        usedPorts.add(existing.port);
+      }
+    }
+    for (const { config } of group.configs) {
+      const fixedPort = this.parseFixedPort(config.port);
+      if (fixedPort !== null) usedPorts.add(fixedPort);
+      if (
+        config.type === 'self-sni' &&
+        (config.profileSettings?.webServer ?? 'nginx') !== 'none'
+      ) {
+        usedPorts.add(config.profileSettings?.localHttpsPort ?? 8443);
+      }
+      if (
+        config.type === 'https-fallback' &&
+        (config.profileSettings?.reverseProxy === 'nginx' ||
+          config.profileSettings?.reverseProxy === 'caddy')
+      ) {
+        usedPorts.add(config.profileSettings?.publicPort ?? 443);
+      }
+    }
     const diagnostics: RotationInboundDiagnostic[] = [];
     let phase = 'Проверка ноды и TLS';
     let stage: OperationErrorStage = 'preflight';
@@ -782,7 +812,21 @@ export class RotationService implements OnModuleInit {
       }> = [];
 
       for (const positionedConfig of group.configs) {
-        const { config } = positionedConfig;
+        const { config, position } = positionedConfig;
+        const preservable = this.findPreservableManagedInbound(
+          config,
+          subscription,
+          group.node?.id,
+        );
+        if (preservable) {
+          preservedManaged.push({ inbound: preservable, position });
+          preservedIds.add(preservable.id);
+          if (preservable.port > 0) usedPorts.add(preservable.port);
+          this.logger.log(
+            `[RotationService] Постоянный профиль «${config.name || config.type}» (порт ${preservable.port}) сохранён без пересоздания для исключения конфликта портов`,
+          );
+          continue;
+        }
         phase = `Создание ${config.name || config.type}`;
         stage = 'create';
         diagnosticStart = diagnostics.length;
@@ -852,7 +896,7 @@ export class RotationService implements OnModuleInit {
         throw new Error(summary);
       }
 
-      if (!created.length) {
+      if (!created.length && !preservedManaged.length) {
         const failureDetails = rejectedInbounds.length
           ? rejectedInbounds
               .map((item) => `${item.type} (${item.reason})`)
@@ -868,6 +912,7 @@ export class RotationService implements OnModuleInit {
       failedConfig = undefined;
       failedPort = undefined;
       if (
+        created.length > 0 &&
         group.node &&
         group.configs.some(
           ({ config }) =>
@@ -910,6 +955,7 @@ export class RotationService implements OnModuleInit {
       const old = (subscription.inbounds || []).filter((inbound) => {
         if (PERSISTENT_INBOUND_TYPES.has(inbound.protocol)) return false;
         if (inbound.status !== InboundStatus.Active) return false;
+        if (preservedIds.has(inbound.id)) return false;
         return key === '__custom'
           ? inbound.protocol === 'custom'
           : inbound.nodeId === group.node?.id;
@@ -922,6 +968,15 @@ export class RotationService implements OnModuleInit {
             { status: InboundStatus.PendingCleanup, nextCleanupAt: new Date() },
           );
         }
+        for (const item of preservedManaged) {
+          if (item.inbound.position !== item.position) {
+            await manager.update(
+              Inbound,
+              { id: item.inbound.id },
+              { position: item.position },
+            );
+          }
+        }
         if (created.length) {
           await manager.update(
             Inbound,
@@ -931,7 +986,7 @@ export class RotationService implements OnModuleInit {
         }
       });
       this.logger.log(
-        `[RotationService] Успешно создано ${created.length} инбаундов для подписки «${subscription.name}» на ноде «${nodeLabel}» (устаревших: ${old.length})`,
+        `[RotationService] Успешно создано ${created.length} инбаундов для подписки «${subscription.name}» на ноде «${nodeLabel}» (сохранено постоянных: ${preservedManaged.length}, устаревших: ${old.length})`,
       );
       return {
         subscriptionId: subscription.id,
@@ -940,6 +995,9 @@ export class RotationService implements OnModuleInit {
         nodeName: group.node?.name || 'Локальные ссылки',
         status: 'succeeded',
         created: created.length,
+        ...(preservedManaged.length > 0
+          ? { preserved: preservedManaged.length }
+          : {}),
         pendingCleanup: old.length,
         ...(canaryResults.length ? { canaryResults } : {}),
       };
@@ -1065,6 +1123,7 @@ export class RotationService implements OnModuleInit {
     node?: Node,
   ): Promise<XuiCertificateFiles | undefined> {
     const configs = positionedConfigs.map(({ config }) => config);
+    this.assertNoGroupPortCollisions(configs, node?.name);
     for (const config of configs) this.assertNodeCompatibility(config, node);
     if (node) await this.xuiService.assertXrayHealthy(node);
 
@@ -1096,6 +1155,157 @@ export class RotationService implements OnModuleInit {
       }
     }
     return certificate;
+  }
+
+  private parseFixedPort(port?: number | string): number | null {
+    if (
+      port === undefined ||
+      port === null ||
+      port === '' ||
+      port === 'random'
+    ) {
+      return null;
+    }
+    const num = Number(port);
+    return Number.isInteger(num) && num >= 1 && num <= 65535 ? num : null;
+  }
+
+  private assertNoGroupPortCollisions(
+    configs: InboundConfig[],
+    nodeName?: string,
+  ) {
+    const fixedPorts = new Map<number, string>();
+    const reservedLocalPorts = new Map<number, string>();
+
+    for (const config of configs) {
+      if (config.type === 'custom') continue;
+      const label = config.name?.trim() || config.type;
+      if (
+        config.type === 'self-sni' &&
+        (config.profileSettings?.webServer ?? 'nginx') !== 'none'
+      ) {
+        const localPort = config.profileSettings?.localHttpsPort ?? 8443;
+        reservedLocalPorts.set(
+          localPort,
+          `локальным HTTPS-портом веб-сервера Self-SNI «${label}»`,
+        );
+      }
+      if (
+        config.type === 'https-fallback' &&
+        (config.profileSettings?.reverseProxy === 'nginx' ||
+          config.profileSettings?.reverseProxy === 'caddy')
+      ) {
+        const publicPort = config.profileSettings?.publicPort ?? 443;
+        reservedLocalPorts.set(
+          publicPort,
+          `публичным портом reverse proxy HTTPS Fallback «${label}»`,
+        );
+      }
+    }
+
+    for (const config of configs) {
+      if (config.type === 'custom') continue;
+      const port = this.parseFixedPort(config.port);
+      if (port === null) continue;
+      const label = config.name?.trim() || config.type;
+      const owner = fixedPorts.get(port);
+      if (owner) {
+        throw new Error(
+          `Конфликт порта ${port} на ноде «${nodeName || 'node'}»: порт указан сразу для «${owner}» и «${label}»`,
+        );
+      }
+      fixedPorts.set(port, label);
+
+      const reservedReason = reservedLocalPorts.get(port);
+      if (reservedReason) {
+        throw new Error(
+          `Конфликт порта ${port} на ноде «${nodeName || 'node'}» для «${label}»: пересечение с ${reservedReason}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Preserves an already active managed profile inbound when rotating a node group
+   * if its rotation policy is `preserve_all` OR it binds a fixed numeric port
+   * (e.g. 443) with non-standard rotation policy and its key parameters are unchanged.
+   * This avoids self-inflicted port collisions in 3x-ui during routine rotation.
+   */
+  private findPreservableManagedInbound(
+    config: InboundConfig,
+    subscription: Subscription,
+    nodeId?: string,
+  ): Inbound | null {
+    if (!isManagedProfileKind(config.type) || !config.configId || !nodeId) {
+      return null;
+    }
+    const rotationPolicy =
+      config.profileSettings?.rotationPolicy || 'fixed_domain';
+    if (rotationPolicy === 'standard') return null;
+
+    const fixedPort = this.parseFixedPort(config.port);
+    if (rotationPolicy !== 'preserve_all' && fixedPort === null) {
+      return null;
+    }
+
+    const active = (subscription.inbounds || []).find(
+      (inbound) =>
+        inbound.status === InboundStatus.Active &&
+        inbound.configId === config.configId &&
+        inbound.nodeId === nodeId &&
+        inbound.profileKind === config.type &&
+        inbound.port > 0 &&
+        Boolean(inbound.clientProfileJson),
+    );
+    if (!active || !active.clientProfileJson) return null;
+    if (fixedPort !== null && active.port !== fixedPort) return null;
+
+    let parsed: SeparatedClientProfile;
+    try {
+      parsed = JSON.parse(active.clientProfileJson) as SeparatedClientProfile;
+    } catch {
+      return null;
+    }
+    if (parsed.kind !== config.type) return null;
+
+    const desiredDomain =
+      config.profileSettings?.domain?.trim().toLowerCase() ||
+      config.tlsServerName?.trim().toLowerCase() ||
+      (config.sni && config.sni.trim() !== 'random'
+        ? config.sni.trim().toLowerCase()
+        : '');
+    if (desiredDomain && parsed.sni?.trim().toLowerCase() !== desiredDomain) {
+      return null;
+    }
+
+    const desiredFp = config.profileSettings?.fingerprint?.trim();
+    if (desiredFp && parsed.fingerprint !== desiredFp) {
+      return null;
+    }
+
+    if (config.type === 'xhttp-stable' || config.type === 'https-fallback') {
+      const desiredPath = (
+        config.profileSettings?.path?.trim() ||
+        (config.type === 'https-fallback' ? '/api/v2/stream' : '/')
+      ).replace(/^(?!\/)/, '/');
+      if (parsed.xhttp?.path && parsed.xhttp.path !== desiredPath) {
+        return null;
+      }
+      const desiredMode = config.profileSettings?.mode || 'auto';
+      if (parsed.xhttp?.mode && parsed.xhttp.mode !== desiredMode) {
+        return null;
+      }
+      if (config.type === 'https-fallback') {
+        const proxy = config.profileSettings?.reverseProxy ?? 'none';
+        const expectedClientPort =
+          proxy === 'nginx' || proxy === 'caddy'
+            ? (config.profileSettings?.publicPort ?? 443)
+            : active.port;
+        if (parsed.port !== expectedClientPort) return null;
+      }
+    }
+
+    return active;
   }
 
   private assertNodeCompatibility(config: InboundConfig, node?: Node) {

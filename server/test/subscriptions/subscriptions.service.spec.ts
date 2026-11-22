@@ -862,5 +862,62 @@ describe('SubscriptionsService', () => {
       expect(updated?.inboundsConfig[0].certificateFile).toBeUndefined();
       expect(updated?.inboundsConfig[0].keyFile).toBeUndefined();
     });
+
+    it('rejects duplicate fixed ports and Self-SNI localHttpsPort collisions on the same node', async () => {
+      mockNodeRepo.findOne.mockResolvedValue({
+        id: 'node-1',
+        name: 'EU-1',
+        version: '3.8.5',
+        xrayVersion: '26.7.11',
+      } as Node);
+
+      await expect(
+        service.create({
+          name: 'Port Conflict Sub',
+          inboundsConfig: [
+            {
+              type: 'self-sni',
+              port: 443,
+              nodeId: 'node-1',
+              profileSettings: {
+                domain: 'portal.example.com',
+                webServer: 'nginx',
+                localHttpsPort: 8443,
+              },
+            },
+            {
+              type: 'xhttp-stable',
+              port: 443,
+              sni: 'www.microsoft.com',
+              nodeId: 'node-1',
+            },
+          ],
+        }),
+      ).rejects.toThrow(/Конфликт порта 443/);
+
+      await expect(
+        service.create({
+          name: 'Local HTTPS Port Conflict Sub',
+          inboundsConfig: [
+            {
+              type: 'self-sni',
+              port: 443,
+              nodeId: 'node-1',
+              profileSettings: {
+                domain: 'portal.example.com',
+                webServer: 'nginx',
+                localHttpsPort: 8443,
+              },
+            },
+            {
+              type: 'xhttp-stable',
+              port: 8443,
+              sni: 'www.microsoft.com',
+              nodeId: 'node-1',
+            },
+          ],
+        }),
+      ).rejects.toThrow(/Конфликт порта 8443/);
+    });
   });
 });

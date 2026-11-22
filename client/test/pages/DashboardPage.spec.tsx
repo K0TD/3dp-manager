@@ -186,4 +186,56 @@ describe('DashboardPage', () => {
     expect(screen.getByText('Old node failure reason')).toBeInTheDocument();
     expect(screen.queryByText('Технические детали')).not.toBeInTheDocument();
   });
+
+  it('displays canaryResults, auto-rollback chip, and preserved count in operation details', async () => {
+    mockGet.mockImplementation((url: string) => {
+      const responses: Record<string, unknown> = {
+        '/nodes': [],
+        '/subscriptions/count': { count: 1 },
+        '/rotation/operations': [
+          {
+            id: 'op-canary',
+            status: 'partial',
+            createdAt: new Date().toISOString(),
+            results: [
+              {
+                subscriptionName: 'Prod',
+                nodeName: 'EU-1',
+                status: 'preserved',
+                preserved: 1,
+                rolledBack: true,
+                canaryResults: [
+                  {
+                    success: false,
+                    engine: 'xray-core',
+                    targetAddress: 'eu.example.com',
+                    targetPort: 443,
+                    profileKind: 'xhttp-stable',
+                    latencyMs: 320,
+                    error: 'SOCKS5 handshake timeout',
+                  },
+                ],
+                message: 'Canary-проверка не пройдена',
+              },
+            ],
+          },
+        ],
+        '/rotation/cleanup': [],
+      };
+      return Promise.resolve({ data: responses[url] });
+    });
+
+    renderPage();
+
+    const detailsBtn = await screen.findByText('Подробности операции');
+    fireEvent.click(detailsBtn);
+
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(
+      screen.getByText('Автооткат · рабочее поколение сохранено'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Сохранено постоянных: 1')).toBeInTheDocument();
+    expect(screen.getByText('Canary-проверки подключения')).toBeInTheDocument();
+    expect(screen.getByText(/SOCKS5 handshake timeout/)).toBeInTheDocument();
+  });
 })

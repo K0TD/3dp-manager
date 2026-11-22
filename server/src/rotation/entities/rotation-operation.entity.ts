@@ -29,6 +29,7 @@ export interface RotationNodeResult {
   nodeName: string;
   status: 'succeeded' | 'preserved' | 'failed';
   created: number;
+  preserved?: number;
   pendingCleanup: number;
   rolledBack?: boolean;
   canaryResults?: ClientConnectionProbeResult[];

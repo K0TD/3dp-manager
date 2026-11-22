@@ -69,11 +69,27 @@ interface CleanupItem {
   node?: { name?: string; host?: string; healthStatus?: string };
 }
 
+interface CanaryProbeResult {
+  success: boolean;
+  engine: string;
+  targetAddress: string;
+  targetPort: number;
+  profileKind?: string;
+  httpStatusCode?: number;
+  latencyMs: number;
+  fallbackReason?: string;
+  error?: string;
+}
+
 interface OperationResult {
   subscriptionId?: string;
   subscriptionName?: string;
   nodeName: string;
   status: 'succeeded' | 'preserved' | 'failed';
+  created?: number;
+  preserved?: number;
+  rolledBack?: boolean;
+  canaryResults?: CanaryProbeResult[];
   message?: string;
   errorDetails?: OperationErrorDetails | null;
   details?: {
@@ -749,14 +765,59 @@ export default function DashboardPage() {
                   key={index}
                   sx={{ p: 2, minWidth: 0 }}
                 >
-                  <Typography fontWeight={700}>
-                    {result.subscriptionName || 'Подписка не указана'} ·{' '}
-                    {result.nodeName}
-                  </Typography>
+                  <Stack
+                    direction="row"
+                    spacing={1}
+                    alignItems="center"
+                    flexWrap="wrap"
+                    useFlexGap
+                  >
+                    <Typography fontWeight={700}>
+                      {result.subscriptionName || 'Подписка не указана'} ·{' '}
+                      {result.nodeName}
+                    </Typography>
+                    {result.rolledBack && (
+                      <Chip
+                        size="small"
+                        color="warning"
+                        label="Автооткат · рабочее поколение сохранено"
+                      />
+                    )}
+                    {typeof result.preserved === 'number' &&
+                      result.preserved > 0 && (
+                        <Chip
+                          size="small"
+                          color="info"
+                          variant="outlined"
+                          label={`Сохранено постоянных: ${result.preserved}`}
+                        />
+                      )}
+                  </Stack>
                   {result.subscriptionId && (
                     <Typography variant="caption" color="text.secondary">
                       ID подписки: {result.subscriptionId}
                     </Typography>
+                  )}
+                  {result.canaryResults && result.canaryResults.length > 0 && (
+                    <Stack spacing={0.75} sx={{ mt: 1 }}>
+                      <Typography variant="caption" color="text.secondary">
+                        Canary-проверки подключения
+                      </Typography>
+                      {result.canaryResults.map((probe, probeIdx) => (
+                        <Alert
+                          key={probeIdx}
+                          severity={probe.success ? 'success' : 'error'}
+                          sx={{ py: 0.25 }}
+                        >
+                          <strong>
+                            {probe.profileKind || 'profile'} ({probe.engine}):
+                          </strong>{' '}
+                          {probe.success
+                            ? `OK · ${probe.targetAddress}:${probe.targetPort} · ${probe.latencyMs} мс${probe.httpStatusCode ? ` · HTTP ${probe.httpStatusCode}` : ''}`
+                            : probe.error || 'соединение не установлено'}
+                        </Alert>
+                      ))}
+                    </Stack>
                   )}
                   {result.details && (
                     <Typography variant="body2" sx={{ mt: 1 }}>

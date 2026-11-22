@@ -11,7 +11,7 @@ import {
   useMediaQuery,
   useTheme,
 } from '@mui/material';
-import { Dashboard, Dns, Hub, People, Settings, SwapHoriz } from '@mui/icons-material';
+import { Dashboard, Dns, Hub, People, Settings, SwapHoriz, Tune } from '@mui/icons-material';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useState } from 'react';
 
@@ -25,6 +25,7 @@ const drawerWidth = 240;
 const menuItems = [
   { text: 'Обзор', icon: <Dashboard />, path: '/' },
   { text: 'Подписки', icon: <People />, path: '/subscriptions' },
+  { text: 'Профили', icon: <Tune />, path: '/profiles' },
   { text: 'Ноды', icon: <Hub />, path: '/nodes' },
   { text: 'Relay серверы', icon: <SwapHoriz />, path: '/tunnels' },
   { text: 'Домены', icon: <Dns />, path: '/domains' },

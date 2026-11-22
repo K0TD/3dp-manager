@@ -2294,5 +2294,203 @@ describe('RotationService resilient generations', () => {
       });
       expect(inboundRepo.manager.transaction).toHaveBeenCalledTimes(1);
     });
+
+    it('preserves unchanged fixed-port managed profile (self-sni :443) without port collision while rotating sibling inbounds', async () => {
+      const selfSniConfigId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      const tcpConfigId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+      const sub = {
+        id: 'sub-mixed-fixed',
+        name: 'SubMixedFixed',
+        isEnabled: true,
+        isAutoRotationEnabled: true,
+        inboundsConfig: [
+          {
+            configId: selfSniConfigId,
+            type: 'self-sni',
+            port: 443,
+            sni: 'portal.example.com',
+            nodeId: node.id,
+            name: 'SelfSNI 443',
+            profileSettings: {
+              domain: 'portal.example.com',
+              webServer: 'nginx',
+              localHttpsPort: 8443,
+              fingerprint: 'chrome',
+              xver: 0,
+              rotationPolicy: 'fixed_domain',
+            },
+          },
+          {
+            configId: tcpConfigId,
+            type: 'vless-tcp-reality',
+            port: 'random',
+            sni: 'www.microsoft.com',
+            nodeId: node.id,
+            name: 'Rotating TCP',
+          },
+        ],
+        inbounds: [
+          {
+            id: 1001,
+            xuiId: 101,
+            configId: selfSniConfigId,
+            nodeId: node.id,
+            port: 443,
+            position: 0,
+            protocol: 'vless',
+            profileKind: 'self-sni',
+            status: InboundStatus.Active,
+            clientProfileJson: JSON.stringify({
+              kind: 'self-sni',
+              protocol: 'vless',
+              address: 'portal.example.com',
+              port: 443,
+              uuid: 'u-existing',
+              remark: 'SelfSNI 443',
+              flow: 'xtls-rprx-vision',
+              network: 'tcp',
+              security: 'reality',
+              sni: 'portal.example.com',
+              fingerprint: 'chrome',
+            }),
+          } as Inbound,
+          {
+            id: 1002,
+            xuiId: 102,
+            configId: tcpConfigId,
+            nodeId: node.id,
+            port: 31234,
+            position: 1,
+            protocol: 'vless',
+            status: InboundStatus.Active,
+          } as Inbound,
+        ],
+      } as Subscription;
+
+      xuiService.assertXrayHealthy.mockResolvedValue(undefined);
+      xuiService.getNewX25519Cert.mockResolvedValue({
+        privateKey: 'TCP_PRIV',
+        publicKey: 'TCP_PUB',
+      });
+      const builtTcp = {
+        enable: true,
+        port: 45123,
+        protocol: 'vless',
+        remark: 'Rotating TCP',
+        settings: JSON.stringify({ clients: [{ id: 'u-new' }] }),
+        streamSettings: JSON.stringify({ network: 'tcp', security: 'reality' }),
+      };
+      inboundBuilder.buildVlessRealityTcp.mockReturnValue(builtTcp);
+      xuiService.addInbound.mockResolvedValue({
+        id: 103,
+        inbound: { ...builtTcp, id: 103 },
+      });
+      inboundBuilder.buildInboundLink.mockReturnValue(
+        'vless://u-new@eu.example.com:45123#Rotating',
+      );
+
+      const result = await (
+        service as unknown as {
+          rotateNodeGroup: (
+            s: Subscription,
+            k: string,
+            g: {
+              node?: Node;
+              configs: Array<{ config: unknown; position: number }>;
+            },
+            d: Domain[],
+          ) => Promise<{
+            status: string;
+            created: number;
+            preserved?: number;
+            pendingCleanup: number;
+          }>;
+        }
+      ).rotateNodeGroup(
+        sub,
+        node.id,
+        {
+          node,
+          configs: [
+            { config: sub.inboundsConfig[0], position: 0 },
+            { config: sub.inboundsConfig[1], position: 1 },
+          ],
+        },
+        [],
+      );
+
+      expect(result).toMatchObject({
+        status: 'succeeded',
+        created: 1,
+        preserved: 1,
+        pendingCleanup: 1,
+      });
+      // Self-SNI was NOT recreated, avoiding port 443 collision
+      expect(inboundBuilder.buildSelfSniInbound).not.toHaveBeenCalled();
+      expect(xuiService.addInbound).toHaveBeenCalledTimes(1);
+      // Only the old sibling TCP inbound (id 1002) was sent to PendingCleanup, NOT 1001
+      const updateCalls = inboundRepo.manager.transaction.mock.calls;
+      expect(updateCalls).toHaveLength(1);
+    });
+
+    it('blocks rotation preflight when two configs on the same node collide on fixed or localHttpsPort', async () => {
+      const sub = {
+        id: 'sub-port-collision',
+        name: 'SubCollision',
+        isEnabled: true,
+        inboundsConfig: [
+          {
+            configId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+            type: 'self-sni',
+            port: 443,
+            sni: 'portal.example.com',
+            nodeId: node.id,
+            profileSettings: {
+              domain: 'portal.example.com',
+              webServer: 'nginx',
+              localHttpsPort: 8443,
+            },
+          },
+          {
+            configId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+            type: 'xhttp-stable',
+            port: 8443,
+            sni: 'www.microsoft.com',
+            nodeId: node.id,
+          },
+        ],
+        inbounds: [],
+      } as Subscription;
+
+      const result = await (
+        service as unknown as {
+          rotateNodeGroup: (
+            s: Subscription,
+            k: string,
+            g: {
+              node?: Node;
+              configs: Array<{ config: unknown; position: number }>;
+            },
+            d: Domain[],
+          ) => Promise<{ status: string; created: number; message?: string }>;
+        }
+      ).rotateNodeGroup(
+        sub,
+        node.id,
+        {
+          node,
+          configs: [
+            { config: sub.inboundsConfig[0], position: 0 },
+            { config: sub.inboundsConfig[1], position: 1 },
+          ],
+        },
+        [],
+      );
+
+      expect(result.status).toBe('preserved');
+      expect(result.created).toBe(0);
+      expect(result.message).toContain('Конфликт порта 8443');
+      expect(xuiService.addInbound).not.toHaveBeenCalled();
+    });
   });
 });

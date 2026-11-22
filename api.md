@@ -993,6 +993,10 @@ http://<host>:<port>/bus/<uuid>
 - `type: "self-sni"` с `profileSettings` (`domain` — обязательный собственный домен, `webServer: "nginx" | "caddy" | "none"`, `localHttpsPort`, `destPort`, `xver: 0 | 1 | 2`, `fingerprint`, `spiderX`, `rotationPolicy`, опциональные пути `certificateFile`/`keyFile` для шаблона веб-сервера). Ротация никогда не подменяет собственный домен случайным.
 - `type: "https-fallback"` с `profileSettings` (`domain` — обязательный домен TLS-сертификата, `path` — выделенный endpoint вроде `/api/v2/stream`, `mode`, `fingerprint`, `reverseProxy: "none" | "nginx" | "caddy"`, `publicPort`, `rotationPolicy`). При `reverseProxy: "none"` TLS терминируется в Xray; при `nginx`/`caddy` Xray слушает `127.0.0.1`, а клиент подключается по TLS на `domain:publicPort`. Независим от REALITY-профилей и сохраняет домен/сертификат при ротации.
 
+При ротации управляемых профилей:
+- Неизменившиеся постоянные профили (`preserve_all` или фиксированный порт при `fixed_domain`) сохраняются без пересоздания (`preserved` в результате операции), а их порты и локальные порты Nginx/Caddy (`localHttpsPort` / `publicPort`) резервируются от коллизий с соседними ротируемыми инбаундами.
+- Для новых staged-инбаундов перед переключением поколения выполняется canary-проверка (`ClientProbeService`); при сбое staged-поколение автоматически откатывается (`status: "preserved"`, `rolledBack: true`, `canaryResults`), а рабочие инбаунды остаются нетронутыми. Отключить canary-пробу можно переменной `DISABLE_CANARY_PROBE=true`.
+
 ---
 
 ## Контакты

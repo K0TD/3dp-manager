@@ -407,6 +407,78 @@ export class SubscriptionsService {
       await this.validateConfigRelations(config);
       this.validateConfigPort(config.port);
     }
+    this.validateNodePortCollisions(inboundsConfig || []);
+  }
+
+  private validateNodePortCollisions(configs: InboundConfig[]) {
+    const byNode = new Map<string, InboundConfig[]>();
+    for (const config of configs) {
+      if (config.type === 'custom' || ROUTING_INBOUND_TYPES.has(config.type)) {
+        continue;
+      }
+      const key = config.nodeId || '__default';
+      const list = byNode.get(key) || [];
+      list.push(config);
+      byNode.set(key, list);
+    }
+
+    for (const nodeConfigs of byNode.values()) {
+      const fixedPorts = new Map<number, string>();
+      const reservedLocalPorts = new Map<number, string>();
+
+      for (const config of nodeConfigs) {
+        const label = config.name?.trim() || config.type;
+        if (
+          config.type === 'self-sni' &&
+          (config.profileSettings?.webServer ?? 'nginx') !== 'none'
+        ) {
+          const localPort = config.profileSettings?.localHttpsPort ?? 8443;
+          reservedLocalPorts.set(
+            localPort,
+            `локальным HTTPS-портом веб-сервера Self-SNI «${label}»`,
+          );
+        }
+        if (
+          config.type === 'https-fallback' &&
+          (config.profileSettings?.reverseProxy === 'nginx' ||
+            config.profileSettings?.reverseProxy === 'caddy')
+        ) {
+          const publicPort = config.profileSettings?.publicPort ?? 443;
+          reservedLocalPorts.set(
+            publicPort,
+            `публичным портом reverse proxy HTTPS Fallback «${label}»`,
+          );
+        }
+      }
+
+      for (const config of nodeConfigs) {
+        if (
+          config.port === undefined ||
+          config.port === null ||
+          config.port === '' ||
+          config.port === 'random'
+        ) {
+          continue;
+        }
+        const port = Number(config.port);
+        if (!Number.isInteger(port)) continue;
+        const label = config.name?.trim() || config.type;
+        const existingOwner = fixedPorts.get(port);
+        if (existingOwner) {
+          throw new BadRequestException(
+            `Конфликт порта ${port} на одной ноде: порт уже назначен для «${existingOwner}» и не может использоваться в «${label}»`,
+          );
+        }
+        fixedPorts.set(port, label);
+
+        const reservedReason = reservedLocalPorts.get(port);
+        if (reservedReason) {
+          throw new BadRequestException(
+            `Конфликт порта ${port} для «${label}»: порт пересекается с ${reservedReason}`,
+          );
+        }
+      }
+    }
   }
 
   private withConfigIds(

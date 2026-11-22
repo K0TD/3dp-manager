@@ -13,6 +13,7 @@ import PublicRoute from './auth/PublicRoute';
 import TunnelsPage from './pages/TunnelsPage';
 import NodesPage from './pages/NodesPage';
 import DashboardPage from './pages/DashboardPage';
+import ProfilesPage from './pages/ProfilesPage';
 
 function App() {
   return (
@@ -32,6 +33,7 @@ function App() {
             }>
               <Route index element={<DashboardPage />} />
               <Route path="subscriptions" element={<SubscriptionsPage />} />
+              <Route path="profiles" element={<ProfilesPage />} />
               <Route path="settings" element={<SettingsPage />} />
               <Route path="domains" element={<DomainsPage />} />
               <Route path="nodes" element={<NodesPage />} />
