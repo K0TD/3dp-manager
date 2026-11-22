@@ -787,7 +787,8 @@ export class ClientProbeService {
           !/^Xray\s+\d+/i.test(line) &&
           !/^A unified platform/i.test(line) &&
           !/^Reading config:/i.test(line) &&
-          !/core:\s+Xray\s+\d+.*started/i.test(line),
+          !/core:\s+Xray\s+\d+.*started/i.test(line) &&
+          !/likely health check connection/i.test(line),
       );
     if (lines.length === 0) return '';
     const highlighted = [...lines]
@@ -797,7 +798,8 @@ export class ClientProbeService {
           line,
         ),
       );
-    return highlighted ? this.sanitizeError(highlighted) : '';
+    if (highlighted) return this.sanitizeError(highlighted);
+    return this.sanitizeError(lines.slice(-2).join(' | '));
   }
 
   private sanitizeError(raw: string): string {

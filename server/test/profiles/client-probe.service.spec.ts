@@ -112,7 +112,10 @@ describe('ClientProbeService', () => {
 
     expect(
       service.extractXrayDiagnostic(
-        '2026/11/22 19:00:00 [Warning] core: Xray 25.3.6 started',
+        [
+          '2026/11/22 19:00:00 [Warning] core: Xray 25.3.6 started',
+          '2026/11/22 19:00:00 [Info] [1] proxy/socks: Connection closed immediately, likely health check connection',
+        ].join('\n'),
       ),
     ).toBe('');
   });
