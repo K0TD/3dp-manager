@@ -928,6 +928,10 @@ export class RotationService implements OnModuleInit {
         if (managedStaged.length > 0) {
           phase = 'Canary-проверка клиентского подключения';
           stage = 'verify';
+          const failedCanaries: Array<{
+            candidate: Inbound;
+            result: ClientConnectionProbeResult;
+          }> = [];
           for (const candidate of managedStaged) {
             const rawClient = candidate.clientProfileJson;
             if (!rawClient) continue;
@@ -942,12 +946,23 @@ export class RotationService implements OnModuleInit {
               await this.clientProbe.probeClientProfile(parsedClient);
             canaryResults.push(probeResult);
             if (!probeResult.success) {
-              canaryFailed = true;
-              failedPort = candidate.port;
-              throw new Error(
-                `Canary-проверка профиля «${candidate.remark || candidate.profileKind}» (${candidate.profileKind}) не пройдена (${probeResult.engine}): ${probeResult.error || 'соединение не установлено'}`,
-              );
+              failedCanaries.push({ candidate, result: probeResult });
             }
+          }
+          if (failedCanaries.length > 0) {
+            canaryFailed = true;
+            const first = failedCanaries[0];
+            failedPort = first.candidate.port;
+            failedConfig = group.configs.find(
+              (item) => item.config.configId === first.candidate.configId,
+            )?.config;
+            const summary = failedCanaries
+              .map(
+                ({ candidate, result }) =>
+                  `Canary-проверка профиля «${candidate.remark || candidate.profileKind}» (${candidate.profileKind}) не пройдена (${result.engine}): ${result.error || 'соединение не установлено'}`,
+              )
+              .join('; ');
+            throw new Error(summary);
           }
         }
       }

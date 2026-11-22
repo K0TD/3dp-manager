@@ -91,7 +91,24 @@ export function normalizeOperationError(
   let title: string;
   let hint: string;
   let code: string;
-  if (/csrf/i.test(raw)) {
+  if (/Canary-проверка профиля/i.test(raw)) {
+    code = 'CANARY_PROBE_FAILED';
+    stage = 'verify';
+    title = `Canary-проверка${connection}${portLabel} не пройдена — выполнен автооткат`;
+    if (inboundType === 'self-sni' || /\(self-sni\)/i.test(raw)) {
+      hint =
+        'Для Self-SNI убедитесь, что порт Xray (обычно 443/tcp) открыт в firewall ноды, а на 127.0.0.1:<localHttpsPort> запущен локальный HTTPS-сайт (Nginx/Caddy) с TLS 1.3 и валидным сертификатом домена.';
+    } else if (
+      inboundType === 'https-fallback' ||
+      /\(https-fallback\)/i.test(raw)
+    ) {
+      hint =
+        'Для HTTPS Fallback проверьте открытость порта, валидность TLS-сертификата и настройки reverse proxy (proxy_buffering off / flush_interval -1).';
+    } else {
+      hint =
+        'Проверьте открытость порта в firewall ноды, доступность SNI с ноды и наличие исходящего доступа для клиентской пробы (или задайте DISABLE_CANARY_PROBE=true).';
+    }
+  } else if (/csrf/i.test(raw)) {
     code = 'CSRF_FAILED';
     title = 'Панель отклонила защитный токен CSRF';
     hint = 'Проверьте адрес панели и авторизацию, затем повторите операцию.';

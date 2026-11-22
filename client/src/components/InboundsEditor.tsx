@@ -1,11 +1,13 @@
 import React, { useState } from 'react';
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Chip,
   FormControl,
   FormControlLabel,
+  FormHelperText,
   IconButton,
   InputLabel,
   MenuItem,
@@ -24,8 +26,14 @@ import {
   OpenInNew,
   Remove,
   Restore,
+  Tune,
 } from '@mui/icons-material';
+import api from '../api';
 import type { NodeRecord } from '../types/node';
+import {
+  CLIENT_SNI_PROFILES_CATALOG,
+  resolveClientSniProfile,
+} from '../utils/sniProfiles';
 import {
   CERTIFICATE_TYPES,
   CONNECTION_OPTIONS,
@@ -97,6 +105,94 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
   const [previewTarget, setPreviewTarget] = useState<InboundConfigUI | null>(
     null,
   );
+  const [applyingSniId, setApplyingSniId] = useState<string | null>(null);
+
+  const ownDomainOptions: string[] = Array.from(
+    new Set([
+      ...nodes
+        .map((n) => getNodeAddress(n.id, nodes))
+        .filter((addr) => /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(addr)),
+      ...domains.map((d) => d.name),
+    ]),
+  );
+
+  const curatedExtraSniDomains: string[] = Array.from(
+    new Set(
+      CLIENT_SNI_PROFILES_CATALOG.flatMap((entry) => entry.recommendedDomains),
+    ),
+  ).filter(
+    (name) =>
+      !domains.some((d) => d.name.toLowerCase() === name.toLowerCase()),
+  );
+
+  const renderOwnDomainOption = (
+    props: React.HTMLAttributes<HTMLLIElement>,
+    option: string,
+  ) => {
+    const matchedNode = nodes.find(
+      (n) => getNodeAddress(n.id, nodes) === option,
+    );
+    const inDomains = domains.some((d) => d.name === option);
+    return (
+      <li {...props} key={option}>
+        <Stack
+          direction="row"
+          justifyContent="space-between"
+          alignItems="center"
+          width="100%"
+          gap={1}
+        >
+          <Typography variant="body2">{option}</Typography>
+          <Stack direction="row" spacing={0.5}>
+            {matchedNode && (
+              <Chip
+                size="small"
+                color="primary"
+                variant="outlined"
+                label={`Нода: ${matchedNode.name}`}
+              />
+            )}
+            {inDomains && (
+              <Chip size="small" variant="outlined" label="Домены" />
+            )}
+          </Stack>
+        </Stack>
+      </li>
+    );
+  };
+
+  const handleApplySniProfile = async (inbound: InboundConfigUI) => {
+    const cleanSni = inbound.sni?.trim();
+    if (!cleanSni || cleanSni === 'random') return;
+    setApplyingSniId(inbound.id);
+    try {
+      let resolved = resolveClientSniProfile(cleanSni);
+      try {
+        const res = await api.get<{
+          fingerprint?: ClientFingerprint;
+          spiderX?: string;
+          xhttpPath?: string;
+        }>('/domains/resolve-profile', { params: { sni: cleanSni } });
+        if (res?.data?.fingerprint) {
+          resolved = {
+            ...resolved,
+            fingerprint: res.data.fingerprint,
+            spiderX: res.data.spiderX || resolved.spiderX,
+            xhttpPath: res.data.xhttpPath || resolved.xhttpPath,
+          };
+        }
+      } catch {
+        // Fallback to client-side SNI catalog mirror
+      }
+      handleProfileSettingsChange(inbound.id, {
+        fingerprint: resolved.fingerprint,
+        spiderX: resolved.spiderX || '/',
+        path: resolved.xhttpPath || '/',
+      });
+    } finally {
+      setApplyingSniId(null);
+    }
+  };
 
   const handleProfileSettingsChange = (
     id: string,
@@ -139,13 +235,71 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
       const next = { ...inbound, [field]: value };
 
       if (field === 'nodeId') {
+        const prevAddr = getNodeAddress(inbound.nodeId, nodes);
+        const nextAddr = getNodeAddress(value, nodes);
+        const prevNode = getSelectedNode(inbound.nodeId, nodes);
+        const nextNode = getSelectedNode(value, nodes);
         next.relayServerId = '';
         next.flag = getNodeFlag(value, nodes);
         if (CERTIFICATE_TYPES.has(next.type)) {
           next.certificateMode = 'node';
           next.certificateFile = '';
           next.keyFile = '';
-          next.tlsServerName = getNodeAddress(value, nodes);
+          next.tlsServerName = nextAddr;
+        }
+        if (next.type === 'self-sni' || next.type === 'https-fallback') {
+          const currentDomain = next.profileSettings?.domain?.trim() || '';
+          const shouldReplaceDomain =
+            !currentDomain || (prevAddr && currentDomain === prevAddr);
+          const nextDomain =
+            shouldReplaceDomain && /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(nextAddr)
+              ? nextAddr
+              : currentDomain;
+          const shouldReplaceCert =
+            !next.profileSettings?.certificateFile?.trim() ||
+            (prevNode?.webCertificateFile &&
+              next.profileSettings?.certificateFile ===
+                prevNode.webCertificateFile);
+          const shouldReplaceKey =
+            !next.profileSettings?.keyFile?.trim() ||
+            (prevNode?.webKeyFile &&
+              next.profileSettings?.keyFile === prevNode.webKeyFile);
+          const baseDefaults =
+            next.type === 'self-sni'
+              ? createDefaultSelfSniSettings(nextDomain)
+              : createDefaultHttpsFallbackSettings(nextDomain);
+          next.profileSettings = {
+            ...baseDefaults,
+            ...next.profileSettings,
+            domain: nextDomain,
+            ...(shouldReplaceCert && nextNode?.webCertificateFile
+              ? { certificateFile: nextNode.webCertificateFile }
+              : {}),
+            ...(shouldReplaceKey && nextNode?.webKeyFile
+              ? { keyFile: nextNode.webKeyFile }
+              : {}),
+          };
+          if (next.type === 'self-sni') {
+            next.sni = nextDomain;
+          } else {
+            next.tlsServerName = nextDomain;
+          }
+        }
+      }
+
+      if (field === 'sni' && next.type === 'xhttp-stable') {
+        const cleanSni = value.trim();
+        if (cleanSni && cleanSni !== 'random') {
+          const matched = resolveClientSniProfile(cleanSni);
+          if (matched.profileId && matched.profileId !== 'default') {
+            next.profileSettings = {
+              ...createDefaultXhttpStableSettings(),
+              ...next.profileSettings,
+              fingerprint: matched.fingerprint,
+              spiderX: matched.spiderX || '/',
+              path: matched.xhttpPath || '/',
+            };
+          }
         }
       }
 
@@ -203,6 +357,7 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
       }
 
       if (field === 'type' && value === 'self-sni') {
+        const selectedNode = getSelectedNode(next.nodeId, nodes);
         const nodeAddr = getNodeAddress(next.nodeId, nodes);
         const defaultDomain =
           next.profileSettings?.domain?.trim() ||
@@ -212,6 +367,13 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
           ...createDefaultSelfSniSettings(defaultDomain),
           ...next.profileSettings,
           domain: defaultDomain,
+          ...(!next.profileSettings?.certificateFile &&
+          selectedNode?.webCertificateFile
+            ? { certificateFile: selectedNode.webCertificateFile }
+            : {}),
+          ...(!next.profileSettings?.keyFile && selectedNode?.webKeyFile
+            ? { keyFile: selectedNode.webKeyFile }
+            : {}),
         };
         next.sni = defaultDomain;
         if (!next.port || next.port === 'random') {
@@ -224,6 +386,7 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
       }
 
       if (field === 'type' && value === 'https-fallback') {
+        const selectedNode = getSelectedNode(next.nodeId, nodes);
         const nodeAddr = getNodeAddress(next.nodeId, nodes);
         const defaultDomain =
           next.profileSettings?.domain?.trim() ||
@@ -233,6 +396,13 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
           ...createDefaultHttpsFallbackSettings(defaultDomain),
           ...next.profileSettings,
           domain: defaultDomain,
+          ...(!next.profileSettings?.certificateFile &&
+          selectedNode?.webCertificateFile
+            ? { certificateFile: selectedNode.webCertificateFile }
+            : {}),
+          ...(!next.profileSettings?.keyFile && selectedNode?.webKeyFile
+            ? { keyFile: selectedNode.webKeyFile }
+            : {}),
         };
         next.tlsServerName = defaultDomain;
       }
@@ -684,22 +854,36 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                       </Select>
                     </FormControl>
 
-                    <TextField
+                    <Autocomplete
+                      freeSolo
                       size="small"
-                      label="TLS server name"
+                      disabled={inbound.certificateMode !== 'custom'}
+                      options={ownDomainOptions}
                       value={
                         inbound.certificateMode === 'custom'
                           ? inbound.tlsServerName || ''
                           : getNodeAddress(inbound.nodeId, nodes)
                       }
-                      disabled={inbound.certificateMode !== 'custom'}
-                      onChange={(e) =>
+                      onInputChange={(_, newValue, reason) => {
+                        if (reason === 'input' || reason === 'clear') {
+                          handleInboundChange(
+                            inbound.id,
+                            'tlsServerName',
+                            newValue,
+                          );
+                        }
+                      }}
+                      onChange={(_, newValue) =>
                         handleInboundChange(
                           inbound.id,
                           'tlsServerName',
-                          e.target.value,
+                          typeof newValue === 'string' ? newValue : '',
                         )
                       }
+                      renderOption={renderOwnDomainOption}
+                      renderInput={(params) => (
+                        <TextField {...params} label="TLS server name" />
+                      )}
                       sx={{ width: '100%', minWidth: 0 }}
                     />
 
@@ -774,39 +958,112 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                   </Box>
                 )}
 
-                {hasSni(inbound.type) && (
-                  <FormControl size="small" sx={{ width: '100%', minWidth: 0 }}>
-                    <InputLabel id={`${inbound.id}-sni-label`}>
-                      {inbound.type === 'mtproto-faketls'
-                        ? 'FakeTLS SNI'
-                        : 'SNI'}
-                    </InputLabel>
-                    <Select
-                      id={`${inbound.id}-sni`}
-                      labelId={`${inbound.id}-sni-label`}
-                      value={inbound.sni}
-                      label={
-                        inbound.type === 'mtproto-faketls'
-                          ? 'FakeTLS SNI'
-                          : 'SNI'
-                      }
-                      onChange={(e) =>
-                        handleInboundChange(inbound.id, 'sni', e.target.value)
-                      }
-                    >
-                      <MenuItem value="random">
+                {hasSni(inbound.type) && (() => {
+                  const matchedSni =
+                    inbound.sni && inbound.sni !== 'random'
+                      ? resolveClientSniProfile(inbound.sni)
+                      : null;
+                  const allowCuratedExtra = inbound.type !== 'mtproto-faketls';
+                  const hasCustomSniValue =
+                    Boolean(inbound.sni) &&
+                    inbound.sni !== 'random' &&
+                    !domains.some((d) => d.name === inbound.sni) &&
+                    (!allowCuratedExtra ||
+                      !curatedExtraSniDomains.includes(inbound.sni));
+                  return (
+                    <FormControl size="small" sx={{ width: '100%', minWidth: 0 }}>
+                      <InputLabel id={`${inbound.id}-sni-label`}>
                         {inbound.type === 'mtproto-faketls'
-                          ? 'random — из списка SNI'
-                          : 'random'}
-                      </MenuItem>
-                      {domains.map((domain) => (
-                        <MenuItem key={domain.id} value={domain.name}>
-                          {domain.name}
+                          ? 'FakeTLS SNI'
+                          : 'SNI'}
+                      </InputLabel>
+                      <Select
+                        id={`${inbound.id}-sni`}
+                        labelId={`${inbound.id}-sni-label`}
+                        value={inbound.sni}
+                        label={
+                          inbound.type === 'mtproto-faketls'
+                            ? 'FakeTLS SNI'
+                            : 'SNI'
+                        }
+                        onChange={(e) =>
+                          handleInboundChange(inbound.id, 'sni', e.target.value)
+                        }
+                      >
+                        <MenuItem value="random">
+                          {inbound.type === 'mtproto-faketls'
+                            ? 'random — из списка SNI'
+                            : 'random'}
                         </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                )}
+                        {hasCustomSniValue && (
+                          <MenuItem value={inbound.sni}>{inbound.sni}</MenuItem>
+                        )}
+                        {domains.map((domain) => {
+                          const sniProfile = resolveClientSniProfile(
+                            domain.name,
+                          );
+                          return (
+                            <MenuItem key={domain.id} value={domain.name}>
+                              <Stack
+                                direction="row"
+                                justifyContent="space-between"
+                                alignItems="center"
+                                width="100%"
+                                gap={1}
+                              >
+                                <span>{domain.name}</span>
+                                {sniProfile.profileId &&
+                                  sniProfile.profileId !== 'default' && (
+                                    <Chip
+                                      size="small"
+                                      color="primary"
+                                      variant="outlined"
+                                      label={sniProfile.category}
+                                    />
+                                  )}
+                              </Stack>
+                            </MenuItem>
+                          );
+                        })}
+                        {allowCuratedExtra &&
+                          curatedExtraSniDomains.map((domainName) => {
+                            const sniProfile =
+                              resolveClientSniProfile(domainName);
+                            return (
+                              <MenuItem
+                                key={`curated-${domainName}`}
+                                value={domainName}
+                              >
+                                <Stack
+                                  direction="row"
+                                  justifyContent="space-between"
+                                  alignItems="center"
+                                  width="100%"
+                                  gap={1}
+                                >
+                                  <span>{domainName}</span>
+                                  <Chip
+                                    size="small"
+                                    variant="outlined"
+                                    label={`SNI-профиль · ${sniProfile.category}`}
+                                  />
+                                </Stack>
+                              </MenuItem>
+                            );
+                          })}
+                      </Select>
+                      {matchedSni &&
+                        matchedSni.profileId &&
+                        matchedSni.profileId !== 'default' && (
+                          <FormHelperText sx={{ mx: 0.5 }}>
+                            Профиль: {matchedSni.category} (
+                            {matchedSni.fingerprint},{' '}
+                            {matchedSni.xhttpPath || matchedSni.spiderX})
+                          </FormHelperText>
+                        )}
+                    </FormControl>
+                  );
+                })()}
 
                 {inbound.type === 'xhttp-stable' && (() => {
                   const profileSettings = {
@@ -843,14 +1100,39 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                         <Typography variant="caption" color="text.secondary">
                           XHTTP Stable · минимальная серверная конфигурация + клиентские параметры
                         </Typography>
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          startIcon={<OpenInNew />}
-                          onClick={() => setPreviewTarget(inbound)}
-                        >
-                          Предпросмотр и проверка
-                        </Button>
+                        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                          <Tooltip
+                            title={
+                              inbound.sni && inbound.sni !== 'random'
+                                ? `Подставить fingerprint, spiderX и path из SNI-профиля для ${inbound.sni}`
+                                : 'Выберите конкретный домен в поле SNI, чтобы применить его SNI-профиль'
+                            }
+                          >
+                            <span>
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                startIcon={<Tune />}
+                                disabled={
+                                  !inbound.sni ||
+                                  inbound.sni === 'random' ||
+                                  applyingSniId === inbound.id
+                                }
+                                onClick={() => void handleApplySniProfile(inbound)}
+                              >
+                                Из SNI-профиля
+                              </Button>
+                            </span>
+                          </Tooltip>
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            startIcon={<OpenInNew />}
+                            onClick={() => setPreviewTarget(inbound)}
+                          >
+                            Предпросмотр и проверка
+                          </Button>
+                        </Stack>
                       </Stack>
 
                       {profileValidationError && (
@@ -1116,16 +1398,31 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                         </Alert>
                       )}
 
-                      <TextField
+                      <Autocomplete
+                        freeSolo
                         size="small"
-                        label="Собственный домен (Self-SNI)"
-                        placeholder="site.example.com"
+                        options={ownDomainOptions}
                         value={profileSettings.domain || ''}
-                        onChange={(e) =>
+                        onInputChange={(_, newValue, reason) => {
+                          if (reason === 'input' || reason === 'clear') {
+                            handleProfileSettingsChange(inbound.id, {
+                              domain: newValue,
+                            });
+                          }
+                        }}
+                        onChange={(_, newValue) =>
                           handleProfileSettingsChange(inbound.id, {
-                            domain: e.target.value,
+                            domain: typeof newValue === 'string' ? newValue : '',
                           })
                         }
+                        renderOption={renderOwnDomainOption}
+                        renderInput={(params) => (
+                          <TextField
+                            {...params}
+                            label="Собственный домен (Self-SNI)"
+                            placeholder="site.example.com"
+                          />
+                        )}
                         sx={{ width: '100%', minWidth: 0 }}
                       />
 
@@ -1335,18 +1632,33 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                         </Alert>
                       )}
 
-                      <TextField
+                      <Autocomplete
+                        freeSolo
                         size="small"
-                        label="Домен сертификата (Fallback)"
-                        placeholder="fallback.example.com"
+                        options={ownDomainOptions}
                         value={
                           profileSettings.domain || inbound.tlsServerName || ''
                         }
-                        onChange={(e) =>
+                        onInputChange={(_, newValue, reason) => {
+                          if (reason === 'input' || reason === 'clear') {
+                            handleProfileSettingsChange(inbound.id, {
+                              domain: newValue,
+                            });
+                          }
+                        }}
+                        onChange={(_, newValue) =>
                           handleProfileSettingsChange(inbound.id, {
-                            domain: e.target.value,
+                            domain: typeof newValue === 'string' ? newValue : '',
                           })
                         }
+                        renderOption={renderOwnDomainOption}
+                        renderInput={(params) => (
+                          <TextField
+                            {...params}
+                            label="Домен сертификата (Fallback)"
+                            placeholder="fallback.example.com"
+                          />
+                        )}
                         sx={{ width: '100%', minWidth: 0 }}
                       />
 

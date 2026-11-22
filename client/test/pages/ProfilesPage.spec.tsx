@@ -35,12 +35,51 @@ describe('ProfilesPage', () => {
       }
       if (url === '/nodes') {
         return Promise.resolve({
-          data: [{ id: 'node-1', name: 'EU-1', isMain: true }],
+          data: [
+            {
+              id: 'node-1',
+              name: 'EU-1',
+              domain: 'eu1.example.com',
+              webCertificateFile: '/root/cert/eu1/fullchain.pem',
+              webKeyFile: '/root/cert/eu1/privkey.pem',
+              isMain: true,
+            },
+          ],
         });
       }
       if (url === '/subscriptions') {
         return Promise.resolve({
           data: [{ id: 'sub-1', name: 'Main Sub', inboundsConfig: [] }],
+        });
+      }
+      if (url === '/domains/all') {
+        return Promise.resolve({
+          data: [
+            { id: 1, name: 'swdist.apple.com', isEnabled: true },
+            { id: 2, name: 'dl.google.com', isEnabled: true },
+          ],
+        });
+      }
+      if (url === '/domains/profiles') {
+        return Promise.resolve({
+          data: {
+            profiles: [
+              {
+                id: 'apple',
+                name: 'Apple CDN & Services',
+                category: 'Apple',
+                description: 'Apple CDN',
+                recommendedDomains: ['swdist.apple.com'],
+                exact: ['swdist.apple.com'],
+                suffix: ['.apple.com'],
+                profile: {
+                  fingerprint: 'safari',
+                  spiderX: '/content/downloads/',
+                  xhttpPath: '/download/updates/',
+                },
+              },
+            ],
+          },
         });
       }
       return Promise.resolve({
@@ -121,6 +160,61 @@ describe('ProfilesPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /Откатить/ }));
     await waitFor(() => {
       expect(api.post).toHaveBeenCalledWith('/profiles/prof-1/rollback');
+    });
+  });
+
+  it('allows selecting a domain from «Домены» in XHTTP Stable dialog and auto-fills its SNI profile', async () => {
+    vi.mocked(api.post).mockResolvedValue({ data: { id: 'prof-new' } });
+
+    render(
+      <ThemeProvider>
+        <ProfilesPage />
+      </ThemeProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('SelfSNI Main')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Создать XHTTP Stable/ }));
+
+    fireEvent.change(screen.getByLabelText('Название профиля'), {
+      target: { value: 'Apple XHTTP' },
+    });
+
+    const sniInput = screen.getByLabelText(
+      /SNI \(выбор из «Доменов» \/ SNI-профилей или свой\)/,
+    );
+    fireEvent.mouseDown(sniInput);
+    fireEvent.click(await screen.findByText('swdist.apple.com'));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Применён SNI-профиль: Apple CDN & Services/),
+      ).toBeInTheDocument();
+    });
+    expect(screen.getByLabelText('XHTTP Path')).toHaveValue(
+      '/download/updates/',
+    );
+    expect(screen.getByLabelText('SpiderX')).toHaveValue(
+      '/content/downloads/',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+    await waitFor(() => {
+      expect(api.post).toHaveBeenCalledWith(
+        '/profiles',
+        expect.objectContaining({
+          name: 'Apple XHTTP',
+          kind: 'xhttp-stable',
+          sni: 'swdist.apple.com',
+          spec: expect.objectContaining({
+            fingerprint: 'safari',
+            path: '/download/updates/',
+            spiderX: '/content/downloads/',
+          }),
+        }),
+      );
     });
   });
 });

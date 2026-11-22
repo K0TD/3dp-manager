@@ -1,9 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { InboundsEditor } from '../../src/components/InboundsEditor';
 import { ThemeProvider } from '../../src/ThemeContext';
+import api from '../../src/api';
 import type { NodeRecord } from '../../src/types/node';
 import type { CountryOption, Domain, InboundConfigUI, Tunnel } from '../../src/types/inbound';
+
+vi.mock('../../src/api', () => ({
+  default: {
+    get: vi.fn(),
+    post: vi.fn(),
+  },
+}));
 
 describe('InboundsEditor', () => {
   const mockNodes: NodeRecord[] = [
@@ -435,5 +443,72 @@ describe('InboundsEditor', () => {
         }),
       }),
     ]);
+  });
+
+  it('applies curated SNI profile parameters to XHTTP Stable via "Из SNI-профиля" button', async () => {
+    vi.mocked(api.get).mockResolvedValueOnce({
+      data: {
+        sni: 'swdist.apple.com',
+        fingerprint: 'safari',
+        spiderX: '/content/downloads/',
+        xhttpPath: '/download/updates/',
+      },
+    });
+
+    const { handleChange } = renderEditor({
+      domains: [
+        ...mockDomains,
+        { id: 3, name: 'swdist.apple.com', isEnabled: true },
+      ],
+      nodes: [
+        {
+          ...mockNodes[0],
+          capabilities: {
+            ...mockNodes[0].capabilities!,
+            supportedInboundTypes: ['vless-tcp-reality', 'xhttp-stable'],
+          },
+        },
+      ],
+      inbounds: [
+        {
+          id: 'inb-xhttp-sni',
+          configId: 'cfg-xhttp-sni',
+          type: 'xhttp-stable',
+          port: '443',
+          sni: 'swdist.apple.com',
+          nodeId: 'node-1',
+          flag: '🇩🇪',
+          name: 'Apple XHTTP',
+          profileSettings: {
+            mode: 'auto',
+            path: '/',
+            fingerprint: 'chrome',
+            spiderX: '/',
+            rotationPolicy: 'fixed_domain',
+          },
+        },
+      ],
+    });
+
+    expect(
+      screen.getByText(/Профиль: Apple \(safari, \/download\/updates\/\)/),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Из SNI-профиля/ }));
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith('/domains/resolve-profile', {
+        params: { sni: 'swdist.apple.com' },
+      });
+      expect(handleChange).toHaveBeenCalledWith([
+        expect.objectContaining({
+          id: 'inb-xhttp-sni',
+          profileSettings: expect.objectContaining({
+            fingerprint: 'safari',
+            spiderX: '/content/downloads/',
+            path: '/download/updates/',
+          }),
+        }),
+      ]);
+    });
   });
 });

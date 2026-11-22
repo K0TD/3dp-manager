@@ -70,6 +70,45 @@ describe('operation error normalization', () => {
     ).toBe('Нода «X» недоступна: соединение отклонено (ECONNREFUSED)');
   });
 
+  it('classifies canary probe failures with profile-specific hints', () => {
+    const selfSni = normalizeOperationError(
+      'Canary-проверка профиля «self-sni» (self-sni) не пройдена (xray-core): Таймаут клиентской пробы через SOCKS5 (7909 мс)',
+      { node: 'mscone', stage: 'verify', inboundType: 'self-sni', port: 443 },
+    );
+    expect(selfSni).toMatchObject({
+      code: 'CANARY_PROBE_FAILED',
+      stage: 'verify',
+      port: 443,
+    });
+    expect(selfSni.title).toContain('автооткат');
+    expect(selfSni.hint).toContain('127.0.0.1');
+    expect(selfSni.hint).toContain('TLS 1.3');
+
+    const fallback = normalizeOperationError(
+      'Canary-проверка профиля «fb» (https-fallback) не пройдена (xray-core): EOF',
+      {
+        node: 'mscone',
+        stage: 'verify',
+        inboundType: 'https-fallback',
+        port: 20443,
+      },
+    );
+    expect(fallback.code).toBe('CANARY_PROBE_FAILED');
+    expect(fallback.hint).toContain('proxy_buffering off');
+
+    const xhttp = normalizeOperationError(
+      'Canary-проверка профиля «xh» (xhttp-stable) не пройдена (xray-core): timeout',
+      {
+        node: 'mscone',
+        stage: 'verify',
+        inboundType: 'xhttp-stable',
+        port: 22303,
+      },
+    );
+    expect(xhttp.code).toBe('CANARY_PROBE_FAILED');
+    expect(xhttp.hint).toContain('DISABLE_CANARY_PROBE=true');
+  });
+
   it('classifies a free-form panel rejection when the caller identifies its source', () => {
     expect(
       normalizeOperationError('something went wrong', {

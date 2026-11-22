@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Chip,
@@ -33,10 +34,12 @@ import {
   PlaylistAdd,
   Refresh,
   Restore,
+  Tune,
 } from '@mui/icons-material';
 import api from '../api';
 import { WorkspaceHeader } from '../components/WorkspaceHeader';
 import { ProfilePreviewDialog } from '../components/ProfilePreviewDialog';
+import { CLIENT_SNI_PROFILES_CATALOG } from '../utils/sniProfiles';
 import type { NodeRecord } from '../types/node';
 import {
   FINGERPRINT_OPTIONS,
@@ -98,6 +101,27 @@ interface ConnectionProfileRecord {
   } | null;
 }
 
+interface DomainItem {
+  id: number;
+  name: string;
+  isEnabled?: boolean;
+}
+
+interface SniProfileRule {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  recommendedDomains: string[];
+  exact?: string[];
+  suffix?: string[];
+  profile: {
+    fingerprint: ClientFingerprint;
+    spiderX: string;
+    xhttpPath?: string;
+  };
+}
+
 interface SubscriptionBrief {
   id: string;
   name: string;
@@ -142,7 +166,7 @@ const DEFAULT_FORM: ProfileFormState = {
   kind: 'xhttp-stable',
   nodeId: '',
   port: '443',
-  sni: 'www.microsoft.com',
+  sni: 'random',
   rotationPolicy: 'fixed_domain',
   spec: {
     mode: 'auto',
@@ -197,6 +221,38 @@ function defaultFormForKind(kind: ManagedProfileKind): ProfileFormState {
   return { ...DEFAULT_FORM, spec: { ...DEFAULT_FORM.spec } };
 }
 
+function resolveNodeHostname(node?: NodeRecord): string {
+  if (!node) return '';
+  if (node.domain?.trim()) return node.domain.trim();
+  if (node.url) {
+    try {
+      const host = new URL(node.url).hostname;
+      if (host && /[a-z]/i.test(host)) return host;
+    } catch {
+      // Ignore malformed URL
+    }
+  }
+  return '';
+}
+
+function findMatchingSniRule(
+  sni: string,
+  rules: SniProfileRule[],
+): SniProfileRule | null {
+  const clean = sni.trim().toLowerCase();
+  if (!clean || clean === 'random') return null;
+  for (const rule of rules) {
+    if (rule.exact?.some((item) => item.toLowerCase() === clean)) return rule;
+    if (rule.recommendedDomains?.some((item) => item.toLowerCase() === clean)) {
+      return rule;
+    }
+    if (rule.suffix?.some((suf) => clean.endsWith(suf.toLowerCase()))) {
+      return rule;
+    }
+  }
+  return null;
+}
+
 function checkStatusColor(
   status: ConnectionProfileRecord['lastCheckStatus'],
 ): 'success' | 'warning' | 'error' | 'default' {
@@ -220,6 +276,11 @@ export default function ProfilesPage() {
   const [catalog, setCatalog] = useState<ProfileCatalogEntry[]>([]);
   const [nodes, setNodes] = useState<NodeRecord[]>([]);
   const [subscriptions, setSubscriptions] = useState<SubscriptionBrief[]>([]);
+  const [domains, setDomains] = useState<DomainItem[]>([]);
+  const [sniRules, setSniRules] = useState<SniProfileRule[]>(
+    () => CLIENT_SNI_PROFILES_CATALOG as unknown as SniProfileRule[],
+  );
+  const [appliedSniRuleName, setAppliedSniRuleName] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [probeResults, setProbeResults] = useState<
@@ -245,18 +306,42 @@ export default function ProfilesPage() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [profilesRes, catalogRes, nodesRes, subsRes] = await Promise.all([
+      const [
+        profilesRes,
+        catalogRes,
+        nodesRes,
+        subsRes,
+        domainsRes,
+        sniProfilesRes,
+      ] = await Promise.all([
         api.get<ConnectionProfileRecord[]>('/profiles'),
         api.get<ProfileCatalogEntry[]>('/profiles/catalog'),
         api.get<NodeRecord[]>('/nodes'),
         api
           .get<SubscriptionBrief[]>('/subscriptions')
           .catch(() => ({ data: [] as SubscriptionBrief[] })),
+        api
+          .get<DomainItem[]>('/domains/all')
+          .catch(() => ({ data: [] as DomainItem[] })),
+        api
+          .get<{ profiles?: SniProfileRule[] }>('/domains/profiles')
+          .catch(() => ({ data: { profiles: [] as SniProfileRule[] } })),
       ]);
       setProfiles(Array.isArray(profilesRes.data) ? profilesRes.data : []);
       setCatalog(Array.isArray(catalogRes.data) ? catalogRes.data : []);
       setNodes(Array.isArray(nodesRes.data) ? nodesRes.data : []);
       setSubscriptions(Array.isArray(subsRes.data) ? subsRes.data : []);
+      setDomains(
+        Array.isArray(domainsRes.data)
+          ? domainsRes.data.filter((d) => d.isEnabled !== false)
+          : [],
+      );
+      if (
+        Array.isArray(sniProfilesRes.data?.profiles) &&
+        sniProfilesRes.data.profiles.length > 0
+      ) {
+        setSniRules(sniProfilesRes.data.profiles);
+      }
     } catch {
       setSnackbar({
         open: true,
@@ -272,17 +357,84 @@ export default function ProfilesPage() {
     void loadData();
   }, [loadData]);
 
+  const applyNodeDefaults = (
+    base: ProfileFormState,
+    nextNodeId: string,
+    previousNodeId?: string,
+  ): ProfileFormState => {
+    const nextNode = nodes.find((n) => n.id === nextNodeId);
+    const prevNode = nodes.find((n) => n.id === previousNodeId);
+    const nextHost = resolveNodeHostname(nextNode);
+    const prevHost = resolveNodeHostname(prevNode);
+    if (base.kind === 'self-sni' || base.kind === 'https-fallback') {
+      const currentDomain = base.spec.domain?.trim() || '';
+      const shouldReplaceDomain =
+        !currentDomain || (prevHost && currentDomain === prevHost);
+      const nextDomain =
+        shouldReplaceDomain && nextHost ? nextHost : currentDomain;
+      const shouldReplaceCert =
+        !base.spec.certificateFile?.trim() ||
+        (prevNode?.webCertificateFile &&
+          base.spec.certificateFile === prevNode.webCertificateFile);
+      const shouldReplaceKey =
+        !base.spec.keyFile?.trim() ||
+        (prevNode?.webKeyFile && base.spec.keyFile === prevNode.webKeyFile);
+      return {
+        ...base,
+        nodeId: nextNodeId,
+        sni: nextDomain,
+        spec: {
+          ...base.spec,
+          domain: nextDomain,
+          ...(shouldReplaceCert && nextNode?.webCertificateFile
+            ? { certificateFile: nextNode.webCertificateFile }
+            : {}),
+          ...(shouldReplaceKey && nextNode?.webKeyFile
+            ? { keyFile: nextNode.webKeyFile }
+            : {}),
+        },
+      };
+    }
+    return { ...base, nodeId: nextNodeId };
+  };
+
+  const handleXhttpSniSelect = (value: string) => {
+    const clean = value.trim();
+    const matched = findMatchingSniRule(clean, sniRules);
+    if (matched) {
+      setAppliedSniRuleName(matched.name);
+      setForm((prev) => ({
+        ...prev,
+        sni: clean,
+        spec: {
+          ...prev.spec,
+          fingerprint: matched.profile.fingerprint,
+          spiderX: matched.profile.spiderX || '/',
+          path: matched.profile.xhttpPath || prev.spec.path || '/',
+        },
+      }));
+      return;
+    }
+    setAppliedSniRuleName('');
+    setForm((prev) => ({ ...prev, sni: clean }));
+  };
+
   const openCreate = (kind: ManagedProfileKind = 'xhttp-stable') => {
     setEditingId(null);
+    setAppliedSniRuleName('');
     const defaultNodeId = nodes.find((n) => n.isMain)?.id || nodes[0]?.id || '';
-    const next = defaultFormForKind(kind);
-    next.nodeId = defaultNodeId;
+    const next = applyNodeDefaults(defaultFormForKind(kind), defaultNodeId);
     setForm(next);
     setDialogOpen(true);
   };
 
   const openEdit = (profile: ConnectionProfileRecord) => {
     setEditingId(profile.id);
+    const matched =
+      profile.kind === 'xhttp-stable' && profile.sni
+        ? findMatchingSniRule(profile.sni, sniRules)
+        : null;
+    setAppliedSniRuleName(matched?.name || '');
     setForm({
       name: profile.name,
       kind: profile.kind,
@@ -543,6 +695,21 @@ export default function ProfilesPage() {
 
   const nodeNameById = (nodeId?: string | null) =>
     nodes.find((n) => n.id === nodeId)?.name || 'Нода не назначена';
+
+  const sniAutocompleteOptions: string[] = Array.from(
+    new Set([
+      'random',
+      ...domains.map((d) => d.name),
+      ...sniRules.flatMap((rule) => rule.recommendedDomains || []),
+    ]),
+  );
+
+  const ownDomainOptions: string[] = Array.from(
+    new Set([
+      ...nodes.map((n) => resolveNodeHostname(n)).filter(Boolean),
+      ...domains.map((d) => d.name),
+    ]),
+  );
 
   return (
     <Stack spacing={3}>
@@ -851,9 +1018,12 @@ export default function ProfilesPage() {
                 label="Тип профиля"
                 onChange={(e) => {
                   const nextKind = e.target.value as ManagedProfileKind;
-                  const next = defaultFormForKind(nextKind);
+                  setAppliedSniRuleName('');
+                  const next = applyNodeDefaults(
+                    defaultFormForKind(nextKind),
+                    form.nodeId,
+                  );
                   next.name = form.name;
-                  next.nodeId = form.nodeId;
                   setForm(next);
                 }}
               >
@@ -874,7 +1044,11 @@ export default function ProfilesPage() {
               <Select
                 value={form.nodeId}
                 label="Нода"
-                onChange={(e) => setForm({ ...form, nodeId: e.target.value })}
+                onChange={(e) =>
+                  setForm((prev) =>
+                    applyNodeDefaults(prev, e.target.value, prev.nodeId),
+                  )
+                }
               >
                 <MenuItem value="">Не выбрана</MenuItem>
                 {nodes.map((node) => (
@@ -918,13 +1092,96 @@ export default function ProfilesPage() {
 
             {form.kind === 'xhttp-stable' ? (
               <>
-                <TextField
+                <Autocomplete
+                  freeSolo
                   size="small"
-                  label="SNI (домен или random)"
+                  options={sniAutocompleteOptions}
                   value={form.sni}
-                  onChange={(e) => setForm({ ...form, sni: e.target.value })}
-                  fullWidth
+                  onInputChange={(_, newValue, reason) => {
+                    if (reason === 'input' || reason === 'clear') {
+                      setForm((prev) => ({ ...prev, sni: newValue }));
+                      if (reason === 'clear' || !newValue.trim()) {
+                        setAppliedSniRuleName('');
+                      }
+                    }
+                  }}
+                  onChange={(_, newValue) =>
+                    handleXhttpSniSelect(
+                      typeof newValue === 'string' ? newValue : '',
+                    )
+                  }
+                  renderOption={(props, option) => {
+                    const rule = findMatchingSniRule(option, sniRules);
+                    const inWhitelist = domains.some((d) => d.name === option);
+                    return (
+                      <li {...props} key={option}>
+                        <Stack
+                          direction="row"
+                          justifyContent="space-between"
+                          alignItems="center"
+                          width="100%"
+                          gap={1}
+                        >
+                          <Typography variant="body2">
+                            {option === 'random'
+                              ? 'random (из раздела «Домены»)'
+                              : option}
+                          </Typography>
+                          <Stack direction="row" spacing={0.5}>
+                            {inWhitelist && (
+                              <Chip
+                                size="small"
+                                variant="outlined"
+                                label="Домены"
+                              />
+                            )}
+                            {rule && (
+                              <Chip
+                                size="small"
+                                color="primary"
+                                variant="outlined"
+                                label={rule.category}
+                              />
+                            )}
+                          </Stack>
+                        </Stack>
+                      </li>
+                    );
+                  }}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="SNI (выбор из «Доменов» / SNI-профилей или свой)"
+                      placeholder="random или домен"
+                      helperText={
+                        appliedSniRuleName
+                          ? `Применён SNI-профиль: ${appliedSniRuleName} (fingerprint, path, spiderX — можно изменить вручную)`
+                          : 'Выберите домен из раздела «Домены» для автоподбора fingerprint/path/spiderX'
+                      }
+                    />
+                  )}
                 />
+                {(() => {
+                  const matchedManual = findMatchingSniRule(form.sni, sniRules);
+                  if (
+                    !matchedManual ||
+                    matchedManual.name === appliedSniRuleName
+                  ) {
+                    return null;
+                  }
+                  return (
+                    <Box>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        startIcon={<Tune />}
+                        onClick={() => handleXhttpSniSelect(form.sni)}
+                      >
+                        Применить SNI-профиль «{matchedManual.name}»
+                      </Button>
+                    </Box>
+                  );
+                })()}
                 <Stack direction="row" spacing={1.5}>
                   <FormControl size="small" fullWidth>
                     <InputLabel>Режим XHTTP</InputLabel>
@@ -961,22 +1218,102 @@ export default function ProfilesPage() {
                     fullWidth
                   />
                 </Stack>
+                <Stack direction="row" spacing={1.5}>
+                  <TextField
+                    size="small"
+                    label="SpiderX"
+                    placeholder="/"
+                    value={form.spec.spiderX ?? '/'}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        spec: { ...form.spec, spiderX: e.target.value },
+                      })
+                    }
+                    fullWidth
+                  />
+                  <TextField
+                    size="small"
+                    label="XHTTP Host (опц.)"
+                    placeholder="По умолчанию = SNI"
+                    value={form.spec.host || ''}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        spec: { ...form.spec, host: e.target.value },
+                      })
+                    }
+                    fullWidth
+                  />
+                </Stack>
               </>
             ) : form.kind === 'self-sni' ? (
               <>
-                <TextField
+                <Autocomplete
+                  freeSolo
                   size="small"
-                  label="Собственный домен"
-                  placeholder="site.example.com"
+                  options={ownDomainOptions}
                   value={form.spec.domain || ''}
-                  onChange={(e) =>
-                    setForm({
-                      ...form,
-                      sni: e.target.value,
-                      spec: { ...form.spec, domain: e.target.value },
-                    })
-                  }
-                  fullWidth
+                  onInputChange={(_, newValue, reason) => {
+                    if (reason === 'input' || reason === 'clear') {
+                      setForm((prev) => ({
+                        ...prev,
+                        sni: newValue,
+                        spec: { ...prev.spec, domain: newValue },
+                      }));
+                    }
+                  }}
+                  onChange={(_, newValue) => {
+                    const val = typeof newValue === 'string' ? newValue : '';
+                    setForm((prev) => ({
+                      ...prev,
+                      sni: val,
+                      spec: { ...prev.spec, domain: val },
+                    }));
+                  }}
+                  renderOption={(props, option) => {
+                    const matchedNode = nodes.find(
+                      (n) => resolveNodeHostname(n) === option,
+                    );
+                    const inDomains = domains.some((d) => d.name === option);
+                    return (
+                      <li {...props} key={option}>
+                        <Stack
+                          direction="row"
+                          justifyContent="space-between"
+                          alignItems="center"
+                          width="100%"
+                          gap={1}
+                        >
+                          <Typography variant="body2">{option}</Typography>
+                          <Stack direction="row" spacing={0.5}>
+                            {matchedNode && (
+                              <Chip
+                                size="small"
+                                color="primary"
+                                variant="outlined"
+                                label={`Нода: ${matchedNode.name}`}
+                              />
+                            )}
+                            {inDomains && (
+                              <Chip
+                                size="small"
+                                variant="outlined"
+                                label="Домены"
+                              />
+                            )}
+                          </Stack>
+                        </Stack>
+                      </li>
+                    );
+                  }}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="Собственный домен (ноды или свой)"
+                      placeholder="site.example.com"
+                    />
+                  )}
                 />
                 <Stack direction="row" spacing={1.5}>
                   <FormControl size="small" fullWidth>
@@ -1002,36 +1339,135 @@ export default function ProfilesPage() {
                   <TextField
                     size="small"
                     type="number"
-                    label="Локальный HTTPS-порт"
-                    value={form.spec.localHttpsPort ?? 8443}
+                    label={
+                      form.spec.webServer === 'none'
+                        ? 'Целевой HTTPS-порт'
+                        : 'Локальный HTTPS-порт'
+                    }
+                    value={
+                      form.spec.webServer === 'none'
+                        ? (form.spec.destPort ?? 443)
+                        : (form.spec.localHttpsPort ?? 8443)
+                    }
                     onChange={(e) =>
                       setForm({
                         ...form,
-                        spec: {
-                          ...form.spec,
-                          localHttpsPort: Number(e.target.value) || 8443,
-                        },
+                        spec:
+                          form.spec.webServer === 'none'
+                            ? {
+                                ...form.spec,
+                                destPort: Number(e.target.value) || 443,
+                              }
+                            : {
+                                ...form.spec,
+                                localHttpsPort: Number(e.target.value) || 8443,
+                              },
                       })
                     }
                     fullWidth
                   />
                 </Stack>
+                {form.spec.webServer !== 'none' && (
+                  <Stack direction="row" spacing={1.5}>
+                    <TextField
+                      size="small"
+                      label="Сертификат (для шаблона)"
+                      placeholder="/root/cert/.../fullchain.pem"
+                      value={form.spec.certificateFile || ''}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          spec: {
+                            ...form.spec,
+                            certificateFile: e.target.value,
+                          },
+                        })
+                      }
+                      fullWidth
+                    />
+                    <TextField
+                      size="small"
+                      label="Приватный ключ (для шаблона)"
+                      placeholder="/root/cert/.../privkey.pem"
+                      value={form.spec.keyFile || ''}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          spec: { ...form.spec, keyFile: e.target.value },
+                        })
+                      }
+                      fullWidth
+                    />
+                  </Stack>
+                )}
               </>
             ) : (
               <>
-                <TextField
+                <Autocomplete
+                  freeSolo
                   size="small"
-                  label="Домен сертификата"
-                  placeholder="fallback.example.com"
+                  options={ownDomainOptions}
                   value={form.spec.domain || ''}
-                  onChange={(e) =>
-                    setForm({
-                      ...form,
-                      sni: e.target.value,
-                      spec: { ...form.spec, domain: e.target.value },
-                    })
-                  }
-                  fullWidth
+                  onInputChange={(_, newValue, reason) => {
+                    if (reason === 'input' || reason === 'clear') {
+                      setForm((prev) => ({
+                        ...prev,
+                        sni: newValue,
+                        spec: { ...prev.spec, domain: newValue },
+                      }));
+                    }
+                  }}
+                  onChange={(_, newValue) => {
+                    const val = typeof newValue === 'string' ? newValue : '';
+                    setForm((prev) => ({
+                      ...prev,
+                      sni: val,
+                      spec: { ...prev.spec, domain: val },
+                    }));
+                  }}
+                  renderOption={(props, option) => {
+                    const matchedNode = nodes.find(
+                      (n) => resolveNodeHostname(n) === option,
+                    );
+                    const inDomains = domains.some((d) => d.name === option);
+                    return (
+                      <li {...props} key={option}>
+                        <Stack
+                          direction="row"
+                          justifyContent="space-between"
+                          alignItems="center"
+                          width="100%"
+                          gap={1}
+                        >
+                          <Typography variant="body2">{option}</Typography>
+                          <Stack direction="row" spacing={0.5}>
+                            {matchedNode && (
+                              <Chip
+                                size="small"
+                                color="primary"
+                                variant="outlined"
+                                label={`Нода: ${matchedNode.name}`}
+                              />
+                            )}
+                            {inDomains && (
+                              <Chip
+                                size="small"
+                                variant="outlined"
+                                label="Домены"
+                              />
+                            )}
+                          </Stack>
+                        </Stack>
+                      </li>
+                    );
+                  }}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="Домен сертификата (ноды или свой)"
+                      placeholder="fallback.example.com"
+                    />
+                  )}
                 />
                 <Stack direction="row" spacing={1.5}>
                   <FormControl size="small" fullWidth>
@@ -1062,6 +1498,55 @@ export default function ProfilesPage() {
                       setForm({
                         ...form,
                         spec: { ...form.spec, path: e.target.value },
+                      })
+                    }
+                    fullWidth
+                  />
+                </Stack>
+                {form.spec.reverseProxy !== 'none' && (
+                  <TextField
+                    size="small"
+                    type="number"
+                    label="Публичный HTTPS-порт proxy"
+                    value={form.spec.publicPort ?? 443}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        spec: {
+                          ...form.spec,
+                          publicPort: Number(e.target.value) || 443,
+                        },
+                      })
+                    }
+                    fullWidth
+                  />
+                )}
+                <Stack direction="row" spacing={1.5}>
+                  <TextField
+                    size="small"
+                    label="Сертификат (опц., по умолчанию с ноды)"
+                    placeholder="/root/cert/.../fullchain.pem"
+                    value={form.spec.certificateFile || ''}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        spec: {
+                          ...form.spec,
+                          certificateFile: e.target.value,
+                        },
+                      })
+                    }
+                    fullWidth
+                  />
+                  <TextField
+                    size="small"
+                    label="Приватный ключ (опц., по умолчанию с ноды)"
+                    placeholder="/root/cert/.../privkey.pem"
+                    value={form.spec.keyFile || ''}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        spec: { ...form.spec, keyFile: e.target.value },
                       })
                     }
                     fullWidth
