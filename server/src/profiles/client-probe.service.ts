@@ -240,6 +240,8 @@ export class ClientProbeService {
           profileKind: client.kind,
           probeUrl: lastProbeUrl,
           latencyMs: Date.now() - ctx.startedAt,
+          stage: 'tcp',
+          tcpReachable: false,
           error: tcpReady.reason,
         };
       }
@@ -288,6 +290,8 @@ export class ClientProbeService {
           profileKind: client.kind,
           probeUrl: lastProbeUrl,
           latencyMs: Date.now() - ctx.startedAt,
+          stage: 'startup',
+          tcpReachable: true,
           error: exitedEarly
             ? `Xray-клиент завершился с кодом ${String(exitCode)}: ${sanitizedErr || 'ошибка конфигурации'}`
             : 'Локальный SOCKS5 порт Xray-клиента не открылся вовремя',
@@ -323,6 +327,8 @@ export class ClientProbeService {
               targetPort: client.port,
               protocol: 'vless',
               profileKind: client.kind,
+              stage: 'http',
+              tcpReachable: true,
               httpStatusCode: httpStatus,
               probeUrl: target.url,
               latencyMs: Date.now() - ctx.startedAt,
@@ -339,6 +345,8 @@ export class ClientProbeService {
             httpStatusCode: httpStatus,
             probeUrl: target.url,
             latencyMs: Date.now() - ctx.startedAt,
+            stage: 'http',
+            tcpReachable: true,
             error: `Пробный HTTP-запрос через клиентский туннель вернул статус ${httpStatus}`,
           };
         } catch (attemptErr) {
@@ -371,6 +379,8 @@ export class ClientProbeService {
         profileKind: client.kind,
         probeUrl: lastProbeUrl,
         latencyMs: Date.now() - ctx.startedAt,
+        stage: /этап http/i.test(baseErr) ? 'http' : 'socks',
+        tcpReachable: true,
         error: xrayDiag ? `${baseErr} · xray: ${xrayDiag}` : baseErr,
       };
     } catch (err) {

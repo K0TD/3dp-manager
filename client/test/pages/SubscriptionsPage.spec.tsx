@@ -364,10 +364,9 @@ describe('SubscriptionsPage', () => {
       const createButton = await screen.findByText('Создать')
       fireEvent.click(createButton)
 
-      await waitFor(() => {
-        expect(screen.getByText('Инбаунды (3/20)')).toBeInTheDocument()
-        expect(screen.getByDisplayValue('vless://custom-link')).toBeInTheDocument()
-      })
+      expect(await screen.findByText('Инбаунды (3/20)')).toBeInTheDocument()
+      fireEvent.click(screen.getAllByRole('button', { name: 'Редактировать инбаунд' })[2])
+      expect(screen.getByDisplayValue('vless://custom-link')).toBeInTheDocument()
     })
 
     it('должен предлагать оба варианта VLESS TLS', async () => {
@@ -375,6 +374,7 @@ describe('SubscriptionsPage', () => {
       renderSubscriptionsPage()
 
       fireEvent.click(await screen.findByText('Создать'))
+      fireEvent.click((await screen.findAllByRole('button', { name: 'Редактировать инбаунд' }))[0])
       fireEvent.mouseDown((await screen.findAllByRole('combobox'))[0])
 
       expect((await screen.findAllByText('vless-tcp-tls')).length).toBeGreaterThan(1)
@@ -548,6 +548,7 @@ describe('SubscriptionsPage', () => {
 
       fireEvent.click(await screen.findByTestId('icon-MoreVert'))
       fireEvent.click(await screen.findByText('Редактировать'))
+      fireEvent.click((await screen.findAllByRole('button', { name: 'Редактировать инбаунд' }))[0])
       fireEvent.mouseDown(await screen.findByLabelText('FakeTLS SNI'))
 
       expect(
@@ -760,6 +761,7 @@ describe('SubscriptionsPage', () => {
       expect(await screen.findByText('Редактировать подписку')).toBeInTheDocument()
 
       // The name should be reset (cleared) because the old name belonged to the deleted node
+      fireEvent.click((await screen.findAllByRole('button', { name: 'Редактировать инбаунд' }))[0])
       const nameInput = screen.getByLabelText('Название')
       expect(nameInput).toHaveValue('')
 
@@ -1325,6 +1327,7 @@ describe('SubscriptionsPage', () => {
       expect(screen.getByDisplayValue('Существующее примечание')).toBeInTheDocument()
       expect(screen.getByDisplayValue('https://t.me/support')).toBeInTheDocument()
       expect(screen.getByDisplayValue('https://example.com')).toBeInTheDocument()
+      fireEvent.click(screen.getAllByRole('button', { name: 'Редактировать инбаунд' })[0])
       expect(screen.getByDisplayValue('https://example.com/rules')).toBeInTheDocument()
     })
 
@@ -1377,8 +1380,8 @@ describe('SubscriptionsPage', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Добавить (2)' }))
 
       expect(await screen.findByText('Инбаунды (2/20)')).toBeInTheDocument()
-      expect(screen.getByDisplayValue('XHTTP One')).toBeInTheDocument()
-      expect(screen.getByDisplayValue('SelfSNI One')).toBeInTheDocument()
+      expect(screen.getByText('XHTTP One')).toBeInTheDocument()
+      expect(screen.getByText('SelfSNI One')).toBeInTheDocument()
     })
   })
 })

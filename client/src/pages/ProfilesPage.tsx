@@ -272,10 +272,10 @@ function checkStatusColor(
 function checkStatusLabel(
   status: ConnectionProfileRecord['lastCheckStatus'],
 ): string {
-  if (status === 'passed') return 'Проверка пройдена';
-  if (status === 'warning') return 'Есть предупреждения';
-  if (status === 'failed') return 'Ошибка проверки';
-  return 'Не проверялся';
+  if (status === 'passed') return 'Можно запускать';
+  if (status === 'warning') return 'Можно запускать с предупреждениями';
+  if (status === 'failed') return 'Запуск заблокирован';
+  return 'Проверка не выполнена';
 }
 
 export default function ProfilesPage() {
@@ -687,7 +687,7 @@ export default function ProfilesPage() {
   };
 
   const openAttachDialog = (targets: ConnectionProfileRecord[]) => {
-    if (targets.length === 0) return;
+    if (targets.length === 0 || targets.some(profile => profile.lastCheckStatus === 'failed')) return;
     setDeployTargets(targets);
     setSubSearch('');
     setSkipExistingInSub(true);
@@ -879,7 +879,6 @@ export default function ProfilesPage() {
     new Set([
       'random',
       ...domains.map((d) => d.name),
-      ...sniRules.flatMap((rule) => rule.recommendedDomains || []),
     ]),
   );
 
@@ -895,8 +894,8 @@ export default function ProfilesPage() {
       <WorkspaceHeader
         eyebrow="CONNECTION PROFILES"
         title="Управляемые профили"
-        subtitle="Единое управление XHTTP Stable, Self-SNI и HTTPS Fallback: preflight-проверки, реальная клиентская проба (xray-core), ревизии и ручной откат."
-        actions={
+        description="Настройка профилей, проверка совместимости и развёртывание в подписках."
+        action={
           <Stack direction="row" spacing={1}>
             <Button
               variant="outlined"
@@ -1044,7 +1043,8 @@ export default function ProfilesPage() {
               variant="contained"
               startIcon={<PlaylistAdd />}
               disabled={
-                selectedProfileIds.length === 0 || subscriptions.length === 0
+                selectedProfileIds.length === 0 || subscriptions.length === 0 ||
+                profiles.some(p => selectedProfileIds.includes(p.id) && p.lastCheckStatus === 'failed')
               }
               onClick={() =>
                 openAttachDialog(
@@ -1159,7 +1159,7 @@ export default function ProfilesPage() {
                       size="small"
                       variant={profile.deployed ? 'outlined' : 'contained'}
                       startIcon={<PlaylistAdd />}
-                      disabled={isBusy || subscriptions.length === 0}
+                      disabled={isBusy || subscriptions.length === 0 || profile.lastCheckStatus === 'failed'}
                       onClick={() => openAttachDialog([profile])}
                     >
                       В подписки
@@ -1276,23 +1276,20 @@ export default function ProfilesPage() {
                   </Alert>
                 )}
 
-                {profile.lastCheckResult?.checks?.length ? (
-                  <Stack spacing={0.75} sx={{ mt: 1.5 }}>
-                    {profile.lastCheckResult.checks
-                      .filter((c) => c.severity !== 'ok')
-                      .map((check) => (
-                        <Alert
-                          key={check.code}
-                          severity={
-                            check.severity === 'error' ? 'error' : 'warning'
-                          }
-                          sx={{ py: 0.25 }}
-                        >
-                          <strong>{check.title}:</strong> {check.message}
-                        </Alert>
-                      ))}
-                  </Stack>
-                ) : null}
+                {profile.lastCheckResult?.checks?.filter(check => check.severity === 'error').map(check => (
+                  <Typography key={check.code} variant="body2" sx={{ mt: 1 }}>
+                    <strong>{check.title}</strong> — {check.message}
+                  </Typography>
+                ))}
+                {profile.lastCheckResult?.checks?.some(check => check.severity !== 'error') && (
+                  <Box component="details" sx={{ mt: 1 }}>
+                    <summary>Подробности проверки</summary>
+                    {profile.lastCheckResult.checks.filter(check => check.severity !== 'error').map(check => (
+                      <Typography key={check.code} variant="body2">{check.title} — {check.message}</Typography>
+                    ))}
+                  </Box>
+                )}
+
               </Paper>
             );
           })}

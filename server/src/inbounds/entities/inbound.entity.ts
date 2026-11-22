@@ -59,6 +59,9 @@ export class Inbound {
   @Column({ type: 'varchar', length: 32, nullable: true })
   profileKind?: string | null;
 
+  @Column({ type: 'uuid', nullable: true, select: false })
+  clientId?: string;
+
   @Column({ type: 'text', nullable: true })
   clientProfileJson?: string | null;
 

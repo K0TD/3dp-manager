@@ -37,11 +37,10 @@ describe('resolveSniProfile', () => {
     expect(profile.xhttpPath).toBe('/sec/assets/');
   });
 
-  it('resolves exact Speedtest profile', () => {
+  it('does not recommend the excluded Speedtest profile', () => {
     const profile = resolveSniProfile('speedtest.net');
     expect(profile.fingerprint).toBe('chrome');
-    expect(profile.spiderX).toBe('/api/');
-    expect(profile.xhttpPath).toBe('/api/v1/ping');
+    expect(profile.profileId).toBe(DEFAULT_SNI_PROFILE.profileId);
   });
 
   it('resolves wildcard / suffix match for subdomains of Apple', () => {

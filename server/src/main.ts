@@ -32,7 +32,7 @@ async function bootstrap() {
   app.use((req: Request, res: Response, next: NextFunction) => {
     const startedAt = Date.now();
     res.on('finish', () => {
-      const message = `${req.method} ${req.originalUrl} -> ${res.statusCode} (${Date.now() - startedAt}ms)`;
+      const message = `${req.method} ${req.path.startsWith('/api/v1/') ? req.path : req.originalUrl} -> ${res.statusCode} (${Date.now() - startedAt}ms)`;
       if (
         req.originalUrl.startsWith('/api/rotation') ||
         req.originalUrl.startsWith('/api/nodes') ||
@@ -88,7 +88,7 @@ async function bootstrap() {
       return callback(new Error('Not allowed by CORS'), false);
     },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],
     credentials: true,
   });
   app.useGlobalFilters(new HttpExceptionFilter());

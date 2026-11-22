@@ -126,24 +126,6 @@ export const SNI_PROFILE_RULES: readonly SniProfileRule[] = [
       xPaddingBytes: '300-1000',
     },
   },
-  // Speedtest / Ookla network endpoints
-  {
-    id: 'speedtest',
-    name: 'Ookla Speedtest CDN',
-    category: 'Speedtest',
-    description:
-      'Маскировка под замеры скорости и телеметрию Speedtest. Обычный веб-трафик к измерительным серверам.',
-    recommendedDomains: ['speedtest.net', 'www.speedtest.net'],
-    exact: ['speedtest.net', 'www.speedtest.net'],
-    suffix: ['.speedtest.net', '.ookla.com'],
-    profile: {
-      serverNames: ['speedtest.net', 'www.speedtest.net'],
-      fingerprint: 'chrome',
-      spiderX: '/api/',
-      xhttpPath: '/api/v1/ping',
-      xPaddingBytes: '200-800',
-    },
-  },
   // NVIDIA driver downloads & GeForce
   {
     id: 'nvidia',

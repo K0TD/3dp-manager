@@ -1,5 +1,7 @@
 import {
   Injectable,
+  ConflictException,
+  BadRequestException,
   OnModuleInit,
   NotFoundException,
   Logger,
@@ -9,17 +11,22 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Not, Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
+import { createHash } from 'node:crypto';
 
 import { Subscription } from '../subscriptions/entities/subscription.entity';
 import { Inbound, InboundStatus } from '../inbounds/entities/inbound.entity';
 import { extractInboundClientId } from '../inbounds/inbound-client.util';
+import { isExcludedSniDomain } from '../domains/sni-exclusions';
 import { Domain } from '../domains/entities/domain.entity';
 import { Setting } from '../settings/entities/setting.entity';
 import { Node, NodeHealthStatus } from '../nodes/entities/node.entity';
 import { Tunnel } from '../tunnels/entities/tunnel.entity';
 import { XuiCertificateFiles, XuiService } from '../xui/xui.service';
 import { InboundBuilderService } from '../inbounds/inbound-builder.service';
-import { XuiInboundRaw } from '../inbounds/xui-inbound.types';
+import {
+  XuiInboundRaw,
+  XuiStreamSettings,
+} from '../inbounds/xui-inbound.types';
 import {
   isSafeAbsoluteRemotePath,
   assertManagedCertificateHost,
@@ -53,6 +60,8 @@ import {
   RotationOperation,
   RotationOperationStatus,
   RotationInboundDiagnostic,
+  RotationConfigResult,
+  RotationTarget,
 } from './entities/rotation-operation.entity';
 import {
   classifyDatabaseError,
@@ -67,6 +76,10 @@ import { evaluateProfileCompatibility } from '../profiles/profile-compatibility'
 import { ClientProbeService } from '../profiles/client-probe.service';
 
 type InboundConfig = NonNullable<Subscription['inboundsConfig']>[number];
+
+export function inboundConfigVersion(config: InboundConfig) {
+  return createHash('sha256').update(JSON.stringify(config)).digest('hex');
+}
 
 interface PositionedInboundConfig {
   config: InboundConfig;
@@ -83,6 +96,7 @@ interface CreateInboundRequest {
   realityKeys?: { privateKey: string; publicKey: string } | null;
   nodeCertificate?: XuiCertificateFiles;
   diagnostics?: RotationInboundDiagnostic[];
+  onStaged?: (inbound: Inbound) => void;
 }
 
 interface ResolvedTlsConfig extends XuiCertificateFiles {
@@ -101,6 +115,7 @@ interface SaveStagedInboundRequest {
   protocol: string;
   remark?: string;
   link: string;
+  clientId?: string;
 }
 
 @Injectable()
@@ -195,7 +210,12 @@ export class RotationService implements OnModuleInit {
 
   @Cron('*/5 * * * * *')
   async processQueuedOperation() {
-    if (this.processingOperation || this.dbAvailability.shouldSkip()) return;
+    if (
+      this.processingOperation ||
+      this.processingCleanup ||
+      this.dbAvailability.shouldSkip()
+    )
+      return;
 
     this.processingOperation = true;
     try {
@@ -224,7 +244,9 @@ export class RotationService implements OnModuleInit {
 
       const startedAt = Date.now();
       try {
-        const result = await this.performRotation(operation.subscriptionIds);
+        const result = operation.target
+          ? await this.performTargetedRotation(operation)
+          : await this.performRotation(operation.subscriptionIds);
         operation.results = result.results.map((item) => ({
           ...item,
           ...(item.message
@@ -241,7 +263,9 @@ export class RotationService implements OnModuleInit {
         }));
         operation.status = result.success
           ? RotationOperationStatus.Succeeded
-          : result.results.some((item) => item.status === 'succeeded')
+          : result.results.some(
+                (item) => item.status === 'partial' || item.created > 0,
+              )
             ? RotationOperationStatus.Partial
             : RotationOperationStatus.Failed;
         operation.error = result.success
@@ -426,8 +450,7 @@ export class RotationService implements OnModuleInit {
     const allSucceeded =
       results.length > 0 &&
       results.every((item) => item.status === 'succeeded');
-    const noneSucceeded =
-      results.length === 0 || results.every((item) => item.status === 'failed');
+    const noneSucceeded = results.every((item) => item.created === 0);
 
     let message = 'Ротация успешно выполнена';
     if (!allSucceeded) {
@@ -573,7 +596,8 @@ export class RotationService implements OnModuleInit {
       const obsolete = (subscription.inbounds || []).filter(
         (inbound) =>
           inbound.status === InboundStatus.Active &&
-          !PERSISTENT_INBOUND_TYPES.has(inbound.protocol),
+          !PERSISTENT_INBOUND_TYPES.has(inbound.protocol) &&
+          Boolean(inbound.configId),
       );
       await this.queueCleanup(obsolete);
       if (!configured.length) {
@@ -641,7 +665,8 @@ export class RotationService implements OnModuleInit {
       const obsolete = (subscription.inbounds || []).filter(
         (inbound) =>
           inbound.status === InboundStatus.Active &&
-          !PERSISTENT_INBOUND_TYPES.has(inbound.protocol),
+          !PERSISTENT_INBOUND_TYPES.has(inbound.protocol) &&
+          Boolean(inbound.configId),
       );
       await this.queueCleanup(obsolete);
       return [
@@ -704,29 +729,171 @@ export class RotationService implements OnModuleInit {
     }
 
     const results: RotationNodeResult[] = [];
-    const desiredKeys = new Set(groups.keys());
     for (const [key, group] of groups) {
       results.push(
         await this.rotateNodeGroup(subscription, key, group, domains),
       );
     }
 
-    const obsolete = (subscription.inbounds || []).filter((inbound) => {
-      if (PERSISTENT_INBOUND_TYPES.has(inbound.protocol)) return false;
-      if (inbound.status !== InboundStatus.Active) return false;
-      const key =
-        inbound.protocol === 'custom'
-          ? '__custom'
-          : inbound.nodeId || '__missing';
-      return !desiredKeys.has(key);
+    const desiredIds = new Set(configured.map((config) => config.configId));
+    const obsolete = (subscription.inbounds || []).filter(
+      (inbound) =>
+        inbound.status === InboundStatus.Active &&
+        !PERSISTENT_INBOUND_TYPES.has(inbound.protocol) &&
+        inbound.configId &&
+        !desiredIds.has(inbound.configId),
+    );
+    if (results.every((result) => result.status === 'succeeded'))
+      await this.queueCleanup(obsolete);
+    return results;
+  }
+
+  async validateTarget(target: RotationTarget) {
+    const source = await this.getOperation(target.operationId);
+    const failed = source.results?.some(
+      (result) =>
+        result.subscriptionId === target.subscriptionId &&
+        result.inboundResults?.some(
+          (item) => item.configId === target.configId && item.error,
+        ),
+    );
+    if (!failed) throw new NotFoundException('Failed inbound result not found');
+    const subscription = await this.subRepo.findOneBy({
+      id: target.subscriptionId,
     });
-    if (obsolete.length > 0) {
-      this.logger.log(
-        `[RotationService] Помечено на очистку ${obsolete.length} устаревших инбаундов для подписки «${subscription.name}»`,
+    return this.resolveTargetConfig(subscription, target);
+  }
+
+  async enqueueTargetedRotation(target: RotationTarget) {
+    await this.validateTarget(target);
+    const operation = await this.operationRepo.save(
+      this.operationRepo.create({
+        status: RotationOperationStatus.Queued,
+        subscriptionIds: [target.subscriptionId],
+        results: [],
+        target,
+      }),
+    );
+    return { id: operation.id, status: operation.status };
+  }
+
+  private async resolveTargetConfig(
+    subscription: Subscription | null,
+    target: RotationTarget,
+  ) {
+    const matches = subscription?.inboundsConfig?.filter(
+      (config) => config.configId === target.configId,
+    );
+    const config = matches?.[0];
+    if (
+      !subscription?.isEnabled ||
+      matches?.length !== 1 ||
+      !config ||
+      config.enabled === false ||
+      PERSISTENT_INBOUND_TYPES.has(config.type) ||
+      ROUTING_INBOUND_TYPES.has(config.type) ||
+      config.type === 'custom'
+    ) {
+      throw new ConflictException(
+        'Inbound is unavailable for targeted rotation',
       );
     }
-    await this.queueCleanup(obsolete);
-    return results;
+    if (!target.patch) return config;
+    if (inboundConfigVersion(config) !== target.version)
+      throw new ConflictException('Inbound configuration has changed');
+    const { port, sni, mode, path } = target.patch;
+    if (
+      (mode || path) &&
+      config.type !== 'xhttp-stable' &&
+      config.type !== 'https-fallback'
+    )
+      throw new BadRequestException(
+        'XHTTP settings are unavailable for this inbound',
+      );
+    if (
+      sni &&
+      !['xhttp-stable', 'vless-xhttp-reality', 'vless-tcp-reality'].includes(
+        config.type || '',
+      )
+    )
+      throw new BadRequestException(
+        'SNI repair is unavailable for this inbound',
+      );
+    if (
+      sni &&
+      (isExcludedSniDomain(sni) ||
+        !(await this.domainRepo.findOneBy({ name: sni, isEnabled: true })))
+    )
+      throw new BadRequestException('SNI must be an enabled domain');
+    if (
+      config.type === 'https-fallback' &&
+      ['nginx', 'caddy'].includes(config.profileSettings?.reverseProxy || '') &&
+      ((port !== undefined && String(port) !== String(config.port)) ||
+        path ||
+        mode)
+    ) {
+      throw new ConflictException(
+        'Update the reverse proxy and profile manually before rotating this inbound',
+      );
+    }
+    return {
+      ...config,
+      ...(port !== undefined ? { port } : {}),
+      ...(sni !== undefined ? { sni } : {}),
+      ...(isManagedProfileKind(config.type)
+        ? {
+            profileSettings: {
+              ...config.profileSettings,
+              ...(sni ? { domain: sni } : {}),
+              ...(mode ? { mode } : {}),
+              ...(path ? { path } : {}),
+            },
+          }
+        : {}),
+    };
+  }
+
+  private async performTargetedRotation(operation: RotationOperation) {
+    const target = operation.target!;
+    return this.subscriptionLock.run(target.subscriptionId, async () => {
+      // Activation and the successful result are committed together.
+      const completed = operation.results?.[0];
+      if (completed?.status === 'succeeded')
+        return { success: true, message: '', results: [completed] };
+      const subscription = await this.subRepo.findOne({
+        where: { id: target.subscriptionId },
+        relations: ['inbounds', 'inbounds.node', 'node', 'relayServer'],
+      });
+      const config = await this.resolveTargetConfig(subscription, target);
+      if (!subscription) throw new NotFoundException('Subscription not found');
+      const defaultNode = await this.getDefaultNode();
+      const node = await this.resolveNode(
+        config.nodeId,
+        subscription,
+        defaultNode,
+      );
+      const position = subscription.inboundsConfig.findIndex(
+        (item) => item.configId === target.configId,
+      );
+      const domains = await this.domainRepo.find({
+        where: { isEnabled: true },
+      });
+      const result = await this.rotateNodeGroup(
+        subscription,
+        node?.id || '__missing',
+        {
+          node: node ?? undefined,
+          configs: [{ config, position }],
+        },
+        domains,
+        operation,
+      );
+      return {
+        success: result.status === 'succeeded',
+        message: result.message,
+        results: [result],
+      };
+    });
   }
 
   private async rotateNodeGroup(
@@ -734,515 +901,422 @@ export class RotationService implements OnModuleInit {
     key: string,
     group: { node?: Node; configs: PositionedInboundConfig[] },
     domains: Domain[],
+    operation?: RotationOperation,
   ): Promise<RotationNodeResult> {
-    const generationId = uuidv4();
-    const created: Inbound[] = [];
-    const preservedManaged: Array<{ inbound: Inbound; position: number }> = [];
-    const preservedIds = new Set<number>();
-    const usedPorts = new Set<number>();
-    for (const existing of subscription.inbounds || []) {
-      if (
-        existing.status === InboundStatus.Active &&
-        existing.port > 0 &&
-        (key === '__custom'
-          ? existing.protocol === 'custom'
-          : existing.nodeId === group.node?.id)
-      ) {
-        usedPorts.add(existing.port);
+    const { node, configs } = group;
+    const active = (subscription.inbounds || []).filter(
+      (item) =>
+        item.status === InboundStatus.Active &&
+        !PERSISTENT_INBOUND_TYPES.has(item.protocol),
+    );
+    const desired = subscription.inboundsConfig || [];
+    const usedPorts = new Set(
+      active
+        .filter((item) => item.nodeId === node?.id)
+        .map((item) => item.port),
+    );
+    const occupied = new Map<number, InboundConfig[]>();
+    const reserved = new Set<number>();
+    for (const { config } of configs) {
+      const port = this.parseFixedPort(config.port);
+      if (port !== null && config.type !== 'custom') {
+        usedPorts.add(port);
+        occupied.set(port, [...(occupied.get(port) || []), config]);
       }
-    }
-    for (const { config } of group.configs) {
-      const fixedPort = this.parseFixedPort(config.port);
-      if (fixedPort !== null) usedPorts.add(fixedPort);
       if (
         config.type === 'self-sni' &&
         (config.profileSettings?.webServer ?? 'nginx') !== 'none'
-      ) {
-        usedPorts.add(config.profileSettings?.localHttpsPort ?? 8443);
-      }
+      )
+        reserved.add(config.profileSettings?.localHttpsPort ?? 8443);
       if (
         config.type === 'https-fallback' &&
-        (config.profileSettings?.reverseProxy === 'nginx' ||
-          config.profileSettings?.reverseProxy === 'caddy')
-      ) {
-        usedPorts.add(config.profileSettings?.publicPort ?? 443);
-      }
+        ['nginx', 'caddy'].includes(config.profileSettings?.reverseProxy || '')
+      )
+        reserved.add(config.profileSettings?.publicPort ?? 443);
     }
+    for (const port of reserved) usedPorts.add(port);
+
     const diagnostics: RotationInboundDiagnostic[] = [];
-    let phase = 'Проверка ноды и TLS';
-    let stage: OperationErrorStage = 'preflight';
-    let failedConfig: InboundConfig | undefined;
-    let failedPort: number | undefined;
-    let failureReason: string | undefined;
-    let diagnosticStart = 0;
-    let canaryFailed = false;
-    const canaryResults: ClientConnectionProbeResult[] = [];
-    let realityKeys:
-      | Awaited<ReturnType<XuiService['getNewX25519Cert']>>
-      | undefined;
+    const inboundResults: RotationConfigResult[] = [];
+    const replacements: Array<{
+      candidate: Inbound;
+      previous?: Inbound;
+      result: RotationConfigResult;
+    }> = [];
+    const preservedPositions: Array<{ id: number; position: number }> = [];
+    let nodeCheck: Promise<unknown> | undefined;
+    let runtimeUnhealthy = false;
+    let rolledBack = false;
+    let certificate: Promise<XuiCertificateFiles | null> | undefined;
+    let keys: ReturnType<XuiService['getNewX25519Cert']> | undefined;
+    const generationId = uuidv4();
 
-    const nodeLabel =
-      group.node?.name ||
-      (key === '__custom' ? 'Локальные ссылки' : 'Без ноды');
-    this.logger.log(
-      `[RotationService] Запуск ротации группы ноды «${nodeLabel}» для подписки «${subscription.name}» (${group.configs.length} инбаундов)...`,
-    );
-
-    try {
-      if (key === '__missing')
-        throw new Error('Для конфигурации не назначена нода');
-      if (
-        group.node &&
-        group.node.consecutiveFailures >= 3 &&
-        [NodeHealthStatus.Offline, NodeHealthStatus.AuthError].includes(
-          group.node.healthStatus,
-        ) &&
-        group.node.lastCheckedAt &&
-        Date.now() - new Date(group.node.lastCheckedAt).getTime() < 120_000
-      ) {
-        throw new Error(`Нода ${group.node.name} временно недоступна`);
-      }
-      const nodeCertificate = await this.preflightNodeGroup(
-        group.configs,
-        group.node,
+    for (const positionedConfig of configs) {
+      const { config, position } = positionedConfig;
+      const previous = active.filter(
+        (item) => config.configId && item.configId === config.configId,
       );
-      const rejectedInbounds: Array<{
-        type: string;
-        name?: string;
-        reason: string;
-      }> = [];
-
-      for (const positionedConfig of group.configs) {
-        const { config, position } = positionedConfig;
-        const preservable = this.findPreservableManagedInbound(
-          config,
-          subscription,
-          group.node?.id,
-        );
-        if (preservable) {
-          preservedManaged.push({ inbound: preservable, position });
-          preservedIds.add(preservable.id);
-          if (preservable.port > 0) usedPorts.add(preservable.port);
-          this.logger.log(
-            `[RotationService] Постоянный профиль «${config.name || config.type}» (порт ${preservable.port}) сохранён без пересоздания для исключения конфликта портов`,
+      const result: RotationConfigResult = {
+        configId: config.configId,
+        type: config.type,
+        name: config.name,
+        status: 'failed',
+        previousActive: previous.length > 0,
+      };
+      inboundResults.push(result);
+      let stage: OperationErrorStage = 'preflight';
+      let candidate: Inbound | null = null;
+      const diagnosticStart = diagnostics.length;
+      try {
+        if (key === '__missing')
+          throw new Error('Для конфигурации не назначена нода');
+        if (
+          previous.length > 1 ||
+          (config.configId &&
+            desired.filter((item) => item.configId === config.configId).length >
+              1) ||
+          active.some(
+            (item) =>
+              !item.configId &&
+              (key === '__custom'
+                ? item.protocol === 'custom'
+                : item.nodeId === node?.id &&
+                  (item.protocol === panelInboundProtocol(config.type) ||
+                    config.type?.startsWith(`${item.protocol}-`) ||
+                    (item.protocol === 'vless' &&
+                      isManagedProfileKind(config.type)))),
+          )
+        ) {
+          result.previousActive = true;
+          throw new Error('Неоднозначная связь инбаунда с configId');
+        }
+        const port = this.parseFixedPort(config.port);
+        result.port = port ?? undefined;
+        if (
+          port !== null &&
+          config.type !== 'custom' &&
+          ((occupied.get(port)?.length ?? 0) > 1 || reserved.has(port))
+        )
+          throw new Error(
+            `Конфликт порта ${port}: порт уже используется конфигурацией или веб-сервером`,
           );
+        if (
+          node &&
+          node.consecutiveFailures >= 3 &&
+          [NodeHealthStatus.Offline, NodeHealthStatus.AuthError].includes(
+            node.healthStatus,
+          ) &&
+          node.lastCheckedAt &&
+          Date.now() - new Date(node.lastCheckedAt).getTime() < 120_000
+        )
+          throw new Error(`Нода ${node.name} временно недоступна`);
+        this.assertNodeCompatibility(config, node);
+        if (runtimeUnhealthy)
+          throw new Error('Xray недоступен после создания инбаунда');
+        if (node)
+          await (nodeCheck ??= Promise.resolve(
+            this.xuiService.assertXrayHealthy(node),
+          ));
+        const preservable =
+          !operation?.target?.patch &&
+          this.findPreservableManagedInbound(config, subscription, node?.id);
+        if (preservable) {
+          preservedPositions.push({ id: preservable.id, position });
+          result.status = 'unchanged';
+          result.port = preservable.port;
           continue;
         }
-        phase = `Создание ${config.name || config.type}`;
-        stage = 'create';
-        diagnosticStart = diagnostics.length;
-        if (!failureReason) {
-          failedConfig = config;
-          failedPort = undefined;
-        }
+        let nodeCertificate: XuiCertificateFiles | undefined;
         if (
-          (config.type?.includes('reality') ||
-            config.type === 'xhttp-stable' ||
-            config.type === 'self-sni') &&
-          !realityKeys
+          node &&
+          requiresPanelTlsCertificate(config) &&
+          this.getCertificateMode(config) === 'node'
         ) {
-          this.logger.log(
-            `[RotationService] Запрос ключей Reality для ноды «${group.node?.name || 'main'}»...`,
-          );
-          realityKeys = await this.xuiService.getNewX25519Cert(group.node);
-          if (!realityKeys) {
+          nodeCertificate =
+            (await (certificate ??=
+              this.xuiService.getWebCertificateFiles(node))) ?? undefined;
+          if (!nodeCertificate)
             throw new Error(
-              `Нода «${group.node?.name || 'main'}» не выдала Reality-ключи`,
+              'Нода не предоставила сертификат панели через getWebCertFiles',
             );
-          }
-          this.logger.log(
-            `[RotationService] Ключи Reality успешно получены для ноды «${group.node?.name || 'main'}»`,
-          );
         }
-        const inbound = await this.createInbound({
+        stage = 'create';
+        let realityKeys:
+          | Awaited<ReturnType<XuiService['getNewX25519Cert']>>
+          | undefined;
+        if (
+          config.type?.includes('reality') ||
+          config.type === 'xhttp-stable' ||
+          config.type === 'self-sni'
+        ) {
+          realityKeys = await (keys ??= this.xuiService.getNewX25519Cert(node));
+          if (!realityKeys) throw new Error('Нода не выдала Reality-ключи');
+        }
+        candidate = await this.createInbound({
           subscription,
           positionedConfig,
-          node: group.node,
+          node,
           domains,
           usedPorts,
           generationId,
           realityKeys,
           nodeCertificate,
           diagnostics,
+          onStaged: (inbound) => {
+            candidate = inbound;
+          },
         });
-        if (!inbound) {
-          const reason =
-            this.xuiService.getLastInboundError(group.node) ||
-            '3x-ui отклонил создание инбаунда';
-          if (!failureReason) {
-            failureReason = reason;
-            failedConfig = config;
-            failedPort = diagnostics.at(-1)?.port;
-          }
-          rejectedInbounds.push({
-            type: config.type,
-            name: config.name,
-            reason,
-          });
-          continue;
-        }
-        created.push(inbound);
-      }
+        if (!candidate)
+          throw new Error(
+            this.xuiService.getLastInboundError(node) ||
+              '3x-ui отклонил создание инбаунда',
+          );
+        result.port = candidate.port;
 
-      if (rejectedInbounds.length > 0) {
-        const summary = rejectedInbounds
-          .map(
-            (item) =>
-              `[${item.type}${item.name ? ` / ${item.name}` : ''}]: ${item.reason}`,
+        stage = 'verify';
+        if (
+          node &&
+          !['custom', 'amneziawg', 'mtproto-faketls'].includes(
+            config.type || '',
           )
-          .join('; ');
-        this.logger.warn(
-          `[RotationService] Сводка отклонённых панелью инбаундов для подписки «${subscription.name}» на ноде «${nodeLabel}» (${rejectedInbounds.length}/${group.configs.length}): ${redactOperationError(summary, 16384)}`,
-        );
-        throw new Error(summary);
-      }
-
-      if (!created.length && !preservedManaged.length) {
-        const failureDetails = rejectedInbounds.length
-          ? rejectedInbounds
-              .map((item) => `${item.type} (${item.reason})`)
-              .join('; ')
-          : '3x-ui отклонил inbound';
-        throw new Error(
-          `3x-ui отклонил все инбаунды на ноде «${nodeLabel}»: ${failureDetails}`,
-        );
-      }
-
-      phase = 'Проверка запуска Xray';
-      stage = 'verify';
-      failedConfig = undefined;
-      failedPort = undefined;
-      if (
-        created.length > 0 &&
-        group.node &&
-        group.configs.some(
-          ({ config }) =>
-            !['custom', 'amneziawg', 'mtproto-faketls'].includes(config.type),
-        )
-      )
-        await this.xuiService.waitForXray(group.node);
-
-      if (this.clientProbe && process.env.DISABLE_CANARY_PROBE !== 'true') {
-        const managedStaged = created.filter(
-          (item) => item.profileKind && item.clientProfileJson,
-        );
-        if (managedStaged.length > 0) {
-          phase = 'Canary-проверка клиентского подключения';
-          stage = 'verify';
-          const failedCanaries: Array<{
-            candidate: Inbound;
-            result: ClientConnectionProbeResult;
-          }> = [];
-          for (const candidate of managedStaged) {
-            const rawClient = candidate.clientProfileJson;
-            if (!rawClient) continue;
-            let parsedClient: SeparatedClientProfile | null = null;
-            try {
-              parsedClient = JSON.parse(rawClient) as SeparatedClientProfile;
-            } catch {
-              parsedClient = null;
-            }
-            if (!parsedClient) continue;
-            const probeResult = await this.clientProbe.probeClientProfile(
-              parsedClient,
-              { waitForPortMs: 3000 },
-            );
-            canaryResults.push(probeResult);
-            if (!probeResult.success) {
-              failedCanaries.push({ candidate, result: probeResult });
-            }
-          }
-          if (failedCanaries.length > 0) {
-            canaryFailed = true;
-            const first = failedCanaries[0];
-            failedPort = first.candidate.port;
-            failedConfig = group.configs.find(
-              (item) => item.config.configId === first.candidate.configId,
-            )?.config;
-            const summary = failedCanaries
-              .map(
-                ({ candidate, result }) =>
-                  `Canary-проверка профиля «${candidate.remark || candidate.profileKind}» (${candidate.profileKind}) не пройдена (${result.engine}): ${result.error || 'соединение не установлено'}`,
-              )
-              .join('; ');
-            throw new Error(summary);
-          }
-        }
-      }
-
-      const old = (subscription.inbounds || []).filter((inbound) => {
-        if (PERSISTENT_INBOUND_TYPES.has(inbound.protocol)) return false;
-        if (inbound.status !== InboundStatus.Active) return false;
-        if (preservedIds.has(inbound.id)) return false;
-        return key === '__custom'
-          ? inbound.protocol === 'custom'
-          : inbound.nodeId === group.node?.id;
-      });
-      await this.inboundRepo.manager.transaction(async (manager) => {
-        if (old.length) {
-          await manager.update(
-            Inbound,
-            { id: In(old.map((item) => item.id)) },
-            { status: InboundStatus.PendingCleanup, nextCleanupAt: new Date() },
-          );
-        }
-        for (const item of preservedManaged) {
-          if (item.inbound.position !== item.position) {
-            await manager.update(
-              Inbound,
-              { id: item.inbound.id },
-              { position: item.position },
-            );
-          }
-        }
-        if (created.length) {
-          await manager.update(
-            Inbound,
-            { id: In(created.map((item) => item.id)) },
-            { status: InboundStatus.Active },
-          );
-        }
-      });
-      this.logger.log(
-        `[RotationService] Успешно создано ${created.length} инбаундов для подписки «${subscription.name}» на ноде «${nodeLabel}» (сохранено постоянных: ${preservedManaged.length}, устаревших: ${old.length})`,
-      );
-      return {
-        subscriptionId: subscription.id,
-        subscriptionName: subscription.name,
-        nodeId: group.node?.id,
-        nodeName: group.node?.name || 'Локальные ссылки',
-        status: 'succeeded',
-        created: created.length,
-        ...(preservedManaged.length > 0
-          ? { preserved: preservedManaged.length }
-          : {}),
-        pendingCleanup: old.length,
-        ...(canaryResults.length ? { canaryResults } : {}),
-      };
-    } catch (error) {
-      const errMessage = this.safeMessage(error);
-      let blockingInbound;
-      if (error instanceof XuiRuntimeError && error.inbound) {
-        const owner =
-          error.inbound.xuiId && group.node
-            ? await this.inboundRepo
-                .findOne({
-                  where: { xuiId: error.inbound.xuiId, nodeId: group.node.id },
-                  relations: ['subscription'],
-                })
-                .catch(() => null)
-            : null;
-        blockingInbound = {
-          ...error.inbound,
-          subscriptionId: owner?.subscription?.id,
-          subscriptionName: owner?.subscription?.name,
-        };
-      }
-      this.logger.error(
-        `[RotationService] Сбой ротации для подписки «${subscription.name}» на ноде «${nodeLabel}»: ${errMessage}`,
-        error instanceof Error && error.stack
-          ? redactOperationError(error.stack, 16384)
-          : undefined,
-      );
-      const pendingForCleanup: Inbound[] = [];
-      if (canaryFailed && group.node && created.length > 0) {
-        const createdIds = created.map((item) => item.id);
-        const removedImmediately: Inbound[] = [];
-        for (const stagedInbound of created) {
-          let deletedOnPanel = false;
-          if (stagedInbound.xuiId > 0) {
-            try {
-              deletedOnPanel = await this.removeOrDetachInboundFromPanel(
-                stagedInbound,
-                group.node,
-                createdIds,
-              );
-            } catch {
-              deletedOnPanel = false;
-            }
-          }
-          if (deletedOnPanel) {
-            removedImmediately.push(stagedInbound);
-          } else {
-            pendingForCleanup.push(stagedInbound);
-          }
+        ) {
+          runtimeUnhealthy = true;
+          await this.xuiService.waitForXray(node);
+          runtimeUnhealthy = false;
         }
         if (
-          removedImmediately.length > 0 &&
-          typeof this.inboundRepo.remove === 'function'
+          operation?.target?.patch &&
+          candidate.profileKind &&
+          (!this.clientProbe || process.env.DISABLE_CANARY_PROBE === 'true')
+        )
+          throw new Error('Canary-проверка профиля недоступна');
+        if (
+          candidate.profileKind &&
+          this.clientProbe &&
+          process.env.DISABLE_CANARY_PROBE !== 'true'
         ) {
-          await this.inboundRepo.remove(removedImmediately).catch(() => {
-            pendingForCleanup.push(...removedImmediately);
+          const client = JSON.parse(
+            candidate.clientProfileJson || 'null',
+          ) as SeparatedClientProfile | null;
+          if (!client) throw new Error('Клиентская конфигурация отсутствует');
+          const check = await this.clientProbe.probeClientProfile(client, {
+            waitForPortMs: 3000,
           });
-        } else {
-          pendingForCleanup.push(...removedImmediately);
+          result.canary = {
+            ...check,
+            error: check.error ? redactOperationError(check.error) : undefined,
+            sni: client.sni,
+            host: client.xhttp?.host,
+            path: client.xhttp?.path,
+            mode: client.xhttp?.mode,
+          };
+          if (
+            !check.success ||
+            (operation?.target?.patch && check.engine !== 'xray-core')
+          )
+            throw new Error(
+              `Canary-проверка профиля (${candidate.profileKind}) не пройдена: ${check.error || 'соединение не установлено'}`,
+            );
         }
-      } else {
-        pendingForCleanup.push(...created);
-      }
-      await this.queueCleanup(pendingForCleanup);
-      return {
-        subscriptionId: subscription.id,
-        subscriptionName: subscription.name,
-        nodeId: group.node?.id,
-        nodeName:
-          group.node?.name ||
-          (key === '__custom' ? 'Локальные ссылки' : 'Без ноды'),
-        status: 'preserved',
-        created: 0,
-        pendingCleanup: pendingForCleanup.length,
-        ...(created.length > 0 ? { rolledBack: true } : {}),
-        ...(canaryResults.length ? { canaryResults } : {}),
-        message: errMessage,
-        errorDetails: normalizeOperationError(failureReason || errMessage, {
-          node: group.node?.name,
-          inboundType: failedConfig?.type,
-          port:
-            failedPort ||
-            (failedConfig && diagnostics.length > diagnosticStart
-              ? diagnostics.at(-1)?.port
-              : undefined) ||
-            (typeof failedConfig?.port === 'number'
-              ? failedConfig.port
-              : /^\d+$/.test(failedConfig?.port || '')
-                ? Number(failedConfig?.port)
-                : undefined),
+        replacements.push({ candidate, previous: previous[0], result });
+        result.status = 'activated';
+      } catch (error) {
+        if (candidate) {
+          rolledBack = true;
+          result.cleanupQueued = await this.discardStagedInbound(
+            candidate,
+            node,
+          );
+          if (runtimeUnhealthy && node && !result.cleanupQueued) {
+            try {
+              await this.xuiService.waitForXray(node);
+              runtimeUnhealthy = false;
+            } catch {
+              // Keep the group's staged replacements out of subscription feeds.
+            }
+          }
+        }
+        result.status = result.previousActive ? 'preserved' : 'failed';
+        if (!candidate && diagnostics.length > diagnosticStart)
+          result.port = diagnostics.at(-1)?.port;
+        const raw = error instanceof Error ? error.message : String(error);
+        result.error = normalizeOperationError(error, {
+          node: node?.name,
+          inboundType: config.type,
+          port: result.port,
           stage,
-          panelRejected: Boolean(failureReason),
-        }),
-        details: {
-          phase,
-          inbounds: diagnostics.length
-            ? diagnostics
-            : group.configs.map(({ config }) => ({
-                protocol: config.type,
-                configId: config.configId,
-                name: config.name,
-                serverName:
-                  config.certificateMode === 'custom'
-                    ? config.tlsServerName
-                    : undefined,
-                certificates:
-                  config.certificateMode === 'custom'
-                    ? [
-                        {
-                          certificateFile: config.certificateFile,
-                          keyFile: config.keyFile,
-                        },
-                      ]
-                    : undefined,
-              })),
-          blockingInbound,
-        },
-      };
+          panelRejected:
+            stage === 'create' && diagnostics.length > diagnosticStart,
+        });
+        this.logger.warn(
+          `Ротация ${subscription.id}/${config.configId || position}: ${result.error.raw}`,
+        );
+        if (
+          node &&
+          (result.error.code === 'PORT_CONFLICT' ||
+            error instanceof XuiRuntimeError)
+        ) {
+          const xuiId =
+            (error instanceof XuiRuntimeError
+              ? error.inbound?.xuiId
+              : undefined) ||
+            Number(/\(#(\d+)\)/.exec(raw)?.[1]) ||
+            undefined;
+          const listen = /\bon\s+([\d.:a-f\[\]]+)\s*\)/i.exec(raw)?.[1];
+          const owner = xuiId
+            ? await this.inboundRepo
+                .findOne({
+                  where: {
+                    xuiId,
+                    nodeId: node.id,
+                    status: InboundStatus.Active,
+                  },
+                })
+                .catch(() => null)
+            : undefined;
+          result.conflict = {
+            xuiId,
+            listen,
+            subscriptionId: owner?.subscriptionId,
+          };
+        }
+      }
     }
+
+    if (runtimeUnhealthy) {
+      for (const { candidate, result } of replacements.splice(0)) {
+        rolledBack = true;
+        result.cleanupQueued = await this.discardStagedInbound(candidate, node);
+        result.status = result.previousActive ? 'preserved' : 'failed';
+        result.error = normalizeOperationError('Xray недоступен на ноде', {
+          node: node?.name,
+          stage: 'verify',
+          inboundType: result.type,
+          port: result.port,
+        });
+      }
+    }
+    const old = replacements.flatMap((item) =>
+      item.previous ? [item.previous] : [],
+    );
+    const failures = inboundResults.filter((item) => item.error);
+    const firstError = failures[0]?.error;
+    const pendingCleanup =
+      old.length + inboundResults.filter((item) => item.cleanupQueued).length;
+    const result: RotationNodeResult = {
+      subscriptionId: subscription.id,
+      subscriptionName: subscription.name,
+      nodeId: node?.id,
+      nodeName:
+        node?.name || (key === '__custom' ? 'Локальные ссылки' : 'Без ноды'),
+      status: !failures.length
+        ? 'succeeded'
+        : replacements.length
+          ? 'partial'
+          : failures.some((item) => item.previousActive)
+            ? 'preserved'
+            : 'failed',
+      created: replacements.length,
+      pendingCleanup,
+      inboundResults,
+      ...(preservedPositions.length
+        ? { preserved: preservedPositions.length }
+        : {}),
+      ...(firstError
+        ? { errorDetails: firstError, message: firstError.raw }
+        : {}),
+      ...(rolledBack ? { rolledBack: true } : {}),
+      canaryResults: inboundResults.flatMap((item) =>
+        item.canary ? [item.canary] : [],
+      ),
+      details: {
+        phase: firstError?.stage || 'Активация',
+        inbounds: diagnostics,
+      },
+    };
+    if (replacements.length || preservedPositions.length) {
+      try {
+        await this.inboundRepo.manager.transaction(async (manager) => {
+          if (old.length)
+            await manager.update(
+              Inbound,
+              { id: In(old.map((item) => item.id)) },
+              {
+                status: InboundStatus.PendingCleanup,
+                nextCleanupAt: new Date(),
+              },
+            );
+          if (replacements.length)
+            await manager.update(
+              Inbound,
+              {
+                id: In(replacements.map((item) => item.candidate.id)),
+              },
+              { status: InboundStatus.Active },
+            );
+          for (const item of preservedPositions)
+            await manager.update(
+              Inbound,
+              { id: item.id },
+              { position: item.position },
+            );
+          if (operation?.target?.patch && result.status === 'succeeded') {
+            const configured = [...subscription.inboundsConfig];
+            configured[configs[0].position] = configs[0].config;
+            await manager.update(
+              Subscription,
+              { id: subscription.id },
+              { inboundsConfig: configured },
+            );
+          }
+          if (operation && result.status === 'succeeded')
+            await manager.update(
+              RotationOperation,
+              { id: operation.id },
+              { results: [result] },
+            );
+        });
+      } catch (error) {
+        const ids = replacements.map((item) => item.candidate.id);
+        if (ids.length) {
+          // Keep rows that were activated if the commit acknowledgement was lost.
+          await this.inboundRepo
+            .update(
+              { id: In(ids), status: InboundStatus.Staged },
+              {
+                status: InboundStatus.PendingCleanup,
+                nextCleanupAt: new Date(),
+              },
+            )
+            .catch(() => undefined);
+        }
+        throw error;
+      }
+    }
+    return result;
   }
 
-  private async preflightNodeGroup(
-    positionedConfigs: PositionedInboundConfig[],
-    node?: Node,
-  ): Promise<XuiCertificateFiles | undefined> {
-    const configs = positionedConfigs.map(({ config }) => config);
-    this.assertNoGroupPortCollisions(configs, node?.name);
-    for (const config of configs) this.assertNodeCompatibility(config, node);
-    if (node) await this.xuiService.assertXrayHealthy(node);
-
-    const needsNodeCertificate = configs.some(
-      (config) =>
-        requiresPanelTlsCertificate(config) &&
-        this.getCertificateMode(config) === 'node',
-    );
-    let certificate: XuiCertificateFiles | undefined;
-    if (needsNodeCertificate) {
-      if (!node) throw new Error('Для TLS-конфигурации не назначена нода');
-      certificate =
-        (await this.xuiService.getWebCertificateFiles(node)) || undefined;
-      if (!certificate) {
-        throw new Error(
-          `Нода «${node.name}» не предоставила сертификат панели через getWebCertFiles`,
-        );
-      }
+  private async discardStagedInbound(candidate: Inbound, node?: Node) {
+    await this.queueCleanup([candidate]);
+    if (!node || !candidate.xuiId) return true;
+    try {
+      const removed = await this.removeOrDetachInboundFromPanel(
+        candidate,
+        node,
+      );
+      if (!removed) return true;
+      await this.inboundRepo.delete(candidate.id);
+      return false;
+    } catch {
+      return true;
     }
-    for (const config of configs) {
-      if (!requiresPanelTlsCertificate(config)) continue;
-      if (!node) throw new Error('Для TLS-конфигурации не назначена нода');
-      try {
-        this.resolveTlsConfig(config, node, certificate);
-      } catch (error) {
-        throw new Error(
-          `Конфигурация «${config.name || config.type}» (${config.configId || 'без configId'}): ${this.safeMessage(error)}`,
-        );
-      }
-    }
-    return certificate;
   }
 
   private parseFixedPort(port?: number | string): number | null {
-    if (
-      port === undefined ||
-      port === null ||
-      port === '' ||
-      port === 'random'
-    ) {
-      return null;
-    }
-    const num = Number(port);
-    return Number.isInteger(num) && num >= 1 && num <= 65535 ? num : null;
-  }
-
-  private assertNoGroupPortCollisions(
-    configs: InboundConfig[],
-    nodeName?: string,
-  ) {
-    const fixedPorts = new Map<number, string>();
-    const reservedLocalPorts = new Map<number, string>();
-
-    for (const config of configs) {
-      if (config.type === 'custom') continue;
-      const label = config.name?.trim() || config.type;
-      if (
-        config.type === 'self-sni' &&
-        (config.profileSettings?.webServer ?? 'nginx') !== 'none'
-      ) {
-        const localPort = config.profileSettings?.localHttpsPort ?? 8443;
-        reservedLocalPorts.set(
-          localPort,
-          `локальным HTTPS-портом веб-сервера Self-SNI «${label}»`,
-        );
-      }
-      if (
-        config.type === 'https-fallback' &&
-        (config.profileSettings?.reverseProxy === 'nginx' ||
-          config.profileSettings?.reverseProxy === 'caddy')
-      ) {
-        const publicPort = config.profileSettings?.publicPort ?? 443;
-        reservedLocalPorts.set(
-          publicPort,
-          `публичным портом reverse proxy HTTPS Fallback «${label}»`,
-        );
-      }
-    }
-
-    for (const config of configs) {
-      if (config.type === 'custom') continue;
-      const port = this.parseFixedPort(config.port);
-      if (port === null) continue;
-      const label = config.name?.trim() || config.type;
-      const owner = fixedPorts.get(port);
-      if (owner) {
-        throw new Error(
-          `Конфликт порта ${port} на ноде «${nodeName || 'node'}»: порт указан сразу для «${owner}» и «${label}»`,
-        );
-      }
-      fixedPorts.set(port, label);
-
-      const reservedReason = reservedLocalPorts.get(port);
-      if (reservedReason) {
-        throw new Error(
-          `Конфликт порта ${port} на ноде «${nodeName || 'node'}» для «${label}»: пересечение с ${reservedReason}`,
-        );
-      }
-    }
+    const value = Number(port);
+    return Number.isInteger(value) && value >= 1 && value <= 65535
+      ? value
+      : null;
   }
 
   /**
@@ -1356,31 +1430,51 @@ export class RotationService implements OnModuleInit {
         profileKind: config.type,
       },
       order: { createdAt: 'DESC' },
+      relations: ['subscription'],
     });
     if (!Array.isArray(candidates) || candidates.length === 0) return null;
 
-    const normalizedSni = (sni || '').trim().toLowerCase();
+    const normalize = (value: string | undefined) =>
+      value?.trim().toLowerCase() || '';
     for (const candidate of candidates) {
-      if (!candidate.xuiId || candidate.xuiId <= 0) continue;
-      if (config.profileId && candidate.profileId === config.profileId) {
-        if (fixedPort !== null && candidate.port !== fixedPort) continue;
+      if (!candidate.xuiId || !candidate.clientProfileJson) continue;
+      if (fixedPort !== null && candidate.port !== fixedPort) continue;
+      if (fixedPort === null && candidate.profileId !== config.profileId)
+        continue;
+      const owner = candidate.subscription?.inboundsConfig?.find(
+        (item) => item.configId === candidate.configId,
+      );
+      if (!owner || owner.type !== config.type) continue;
+      const settings = (item: InboundConfig) =>
+        Object.entries(item.profileSettings || {})
+          .filter(([key]) => key !== 'rotationPolicy')
+          .sort(([left], [right]) => left.localeCompare(right));
+      if (
+        JSON.stringify(settings(owner)) !== JSON.stringify(settings(config)) ||
+        owner.certificateMode !== config.certificateMode ||
+        owner.certificateFile !== config.certificateFile ||
+        owner.keyFile !== config.keyFile ||
+        normalize(owner.tlsServerName) !== normalize(config.tlsServerName)
+      )
+        continue;
+      try {
+        const parsed = JSON.parse(
+          candidate.clientProfileJson,
+        ) as SeparatedClientProfile;
+        if (sni && normalize(parsed.sni) !== normalize(sni)) continue;
+        if (
+          config.profileSettings?.path &&
+          parsed.xhttp?.path !== config.profileSettings.path
+        )
+          continue;
+        if (
+          config.profileSettings?.mode &&
+          parsed.xhttp?.mode !== config.profileSettings.mode
+        )
+          continue;
         return candidate;
-      }
-      if (fixedPort !== null && candidate.port === fixedPort) {
-        if (normalizedSni && candidate.clientProfileJson) {
-          try {
-            const parsed = JSON.parse(
-              candidate.clientProfileJson,
-            ) as Partial<SeparatedClientProfile>;
-            const candidateSni = (parsed.sni || '').trim().toLowerCase();
-            if (candidateSni && candidateSni !== normalizedSni) {
-              continue;
-            }
-          } catch {
-            // Allow match by fixed port + profileKind if JSON is unreadable
-          }
-        }
-        return candidate;
+      } catch {
+        continue;
       }
     }
     return null;
@@ -1411,12 +1505,12 @@ export class RotationService implements OnModuleInit {
           },
         });
       } catch {
-        otherRefs = 0;
+        return false;
       }
     }
 
-    if (otherRefs > 0) {
-      const clientId = extractInboundClientId(inbound);
+    if (otherRefs > 0 || inbound.clientId) {
+      const clientId = inbound.clientId || extractInboundClientId(inbound);
       if (
         clientId &&
         typeof this.xuiService.deleteInboundClient === 'function'
@@ -1430,7 +1524,7 @@ export class RotationService implements OnModuleInit {
       this.logger.warn(
         `[RotationService] Пропущено удаление общего inbound ${inbound.xuiId} (используется ещё ${otherRefs} подписками; UUID клиента не извлечён)`,
       );
-      return true;
+      return false;
     }
 
     return this.xuiService.deleteInbound(inbound.xuiId, node);
@@ -1792,6 +1886,7 @@ export class RotationService implements OnModuleInit {
         protocol: saved.protocol === 'hysteria' ? 'hysteria2' : saved.protocol,
         remark: saved.remark,
         link: '',
+        clientId: attachedToShared ? uuid : undefined,
       });
     } catch (error) {
       const deleted = attachedToShared
@@ -1803,8 +1898,27 @@ export class RotationService implements OnModuleInit {
         );
       throw error;
     }
+    request.onStaged?.(staged);
     try {
       if (result.verificationError) throw new Error(result.verificationError);
+      if (config.type === 'xhttp-stable') {
+        const expected = JSON.parse(built.streamSettings) as XuiStreamSettings;
+        const actual = JSON.parse(saved.streamSettings) as XuiStreamSettings;
+        const xhttp = expected.xhttpSettings;
+        if (
+          xhttp &&
+          (actual.network !== expected.network ||
+            actual.security !== expected.security ||
+            actual.xhttpSettings?.path !== xhttp.path ||
+            (actual.xhttpSettings?.mode || 'auto') !== xhttp.mode ||
+            actual.xhttpSettings?.host !== xhttp.host ||
+            !actual.realitySettings?.serverNames?.includes(sni))
+        ) {
+          throw new Error(
+            '3x-ui не сохранила SNI, Host, Path или режим XHTTP по запрошенной конфигурации',
+          );
+        }
+      }
       if (
         config.type === 'xhttp-stable' ||
         config.type === 'self-sni' ||
@@ -1864,7 +1978,7 @@ export class RotationService implements OnModuleInit {
       staged.link = link;
       return await this.inboundRepo.save(staged);
     } catch (error) {
-      await this.queueCleanup([staged]);
+      if (!request.onStaged) await this.queueCleanup([staged]);
       throw error;
     }
   }
@@ -2003,6 +2117,7 @@ export class RotationService implements OnModuleInit {
         protocol,
         remark,
         link,
+        clientId: request.clientId,
         configId: config.configId,
         position,
         subscription,
@@ -2017,12 +2132,18 @@ export class RotationService implements OnModuleInit {
 
   @Cron(CronExpression.EVERY_MINUTE)
   async processCleanupQueue() {
-    if (this.processingCleanup || this.dbAvailability.shouldSkip()) return;
+    if (
+      this.processingCleanup ||
+      this.processingOperation ||
+      this.dbAvailability.shouldSkip()
+    )
+      return;
     this.processingCleanup = true;
     try {
       const items = await this.inboundRepo
         .createQueryBuilder('inbound')
         .leftJoinAndSelect('inbound.node', 'node')
+        .addSelect('inbound.clientId')
         .where('inbound.status = :status', {
           status: InboundStatus.PendingCleanup,
         })
@@ -2223,8 +2344,10 @@ export class RotationService implements OnModuleInit {
     if (!inbound || inbound.status !== InboundStatus.PendingCleanup) {
       throw new NotFoundException('Cleanup task not found');
     }
-    inbound.nextCleanupAt = new Date();
-    await this.inboundRepo.save(inbound);
+    await this.inboundRepo.update(
+      { id, status: InboundStatus.PendingCleanup },
+      { nextCleanupAt: new Date(), cleanupAttempts: 0 },
+    );
     return { success: true };
   }
 
@@ -2451,8 +2574,11 @@ export class RotationService implements OnModuleInit {
   }
 
   private pickDomain(domains: Domain[]) {
-    if (!domains.length) throw new Error('Список доменов пуст');
-    return domains[Math.floor(Math.random() * domains.length)].name;
+    const eligible = domains.filter(
+      (domain) => !isExcludedSniDomain(domain.name),
+    );
+    if (!eligible.length) throw new Error('Список доменов пуст');
+    return eligible[Math.floor(Math.random() * eligible.length)].name;
   }
 
   private async getFreePort(currentBatch: Set<number>) {

@@ -1,3 +1,4 @@
+import { isExcludedSniDomain } from '../domains/sni-exclusions';
 import {
   CLIENT_FINGERPRINTS,
   MANAGED_PROFILE_KINDS,
@@ -569,6 +570,16 @@ export function evaluateProfileCompatibility(
       severity: 'ok',
       title: 'Схема профиля валидна',
       message: `Параметры профиля ${input.kind} прошли проверку корректности.`,
+    });
+  }
+
+  const configuredSni = normalized.domain || input.sni;
+  if (configuredSni && isExcludedSniDomain(configuredSni)) {
+    checks.push({
+      code: 'SNI_DOMAIN_EXCLUDED',
+      severity: 'warning',
+      title: 'Домен исключён из справочника',
+      message: 'Выберите доступный домен из раздела «Домены» перед следующей ротацией.',
     });
   }
 

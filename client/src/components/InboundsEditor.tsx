@@ -26,15 +26,13 @@ import {
   OpenInNew,
   Remove,
   Restore,
-  Terminal,
+  ExpandMore,
+  ExpandLess,
   Tune,
 } from '@mui/icons-material';
 import api from '../api';
 import type { NodeRecord } from '../types/node';
-import {
-  CLIENT_SNI_PROFILES_CATALOG,
-  resolveClientSniProfile,
-} from '../utils/sniProfiles';
+import { resolveClientSniProfile } from '../utils/sniProfiles';
 import {
   CERTIFICATE_TYPES,
   CONNECTION_OPTIONS,
@@ -87,6 +85,8 @@ export interface InboundsEditorProps {
   maxInbounds?: number;
   showDisabledAlert?: boolean;
   extraActions?: React.ReactNode;
+  compact?: boolean;
+  activeConfigIds?: ReadonlySet<string>;
 }
 
 export const InboundsEditor: React.FC<InboundsEditorProps> = ({
@@ -102,15 +102,16 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
   maxInbounds = 20,
   showDisabledAlert = false,
   extraActions,
+  compact = false,
+  activeConfigIds,
 }) => {
   const [previewTarget, setPreviewTarget] = useState<InboundConfigUI | null>(
     null,
   );
-  const [previewInitialTab, setPreviewInitialTab] = useState(0);
+  const [expandedId, setExpandedId] = useState<string>();
   const [applyingSniId, setApplyingSniId] = useState<string | null>(null);
 
-  const openInboundPreview = (inbound: InboundConfigUI, initialTab = 0) => {
-    setPreviewInitialTab(initialTab);
+  const openInboundPreview = (inbound: InboundConfigUI) => {
     setPreviewTarget(inbound);
   };
 
@@ -121,15 +122,6 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
         .filter((addr) => /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(addr)),
       ...domains.map((d) => d.name),
     ]),
-  );
-
-  const curatedExtraSniDomains: string[] = Array.from(
-    new Set(
-      CLIENT_SNI_PROFILES_CATALOG.flatMap((entry) => entry.recommendedDomains),
-    ),
-  ).filter(
-    (name) =>
-      !domains.some((d) => d.name.toLowerCase() === name.toLowerCase()),
   );
 
   const renderOwnDomainOption = (
@@ -176,7 +168,7 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
       let resolved = resolveClientSniProfile(cleanSni);
       try {
         const res = await api.get<{
-          fingerprint?: ClientFingerprint;
+          fingerprint?: ReturnType<typeof resolveClientSniProfile>['fingerprint'];
           spiderX?: string;
           xhttpPath?: string;
         }>('/domains/resolve-profile', { params: { sni: cleanSni } });
@@ -490,10 +482,9 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
 
   const addInbound = () => {
     if (connectionCount >= maxInbounds) return;
-    onChange([
-      ...inbounds,
-      createInboundTemplate('vless-tcp-reality', nodes, domains),
-    ]);
+    const inbound = createInboundTemplate('vless-tcp-reality', nodes, domains);
+    setExpandedId(inbound.id);
+    onChange([...inbounds, inbound]);
   };
 
   const removeInbound = (id?: string) => {
@@ -534,7 +525,9 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
       </Typography>
 
       <Box sx={{ display: 'grid', gap: 2 }}>
-        {inbounds.map((inbound, index) => (
+        {inbounds.map((inbound, index) => {
+          const expanded = !compact || expandedId === inbound.id || Boolean(portErrors[inbound.id]);
+          return (
           <Box
             key={inbound.id}
             sx={{
@@ -563,9 +556,13 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
               alignItems="center"
               spacing={0.5}
             >
-              <Typography sx={{ fontWeight: 'bold', mr: 1 }}>
-                #{index + 1}
-              </Typography>
+              {compact ? (
+                <IconButton size="small" aria-expanded={expanded}
+                  aria-label={expanded ? 'Свернуть параметры' : 'Редактировать инбаунд'}
+                  onClick={() => setExpandedId(expanded ? undefined : inbound.id)}>
+                  {expanded ? <ExpandLess /> : <ExpandMore />}
+                </IconButton>
+              ) : <Typography sx={{ fontWeight: 'bold', mr: 1 }}>#{index + 1}</Typography>}
               <Chip
                 size="small"
                 label={
@@ -578,6 +575,14 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                 }
                 sx={{ maxWidth: '60%' }}
               />
+              {compact && (
+                <Typography variant="body2" color="text.secondary" sx={{ minWidth: 0 }}>
+                  {nodes.find(node => node.id === inbound.nodeId)?.name || 'Нода подписки'}
+                  {inbound.port ? ` · ${inbound.port === 'random' ? 'Случайный порт' : inbound.port}` : ''}
+                  {inbound.enabled === false ? ' · Отключён' :
+                    inbound.configId && activeConfigIds?.has(inbound.configId) ? ' · Активен' : ''}
+                </Typography>
+              )}
               <Box sx={{ flex: 1 }} />
               <Tooltip title="Переместить вверх">
                 <span>
@@ -613,6 +618,7 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
               </IconButton>
             </Stack>
 
+            {expanded && <>
             {inbound.disabledReason && (
               <Tooltip title={inbound.disabledReason}>
                 <Chip
@@ -970,13 +976,10 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                     inbound.sni && inbound.sni !== 'random'
                       ? resolveClientSniProfile(inbound.sni)
                       : null;
-                  const allowCuratedExtra = inbound.type !== 'mtproto-faketls';
                   const hasCustomSniValue =
                     Boolean(inbound.sni) &&
                     inbound.sni !== 'random' &&
-                    !domains.some((d) => d.name === inbound.sni) &&
-                    (!allowCuratedExtra ||
-                      !curatedExtraSniDomains.includes(inbound.sni));
+                    !domains.some((d) => d.name === inbound.sni);
                   return (
                     <FormControl size="small" sx={{ width: '100%', minWidth: 0 }}>
                       <InputLabel id={`${inbound.id}-sni-label`}>
@@ -1003,7 +1006,7 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                             : 'random'}
                         </MenuItem>
                         {hasCustomSniValue && (
-                          <MenuItem value={inbound.sni}>{inbound.sni}</MenuItem>
+                          <MenuItem value={inbound.sni} disabled>{inbound.sni} · вне справочника</MenuItem>
                         )}
                         {domains.map((domain) => {
                           const sniProfile = resolveClientSniProfile(
@@ -1032,32 +1035,6 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                             </MenuItem>
                           );
                         })}
-                        {allowCuratedExtra &&
-                          curatedExtraSniDomains.map((domainName) => {
-                            const sniProfile =
-                              resolveClientSniProfile(domainName);
-                            return (
-                              <MenuItem
-                                key={`curated-${domainName}`}
-                                value={domainName}
-                              >
-                                <Stack
-                                  direction="row"
-                                  justifyContent="space-between"
-                                  alignItems="center"
-                                  width="100%"
-                                  gap={1}
-                                >
-                                  <span>{domainName}</span>
-                                  <Chip
-                                    size="small"
-                                    variant="outlined"
-                                    label={`SNI-профиль · ${sniProfile.category}`}
-                                  />
-                                </Stack>
-                              </MenuItem>
-                            );
-                          })}
                       </Select>
                       {matchedSni &&
                         matchedSni.profileId &&
@@ -1387,26 +1364,13 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                           Self-SNI · VLESS + RAW + REALITY + Vision на собственном домене и локальном HTTPS-сайте
                         </Typography>
                         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                          {webServer !== 'none' && (
-                            <Button
-                              size="small"
-                              variant="outlined"
-                              color="secondary"
-                              startIcon={<Terminal />}
-                              onClick={() => openInboundPreview(inbound, 3)}
-                            >
-                              {webServer === 'caddy'
-                                ? 'Caddy и инструкция'
-                                : 'Nginx и инструкция'}
-                            </Button>
-                          )}
                           <Button
                             size="small"
                             variant="outlined"
                             startIcon={<OpenInNew />}
-                            onClick={() => openInboundPreview(inbound, 0)}
+                            onClick={() => openInboundPreview(inbound)}
                           >
-                            Предпросмотр, Nginx/Caddy и проверка
+                            Предпросмотр
                           </Button>
                         </Stack>
                       </Stack>
@@ -1636,26 +1600,13 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                           HTTPS Fallback · независимый VLESS + XHTTP + TLS с отдельным endpoint и поддержкой reverse proxy
                         </Typography>
                         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                          {reverseProxy !== 'none' && (
-                            <Button
-                              size="small"
-                              variant="outlined"
-                              color="secondary"
-                              startIcon={<Terminal />}
-                              onClick={() => openInboundPreview(inbound, 3)}
-                            >
-                              {reverseProxy === 'caddy'
-                                ? 'Caddy и инструкция'
-                                : 'Nginx и инструкция'}
-                            </Button>
-                          )}
                           <Button
                             size="small"
                             variant="outlined"
                             startIcon={<OpenInNew />}
-                            onClick={() => openInboundPreview(inbound, 0)}
+                            onClick={() => openInboundPreview(inbound)}
                           >
-                            Предпросмотр, Proxy и проверка
+                            Предпросмотр
                           </Button>
                         </Stack>
                       </Stack>
@@ -1841,8 +1792,10 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                 })()}
               </>
             )}
+            </>}
           </Box>
-        ))}
+          );
+        })}
       </Box>
 
       {previewTarget && (
@@ -1855,7 +1808,6 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
           port={previewTarget.port}
           sni={previewTarget.sni}
           settings={previewTarget.profileSettings}
-          initialTab={previewInitialTab}
         />
       )}
 

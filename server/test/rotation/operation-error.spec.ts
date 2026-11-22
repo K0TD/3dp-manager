@@ -21,12 +21,12 @@ describe('operation error normalization', () => {
       'json: cannot unmarshal string into Go struct field Client.tgId of type int64',
       'PANEL_INVALID_PAYLOAD',
     ],
-    ['listen tcp :443: bind: address already in use', 'PORT_IN_USE'],
+    ['listen tcp :443: bind: address already in use', 'PORT_CONFLICT'],
     [
       '3x-ui returned HTTP 500: listen tcp :443: bind: address already in use',
-      'PORT_IN_USE',
+      'PORT_CONFLICT',
     ],
-    ['Port 20000 is already in use', 'PORT_IN_USE'],
+    ['Port 20000 is already in use', 'PORT_CONFLICT'],
     ['duplicate tag: in-443', 'DUPLICATE_TAG'],
     ['3x-ui отклонил создание инбаунда', 'PANEL_REJECTED'],
     ['Failed to delete inbound 101 from 3x-ui', 'INBOUND_DELETE_FAILED'],
@@ -55,7 +55,7 @@ describe('operation error normalization', () => {
         port: 443,
       }),
     ).toMatchObject({
-      code: 'PORT_IN_USE',
+      code: 'PORT_CONFLICT',
       stage: 'create',
       inboundType: 'vless-xhttp-reality',
       port: 443,
@@ -106,7 +106,7 @@ describe('operation error normalization', () => {
       },
     );
     expect(xhttp.code).toBe('CANARY_PROBE_FAILED');
-    expect(xhttp.hint).toContain('DISABLE_CANARY_PROBE=true');
+    expect(xhttp.hint).toContain('SNI, Host, Path');
 
     const multi = normalizeOperationError(
       'Canary-проверка профиля «xh» (xhttp-stable) не пройдена (xray-core): timeout; Canary-проверка профиля «self-sni» (self-sni) не пройдена (xray-core): timeout',

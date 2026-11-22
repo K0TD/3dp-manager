@@ -1,5 +1,7 @@
 import {
   Body,
+  BadRequestException,
+  ParseUUIDPipe,
   Controller,
   Delete,
   Get,
@@ -9,6 +11,7 @@ import {
   Param,
   Post,
 } from '@nestjs/common';
+import { isUUID } from 'class-validator';
 import { RotationService } from './rotation.service';
 
 @Controller('rotation')
@@ -48,6 +51,22 @@ export class RotationController {
   @Get('operations/:id')
   getOperation(@Param('id') id: string) {
     return this.rotationService.getOperation(id);
+  }
+
+  @Post('operations/:id/retry')
+  @HttpCode(HttpStatus.ACCEPTED)
+  retryInbound(
+    @Param('id', ParseUUIDPipe) operationId: string,
+    @Body() body: { subscriptionId?: string; configId?: string },
+  ) {
+    if (!isUUID(body?.subscriptionId || '') || !isUUID(body?.configId || '')) {
+      throw new BadRequestException('Invalid inbound target');
+    }
+    return this.rotationService.enqueueTargetedRotation({
+      operationId,
+      subscriptionId: body.subscriptionId!,
+      configId: body.configId!,
+    });
   }
 
   @Get('cleanup')

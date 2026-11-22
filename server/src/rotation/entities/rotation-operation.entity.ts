@@ -22,12 +22,44 @@ export enum RotationOperationStatus {
   Failed = 'failed',
 }
 
+export interface RotationConfigResult {
+  configId?: string;
+  type?: string;
+  name?: string;
+  status: 'activated' | 'unchanged' | 'preserved' | 'failed';
+  previousActive: boolean;
+  port?: number;
+  cleanupQueued?: boolean;
+  error?: OperationErrorDetails;
+  conflict?: { xuiId?: number; listen?: string; subscriptionId?: string };
+  canary?: ClientConnectionProbeResult & {
+    sni?: string;
+    host?: string;
+    path?: string;
+    mode?: string;
+  };
+}
+
+export interface RotationTarget {
+  operationId: string;
+  subscriptionId: string;
+  configId: string;
+  version?: string;
+  patch?: {
+    port?: number | 'random';
+    sni?: string;
+    mode?: 'auto' | 'packet-up' | 'stream-one';
+    path?: string;
+  };
+}
+
 export interface RotationNodeResult {
   subscriptionId: string;
   subscriptionName: string;
   nodeId?: string;
   nodeName: string;
-  status: 'succeeded' | 'preserved' | 'failed';
+  status: 'succeeded' | 'partial' | 'preserved' | 'failed';
+  inboundResults?: RotationConfigResult[];
   created: number;
   preserved?: number;
   pendingCleanup: number;
@@ -58,6 +90,18 @@ export class RotationOperation {
 
   @Column({ type: 'simple-json', nullable: true })
   results?: RotationNodeResult[];
+
+  @Column({ type: 'simple-json', nullable: true })
+  target?: RotationTarget;
+
+  @Column({ type: 'varchar', length: 64, unique: true, nullable: true })
+  idempotency?: string;
+
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  requestFingerprint?: string;
+
+  @Column({ type: 'uuid', nullable: true })
+  apiTokenId?: string;
 
   @Column({ type: 'text', nullable: true })
   error?: string;

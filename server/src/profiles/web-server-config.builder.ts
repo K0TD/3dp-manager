@@ -31,6 +31,75 @@ function assertValidPort(port: number, label: string): number {
   return port;
 }
 
+function nginxInstallCommand(
+  config: string,
+  filename: string,
+  enabledLink: string,
+  site?: {
+    filename: string;
+    html: string;
+  },
+) {
+  const files = [
+    { filename, content: config, name: 'config' },
+    ...(site
+      ? [{ filename: site.filename, content: site.html, name: 'index' }]
+      : []),
+  ];
+  return [
+    "sudo sh <<'INSTALL_NGINX'",
+    'set -eu',
+    'umask 077',
+    'mkdir -p /etc/nginx/backups',
+    'exec 9>/etc/nginx/backups/3dp-install.lock',
+    'flock -x 9',
+    'backup=$(mktemp -d /etc/nginx/backups/3dp-XXXXXX)',
+    'snapshot() {',
+    '  [ ! -d "$1" ]',
+    '  if [ -e "$1" ] || [ -L "$1" ]; then cp -a -- "$1" "$backup/$2"; fi',
+    '}',
+    'restore() {',
+    '  rm -f -- "$1"',
+    '  if [ -e "$backup/$2" ] || [ -L "$backup/$2" ]; then cp -a -- "$backup/$2" "$1"; fi',
+    '}',
+    ...files.map((file) => `snapshot '${file.filename}' '${file.name}'`),
+    `snapshot '${enabledLink}' enabled`,
+    'reload_started=0',
+    'rollback() {',
+    '  result=$?',
+    '  trap - EXIT HUP INT TERM',
+    '  if [ "$result" -eq 0 ]; then exit 0; fi',
+    '  set +e',
+    ...files.map((file) => `  restore '${file.filename}' '${file.name}'`),
+    `  restore '${enabledLink}' enabled`,
+    '  if [ "$reload_started" -eq 1 ]; then nginx -t && systemctl reload nginx; fi',
+    '  echo "Nginx installation failed. Backup: $backup" >&2',
+    '  exit "$result"',
+    '}',
+    'trap rollback EXIT',
+    "trap 'exit 1' HUP INT TERM",
+    'write_file() {',
+    '  mkdir -p -m 0755 -- "$(dirname -- "$1")"',
+    '  temp=$(mktemp "$(dirname -- "$1")/.3dp-XXXXXX")',
+    '  if cat > "$temp" && chmod 0644 "$temp" && mv -fT -- "$temp" "$1"; then return; fi',
+    '  rm -f -- "$temp"',
+    '  return 1',
+    '}',
+    ...files.flatMap((file) => [
+      `write_file '${file.filename}' <<'NGINX_FILE'`,
+      file.content.trimEnd(),
+      'NGINX_FILE',
+    ]),
+    `mkdir -p -m 0755 -- "$(dirname -- '${enabledLink}')"`,
+    `ln -sfnT -- '${filename}' '${enabledLink}'`,
+    'nginx -t',
+    'reload_started=1',
+    'systemctl reload nginx',
+    'echo "Nginx configuration applied. Backup: $backup"',
+    'INSTALL_NGINX',
+  ].join('\n');
+}
+
 export interface BuildSelfSniWebServerParams {
   engine: 'nginx' | 'caddy';
   domain: string;
@@ -103,8 +172,6 @@ export function buildSelfSniWebServerBundle(
         : [];
 
     const config = [
-      `# Managed Self-SNI local HTTPS target for ${domain}`,
-      `# Xray REALITY listens on public :443 and forwards non-REALITY TLS to 127.0.0.1:${localHttpsPort}`,
       'server {',
       `    listen 127.0.0.1:${localHttpsPort} ssl http2${proxyProtoFlag};`,
       `    server_name ${domain};`,
@@ -133,7 +200,6 @@ export function buildSelfSniWebServerBundle(
       '    }',
       '}',
       '',
-      '# Optional HTTP-01 ACME challenge listener (port 80)',
       'server {',
       '    listen 80;',
       '    listen [::]:80;',
@@ -157,6 +223,10 @@ export function buildSelfSniWebServerBundle(
       config,
       staticSitePath: `${staticSitePath}/index.html`,
       staticSiteHtml,
+      installCommand: nginxInstallCommand(config, filename, enabledLink, {
+        filename: `${staticSitePath}/index.html`,
+        html: staticSiteHtml,
+      }),
       backupCommand: `sudo mkdir -p /etc/nginx/backups && sudo cp -a "${filename}" "/etc/nginx/backups/self-sni-${domain}.conf.$(date +%Y%m%d-%H%M%S).bak" 2>/dev/null || true`,
       validateCommand: `sudo ln -sfn "${filename}" "${enabledLink}" && sudo nginx -t`,
       reloadCommand: 'sudo systemctl reload nginx',
@@ -257,6 +327,9 @@ export function buildHttpsFallbackProxyBundle(
   const publicPort = assertValidPort(params.publicPort ?? 443, 'publicPort');
   const upstreamPort = assertValidPort(params.upstreamPort, 'upstreamPort');
   const path = normalizeXhttpPath(params.path || '/api/v2/stream');
+  if (!/^\/[A-Za-z0-9._~/%-]+$/.test(path))
+    throw new Error('Некорректный путь XHTTP для шаблона reverse proxy');
+
   const defaultCert = `/etc/letsencrypt/live/${domain}/fullchain.pem`;
   const defaultKey = `/etc/letsencrypt/live/${domain}/privkey.pem`;
   const certFile = sanitizeSafePath(params.certificateFile, defaultCert);
@@ -266,8 +339,6 @@ export function buildHttpsFallbackProxyBundle(
     const filename = `/etc/nginx/sites-available/https-fallback-${domain}.conf`;
     const enabledLink = `/etc/nginx/sites-enabled/https-fallback-${domain}.conf`;
     const config = [
-      `# Managed HTTPS Fallback reverse proxy for ${domain}`,
-      `# Terminates public TLS on :${publicPort} and proxies XHTTP endpoint ${path} to 127.0.0.1:${upstreamPort}`,
       'server {',
       `    listen ${publicPort} ssl http2;`,
       `    listen [::]:${publicPort} ssl http2;`,
@@ -305,6 +376,7 @@ export function buildHttpsFallbackProxyBundle(
       domain,
       filename,
       config,
+      installCommand: nginxInstallCommand(config, filename, enabledLink),
       backupCommand: `sudo mkdir -p /etc/nginx/backups && sudo cp -a "${filename}" "/etc/nginx/backups/https-fallback-${domain}.conf.$(date +%Y%m%d-%H%M%S).bak" 2>/dev/null || true`,
       validateCommand: `sudo ln -sfn "${filename}" "${enabledLink}" && sudo nginx -t`,
       reloadCommand: 'sudo systemctl reload nginx',

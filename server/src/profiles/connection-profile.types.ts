@@ -132,6 +132,7 @@ export interface WebServerConfigBundle {
   validateCommand: string;
   reloadCommand: string;
   rollbackCommand: string;
+  installCommand?: string;
   notes: string[];
 }
 
@@ -174,6 +175,8 @@ export interface ClientConnectionProbeResult {
   latencyMs: number;
   probeUrl?: string;
   fallbackReason?: string;
+  stage?: 'tcp' | 'startup' | 'socks' | 'http' | 'tls';
+  tcpReachable?: boolean;
   error?: string;
 }
 

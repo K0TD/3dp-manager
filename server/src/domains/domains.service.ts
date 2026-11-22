@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as tls from 'tls';
+import { isExcludedSniDomain } from './sni-exclusions';
 import { Domain } from './entities/domain.entity';
 import {
   resolveSniProfile,
@@ -67,6 +68,7 @@ export class DomainsService implements OnModuleInit {
       take: limit,
       skip: skip,
       order: { id: 'DESC' },
+      where: { isEnabled: true },
     });
 
     const enriched = result.map((d) => ({
@@ -200,7 +202,7 @@ export class DomainsService implements OnModuleInit {
   }
 
   async findAllUnpaginated(): Promise<Domain[]> {
-    return this.repo.find({ order: { name: 'ASC' } });
+    return this.repo.find({ where: { isEnabled: true }, order: { name: 'ASC' } });
   }
 
   findOne(id: number) {
@@ -239,7 +241,7 @@ export class DomainsService implements OnModuleInit {
   }
 
   private normalizeImportedDomain(input: string) {
-    let value = (input || '').replace(/^\uFEFF/, '').trim();
+    let value = (typeof input === 'string' ? input : '').replace(/^\uFEFF/, '').trim();
     if (!value) return null;
 
     // Skip full-line comments often used in shared lists.
@@ -272,7 +274,7 @@ export class DomainsService implements OnModuleInit {
       .replace(/\.+$/, '');
     if (!value) return null;
 
-    return this.isValidDomain(value) ? value : null;
+    return this.isValidDomain(value) && !isExcludedSniDomain(value) ? value : null;
   }
 
   private isValidDomain(domain: string) {

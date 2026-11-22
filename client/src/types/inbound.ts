@@ -56,6 +56,7 @@ export interface WebServerConfigBundle {
   validateCommand: string;
   reloadCommand: string;
   rollbackCommand: string;
+  installCommand?: string;
   notes: string[];
 }
 

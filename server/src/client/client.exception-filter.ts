@@ -29,7 +29,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
     // Проверяем, что это браузер (не API запрос)
     const userAgent = request.headers['user-agent'] || '';
     const isBrowser = /Mozilla|Chrome|Safari|Firefox|Edge/.test(userAgent);
-    const isBusRequest = request.url.includes('/bus/');
+    const isAutomation = request.path.startsWith('/api/v1/');
+    const path = isAutomation ? request.path : request.url;
+    const isBusRequest = !isAutomation && request.url.includes('/bus/');
 
     if (exception instanceof HttpException) {
       const status = exception.getStatus();
@@ -58,7 +60,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
           statusCode: status,
           message: errorMessage,
           timestamp: new Date().toISOString(),
-          path: request.url,
+          path,
         });
       }
       return;
@@ -91,7 +93,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
           statusCode: HttpStatus.SERVICE_UNAVAILABLE,
           message: 'Database is temporarily unavailable. Please retry shortly.',
           timestamp: new Date().toISOString(),
-          path: request.url,
+          path,
         });
       }
       return;
@@ -99,8 +101,8 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
     const fallbackMessage = formatUnknownError(exception);
     this.logger.error(
-      `Unhandled error on ${request.url}: ${fallbackMessage}`,
-      exception instanceof Error ? exception.stack : undefined,
+      `Unhandled error on ${path}: ${isAutomation ? 'automation request failed' : fallbackMessage}`,
+      !isAutomation && exception instanceof Error ? exception.stack : undefined,
     );
 
     if (isBrowser && isBusRequest) {
@@ -115,7 +117,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
         statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
         message: 'Internal server error',
         timestamp: new Date().toISOString(),
-        path: request.url,
+        path,
       });
     }
   }

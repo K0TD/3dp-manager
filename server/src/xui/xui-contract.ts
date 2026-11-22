@@ -209,7 +209,7 @@ export function mergeCookies(
 }
 
 export function isPortConflict(message?: string): boolean {
-  return /port.*(?:exists|in use|occupied|conflict|overlap)|порт.*(?:занят|использ|существ)/i.test(
+  return /address already in use|port.*(?:exists|in use|already used|occupied|conflict|overlap)|порт.*(?:занят|использ|существ)/i.test(
     message || '',
   );
 }

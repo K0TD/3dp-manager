@@ -105,7 +105,7 @@ export function normalizeOperationError(
     title = `Canary-проверка${connection}${portLabel} не пройдена — выполнен автооткат`;
     if (failedKindCount > 1) {
       hint =
-        'Несколько профилей одновременно не прошли canary-проверку. Проверьте статус Xray в 3x-ui (нет ли ошибки перезапуска), firewall ноды/провайдера и исходящий доступ с ноды до проверочного URL (можно задать CANARY_PROBE_URL или DISABLE_CANARY_PROBE=true). Для Self-SNI дополнительно требуется работающий локальный HTTPS-сайт на 127.0.0.1:<localHttpsPort>.';
+        'Несколько профилей одновременно не прошли canary-проверку. Проверьте статус Xray в 3x-ui (нет ли ошибки перезапуска), firewall ноды/провайдера и исходящий доступ с ноды до проверочного URL. Для Self-SNI дополнительно требуется работающий локальный HTTPS-сайт на 127.0.0.1:<localHttpsPort>.';
     } else if (inboundType === 'self-sni' || hasSelfSni) {
       hint =
         'Для Self-SNI убедитесь, что порт Xray (обычно 443/tcp) открыт в firewall ноды, а на 127.0.0.1:<localHttpsPort> запущен локальный HTTPS-сайт (Nginx/Caddy) с TLS 1.3 и валидным сертификатом домена.';
@@ -114,8 +114,21 @@ export function normalizeOperationError(
         'Для HTTPS Fallback проверьте открытость порта, совпадение endpoint path, валидность TLS-сертификата и настройки reverse proxy: для Nginx используйте grpc_pass (HTTP/2 h2c) для auto/stream-one (либо mode=packet-up + proxy_buffering off при proxy_pass), для Caddy — versions h2c 1.1 и flush_interval -1.';
     } else {
       hint =
-        'Проверьте открытость порта в firewall ноды, доступность SNI с ноды и наличие исходящего доступа для клиентской пробы (можно задать CANARY_PROBE_URL или DISABLE_CANARY_PROBE=true).';
+        'Проверьте открытость порта в firewall ноды, совпадение SNI, Host, Path и режима XHTTP в клиенте и на сервере, после этого проверьте исходящий доступ.';
     }
+  } else if (/неоднозначная связь.*configId/i.test(raw)) {
+    code = 'AMBIGUOUS_CONFIG';
+    title = 'Не удалось определить предыдущий инбаунд';
+    hint = 'Проверьте связь конфигурации с действующим инбаундом.';
+  } else if (/не предоставила сертификат|TLS-конфигурация/i.test(raw)) {
+    code = 'TLS_CERTIFICATE_UNAVAILABLE';
+    title = 'Сертификат ноды недоступен';
+    hint = 'Проверьте настройки TLS и сертификат ноды в 3x-ui.';
+  } else if (/не сохранила SNI, Host, Path/i.test(raw)) {
+    code = 'XHTTP_CONFIG_MISMATCH';
+    title = '3x-ui сохранила другие параметры XHTTP';
+    hint = 'Сверьте SNI, Host, Path и режим XHTTP с текущей конфигурацией панели.';
+    stage = 'verify';
   } else if (/csrf/i.test(raw)) {
     code = 'CSRF_FAILED';
     title = 'Панель отклонила защитный токен CSRF';
@@ -170,11 +183,11 @@ export function normalizeOperationError(
     title = 'Панель 3x-ui не нашла запрошенный адрес';
     hint = 'Проверьте URL панели, её базовый путь и версию.';
   } else if (
-    /address already in use|port.*(?:exists|in use|occupied|conflict|overlap)|порт.*(?:занят|использ|существ)/i.test(
+    /address already in use|port.*(?:exists|in use|already used|occupied|conflict|overlap)|порт.*(?:занят|использ|существ)/i.test(
       raw,
     )
   ) {
-    code = 'PORT_IN_USE';
+    code = 'PORT_CONFLICT';
     title = `Панель отклонила создание${connection}${portLabel}: порт уже занят`;
     hint = 'Выберите другой порт или освободите его.';
   } else if (

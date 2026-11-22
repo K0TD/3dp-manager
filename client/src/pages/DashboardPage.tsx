@@ -85,7 +85,17 @@ interface OperationResult {
   subscriptionId?: string;
   subscriptionName?: string;
   nodeName: string;
-  status: 'succeeded' | 'preserved' | 'failed';
+  status: 'succeeded' | 'partial' | 'preserved' | 'failed';
+  inboundResults?: Array<{
+    configId?: string;
+    type?: string;
+    name?: string;
+    port?: number;
+    status: 'activated' | 'unchanged' | 'preserved' | 'failed';
+    error?: OperationErrorDetails;
+    conflict?: { xuiId?: number; listen?: string; subscriptionId?: string };
+    canary?: CanaryProbeResult & { stage?: string; tcpReachable?: boolean; sni?: string; host?: string; path?: string; mode?: string };
+  }>;
   created?: number;
   preserved?: number;
   rolledBack?: boolean;
@@ -243,6 +253,24 @@ export default function DashboardPage() {
   const [selectedOperation, setSelectedOperation] = useState<Operation | null>(
     null,
   );
+  const [retryingInbound, setRetryingInbound] = useState<string>();
+  const [retryMessage, setRetryMessage] = useState<{ ok: boolean; text: string }>();
+
+  async function retryInbound(operationId: string, subscriptionId: string, configId: string) {
+    setRetryingInbound(configId);
+    setRetryMessage(undefined);
+    try {
+      const { data } = await api.post<{ id: string }>(`/rotation/operations/${operationId}/retry`, {
+        subscriptionId, configId,
+      });
+      setRetryMessage({ ok: true, text: `Повтор поставлен в очередь · ${data.id}` });
+    } catch {
+      setRetryMessage({ ok: false, text: 'Не удалось запустить повтор' });
+    } finally {
+      setRetryingInbound(undefined);
+    }
+  }
+
 
   const operationReport = (operation: Operation) =>
     JSON.stringify(operation, null, 2);
@@ -737,7 +765,7 @@ export default function DashboardPage() {
       </Grid>
       <Dialog
         open={Boolean(selectedOperation)}
-        onClose={() => setSelectedOperation(null)}
+        onClose={() => { setSelectedOperation(null); setRetryMessage(undefined); }}
         maxWidth="lg"
         fullWidth
       >
@@ -750,7 +778,8 @@ export default function DashboardPage() {
                 {new Date(selectedOperation.createdAt).toLocaleString('ru-RU')}{' '}
                 · {statusLabel[selectedOperation.status]}
               </Typography>
-              {selectedOperation.errorDetails ? (
+              {retryMessage && <Alert severity={retryMessage.ok ? 'success' : 'error'}>{retryMessage.text}</Alert>}
+              {!selectedOperation.results?.some(result => result.inboundResults?.length) && (selectedOperation.errorDetails ? (
                 <ErrorDetailsBlock
                   errorDetails={selectedOperation.errorDetails}
                 />
@@ -758,7 +787,7 @@ export default function DashboardPage() {
                 <Alert severity="error" sx={{ overflowWrap: 'anywhere' }}>
                   {selectedOperation.error}
                 </Alert>
-              ) : null}
+              ) : null)}
               {selectedOperation.results?.map((result, index) => (
                 <Paper
                   variant="outlined"
@@ -776,7 +805,7 @@ export default function DashboardPage() {
                       {result.subscriptionName || 'Подписка не указана'} ·{' '}
                       {result.nodeName}
                     </Typography>
-                    {result.rolledBack && (
+                    {result.rolledBack && !result.inboundResults?.length && (
                       <Chip
                         size="small"
                         color="warning"
@@ -793,6 +822,43 @@ export default function DashboardPage() {
                         />
                       )}
                   </Stack>
+                  {result.inboundResults?.length ? (
+                    <Stack spacing={1} sx={{ mt: 1 }}>
+                      {result.inboundResults.map((item, row) => (
+                        <Stack key={item.configId || row} spacing={0.5} sx={{ borderTop: 1, borderColor: 'divider', pt: 1 }}>
+                          <Typography variant="body2" fontWeight={600}>
+                            {item.name || item.type}{item.port ? ` · ${item.port}` : ''} · {{
+                              activated: 'Обновлён', unchanged: 'Оставлен без изменений',
+                              preserved: 'Старое подключение сохранено', failed: 'Создание не удалось',
+                            }[item.status]}
+                          </Typography>
+                          {item.error && <ErrorDetailsBlock errorDetails={item.error} />}
+                          {item.conflict?.xuiId && (
+                            <Typography variant="body2">
+                              Инбаунд 3x-ui #{item.conflict.xuiId}
+                              {item.conflict.listen ? ` · ${item.conflict.listen}` : ''}
+                              {item.conflict.subscriptionId ? ` · подписка ${item.conflict.subscriptionId}` : ''}
+                            </Typography>
+                          )}
+                          {item.canary && (
+                            <Typography variant="caption">
+                              {item.canary.engine} · {item.canary.success ? 'Проверка пройдена' : item.canary.stage || 'Проверка не пройдена'}
+                              {item.canary.sni ? ` · SNI ${item.canary.sni}` : ''}
+                              {item.canary.host ? ` · Host ${item.canary.host}` : ''}
+                              {item.canary.path ? ` · Path ${item.canary.path}` : ''}
+                              {item.canary.mode ? ` · ${item.canary.mode}` : ''}
+                            </Typography>
+                          )}
+                          {item.error && item.configId && result.subscriptionId && (
+                            <Button size="small" sx={{ alignSelf: 'flex-start' }} disabled={Boolean(retryingInbound)}
+                              onClick={() => void retryInbound(selectedOperation.id, result.subscriptionId!, item.configId!)}>
+                              Повторить инбаунд
+                            </Button>
+                          )}
+                        </Stack>
+                      ))}
+                    </Stack>
+                  ) : <>
                   {result.subscriptionId && (
                     <Typography variant="caption" color="text.secondary">
                       ID подписки: {result.subscriptionId}
@@ -884,6 +950,7 @@ export default function DashboardPage() {
                       ))}
                     </Box>
                   ))}
+                  </>}
                 </Paper>
               ))}
             </Stack>

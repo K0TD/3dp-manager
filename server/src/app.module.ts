@@ -44,6 +44,12 @@ import { AddConnectionProfiles1840000000000 } from './migrations/1840000000000-a
 import { ConnectionProfile } from './profiles/entities/connection-profile.entity';
 import { ConnectionProfilesModule } from './profiles/connection-profiles.module';
 
+import { ApiToken } from './automation/api-token.entity';
+import { AutomationModule } from './automation/automation.module';
+import { AddAutomation1850000000000 } from './migrations/1850000000000-add-automation';
+
+import { ReconcileSniDomains1860000000000 } from './migrations/1860000000000-reconcile-sni-domains';
+
 const dbPoolLogger = new Logger('DatabasePool');
 
 @Module({
@@ -73,6 +79,7 @@ const dbPoolLogger = new Logger('DatabasePool');
         Node,
         RotationOperation,
         ConnectionProfile,
+        ApiToken,
       ],
       migrations: [
         InitialSchema1700000000000,
@@ -86,6 +93,8 @@ const dbPoolLogger = new Logger('DatabasePool');
         AddSubscriptionMetadata1820000000000,
         AddOperationErrorDetails1830000000000,
         AddConnectionProfiles1840000000000,
+        AddAutomation1850000000000,
+        ReconcileSniDomains1860000000000,
       ],
       synchronize: process.env.DB_SYNCHRONIZE === 'true',
       migrationsRun: process.env.DB_MIGRATIONS_RUN !== 'false',
@@ -123,6 +132,7 @@ const dbPoolLogger = new Logger('DatabasePool');
     NodesModule,
     BackupModule,
     ConnectionProfilesModule,
+    AutomationModule,
   ],
   controllers: [AppController],
   providers: [

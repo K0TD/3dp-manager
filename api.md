@@ -1005,3 +1005,34 @@ http://<host>:<port>/bus/<uuid>
 - YouTube: [DenPiligrim](https://www.youtube.com/@denpiligrim)
 - GitHub: [k0td/3dp-manager](https://github.com/k0td/3dp-manager)
 - Исходный проект: [denpiligrim/3dp-manager](https://github.com/denpiligrim/3dp-manager)
+
+## Внешний API для диагностики и исправлений
+
+В **Настройки → API-токены** выпустите токен с нужными правами и сроком действия. Сохраните секрет сразу после выпуска. Отзыв токена прекращает авторизацию новых запросов. Уже поставленные в очередь операции продолжают выполняться.
+
+Передавайте токен в заголовке `Authorization: Bearer <token>`. Базовый путь — `/api/v1`.
+
+| Метод и путь | Право | Результат |
+| --- | --- | --- |
+| `GET /rotation/operations` | `diagnostics:read` | Журнал ротаций |
+| `GET /rotation/operations/{id}` | `diagnostics:read` | Результаты по подпискам и инбаундам |
+| `GET /rotation/cleanup` | `diagnostics:read` | Очередь очистки |
+| `POST /rotation/operations/{id}/retry` | `rotation:retry` | Повтор одного инбаунда |
+| `POST /rotation/operations/{id}/repair` | `inbounds:repair` | Проверка и применение правки одного инбаунда |
+| `POST /rotation/cleanup/{id}/retry` | `cleanup:retry` | Повтор одной записи очистки |
+
+Списки принимают `nodeId`, `subscriptionId`, `from` и `to` в ISO 8601, `status`, `limit` (1–100, по умолчанию 25) и `offset` (по умолчанию 0). Для очистки доступны статусы `pending` и `failed`. Детали старых ротаций могут не содержать результатов по инбаундам.
+
+Для точечного повтора передайте `subscriptionId` и `configId` с ошибкой в исходной операции. Для правки добавьте `version` из деталей инбаунда и `patch`. Поддерживаются `port` (1–65535 или `random`), `sni` из активного справочника, `mode` и `path` для XHTTP. Изменения порта, пути и режима HTTPS Fallback за Nginx/Caddy требуют согласованной ручной правки прокси и профиля. Приложение сохраняет правку после успешной проверки кандидата.
+
+```sh
+curl -H "Authorization: Bearer $THREEDP_TOKEN" \
+  "$THREEDP_URL/api/v1/rotation/operations?status=partial"
+
+curl -X POST -H "Authorization: Bearer $THREEDP_TOKEN" \
+  -H 'Content-Type: application/json' -H 'Idempotency-Key: repair-attempt-1' \
+  -d '{"subscriptionId":"SUBSCRIPTION_UUID","configId":"CONFIG_UUID","version":"VERSION_FROM_GET","patch":{"port":"random"}}' \
+  "$THREEDP_URL/api/v1/rotation/operations/OPERATION_UUID/repair"
+```
+
+Повтор и правка возвращают HTTP 202 с ID новой операции. Запрашивайте её статус через `GET /rotation/operations/{id}`. Повторный запрос с тем же `Idempotency-Key` и телом возвращает ранее созданную операцию, пока запись хранится в журнале. Использование ключа с другим телом и правка устаревшей версии возвращают HTTP 409. Неверный, истёкший или отозванный токен даёт HTTP 401, отсутствие права — HTTP 403.

@@ -191,28 +191,27 @@ export const ProfilePreviewDialog: React.FC<ProfilePreviewDialogProps> = ({
 
         {!loading && preview && (
           <Stack spacing={2}>
-            <Box>
-              <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                Результаты проверок совместимости
-              </Typography>
-              <Stack spacing={1}>
-                {preview.compatibility.checks.map((item) => (
-                  <Alert
-                    key={item.code}
-                    severity={
-                      item.severity === 'ok'
-                        ? 'success'
-                        : item.severity === 'warning'
-                          ? 'warning'
-                          : 'error'
-                    }
-                    sx={{ py: 0.25 }}
-                  >
-                    <strong>{item.title}:</strong> {item.message}
-                  </Alert>
-                ))}
-              </Stack>
-            </Box>
+            <Alert severity={!preview.compatibility.compatible ? 'error' :
+              preview.compatibility.status === 'warning' ? 'warning' : 'success'}>
+              {!preview.compatibility.compatible ? 'Запуск заблокирован' :
+                preview.compatibility.status === 'warning' ? 'Можно запускать с предупреждениями' :
+                'Можно запускать'}
+              {preview.compatibility.checks.filter(item => item.severity === 'error').map(item => (
+                <Typography key={item.code} variant="body2">{item.message}</Typography>
+              ))}
+            </Alert>
+            {preview.compatibility.checks.length > 0 && (
+              <Box component="details">
+                <summary>Подробности проверки</summary>
+                <Stack component="ul" spacing={0.5} sx={{ my: 1 }}>
+                  {preview.compatibility.checks.map(item => (
+                    <Typography component="li" variant="body2" key={item.code}>
+                      <strong>{item.title}</strong> — {item.message}
+                    </Typography>
+                  ))}
+                </Stack>
+              </Box>
+            )}
 
             {preview.tlsProbe && (
               <Alert
@@ -365,204 +364,47 @@ export const ProfilePreviewDialog: React.FC<ProfilePreviewDialogProps> = ({
 
             {tab === 3 && preview.webServerConfig && (() => {
               const ws = preview.webServerConfig;
-              const engineTitle = ws.engine === 'caddy' ? 'Caddy' : 'Nginx';
-              const writeConfigCommand = [
-                `sudo mkdir -p "$(dirname "${ws.filename}")"`,
-                `sudo tee "${ws.filename}" > /dev/null <<'EOF'`,
-                ws.config.trimEnd(),
-                'EOF',
-              ].join('\n');
-              const staticSiteCommand =
-                ws.staticSitePath && ws.staticSiteHtml
-                  ? [
-                      `sudo mkdir -p "$(dirname "${ws.staticSitePath}")"`,
-                      `sudo tee "${ws.staticSitePath}" > /dev/null <<'EOF'`,
-                      ws.staticSiteHtml.trimEnd(),
-                      'EOF',
-                    ].join('\n')
-                  : '';
-              const applyCommands = [
-                '# 1. Бэкап существующего конфига',
-                ws.backupCommand,
-                '# 2. Проверка синтаксиса',
-                ws.validateCommand,
-                '# 3. Применение (reload)',
-                ws.reloadCommand,
-                '# 4. Откат при проблеме',
-                ws.rollbackCommand,
-              ].join('\n');
-
+              const engine = ws.engine === 'nginx' ? 'Nginx' : 'Caddy';
               return (
                 <Stack spacing={1.5}>
-                  <Alert severity="info" sx={{ py: 0.5 }}>
-                    <strong>Пошаговая установка {engineTitle} на ноде:</strong>{' '}
-                    целевой файл <code>{ws.filename}</code>. Выполняйте команды
-                    на VPS самой ноды с предварительным бэкапом и проверкой
-                    синтаксиса (без автоматического SSH-вмешательства).
-                  </Alert>
-
-                  {ws.notes.length > 0 && (
-                    <Stack spacing={0.5}>
-                      {ws.notes.map((note, idx) => (
-                        <Alert key={idx} severity="warning" sx={{ py: 0.25 }}>
-                          {note}
-                        </Alert>
-                      ))}
-                    </Stack>
-                  )}
-
-                  {staticSiteCommand && (
+                  <Typography variant="body2">
+                    {ws.installCommand ? 'Запустите команду на ноде с установленным Nginx и сертификатом.' :
+                      `Установите конфиг на ноде в ${ws.filename}.`}
+                  </Typography>
+                  {ws.installCommand && (
                     <Box>
-                      <Stack
-                        direction="row"
-                        justifyContent="space-between"
-                        alignItems="center"
-                        sx={{ mb: 0.5 }}
-                      >
-                        <Typography variant="subtitle2">
-                          Шаг 1. Создать статическую страницу сайта-маскировки (
-                          <code>{ws.staticSitePath}</code>)
-                        </Typography>
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          startIcon={<ContentCopy />}
-                          onClick={() =>
-                            void handleCopy(
-                              staticSiteCommand,
-                              'Команда создания index.html',
-                            )
-                          }
-                        >
-                          Копировать команду
-                        </Button>
-                      </Stack>
-                      <TextField
-                        multiline
-                        fullWidth
-                        minRows={4}
-                        maxRows={8}
-                        value={staticSiteCommand}
-                        slotProps={{
-                          input: {
-                            readOnly: true,
-                            sx: { fontFamily: 'monospace', fontSize: 11.5 },
-                          },
-                        }}
-                      />
+                      <Button variant="contained" startIcon={<ContentCopy />}
+                        onClick={() => void handleCopy(ws.installCommand!, 'Команда установки')}>
+                        Копировать команду установки
+                      </Button>
                     </Box>
                   )}
-
-                  <Box>
-                    <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-                      {staticSiteCommand ? 'Шаг 2.' : 'Шаг 1.'} Конфигурация{' '}
-                      {engineTitle} (<code>{ws.filename}</code>)
-                    </Typography>
-                    <TextField
-                      multiline
-                      fullWidth
-                      minRows={12}
-                      value={ws.config}
-                      slotProps={{
-                        input: {
-                          readOnly: true,
-                          sx: { fontFamily: 'monospace', fontSize: 12 },
-                        },
-                      }}
-                    />
-                  </Box>
-
-                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                    <Button
-                      size="small"
-                      variant="contained"
-                      startIcon={<ContentCopy />}
-                      onClick={() =>
-                        void handleCopy(
-                          writeConfigCommand,
-                          `Команда записи конфига ${engineTitle}`,
-                        )
-                      }
-                    >
-                      Копировать команду установки конфига
-                    </Button>
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      startIcon={<ContentCopy />}
-                      onClick={() =>
-                        void handleCopy(ws.config, `Конфиг ${engineTitle}`)
-                      }
-                    >
-                      Копировать конфиг
-                    </Button>
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      startIcon={<OpenInNew />}
-                      onClick={() =>
-                        handleDownloadText(
-                          ws.config,
-                          `${ws.purpose}-${ws.domain}.${ws.engine === 'caddy' ? 'caddy' : 'conf'}`,
-                        )
-                      }
-                    >
-                      Скачать конфиг
-                    </Button>
-                    {ws.staticSiteHtml && (
-                      <Button
-                        size="small"
-                        variant="outlined"
-                        startIcon={<ContentCopy />}
-                        onClick={() =>
-                          void handleCopy(
-                            ws.staticSiteHtml!,
-                            'index.html локального сайта',
-                          )
-                        }
-                      >
-                        Копировать index.html
-                      </Button>
-                    )}
-                  </Stack>
-
-                  <Box>
-                    <Stack
-                      direction="row"
-                      justifyContent="space-between"
-                      alignItems="center"
-                      sx={{ mb: 0.5 }}
-                    >
-                      <Typography variant="subtitle2">
-                        {staticSiteCommand ? 'Шаг 3.' : 'Шаг 2.'} Бэкап,
-                        проверка синтаксиса, reload и откат
-                      </Typography>
-                      <Button
-                        size="small"
-                        variant="outlined"
-                        startIcon={<ContentCopy />}
-                        onClick={() =>
-                          void handleCopy(
-                            applyCommands,
-                            'Команды применения и отката',
-                          )
-                        }
-                      >
-                        Копировать команды
-                      </Button>
+                  <Box component="details">
+                    <summary>Конфигурация и детали установки</summary>
+                    <Stack spacing={1} sx={{ mt: 1 }}>
+                      <TextField multiline fullWidth minRows={4} maxRows={12} value={ws.config}
+                        label={`Конфиг ${engine}`}
+                        slotProps={{ input: { readOnly: true, sx: { fontFamily: 'monospace', fontSize: 12 } } }} />
+                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                        <Button size="small" onClick={() => void handleCopy(ws.config, `Конфиг ${engine}`)}>
+                          Копировать конфиг
+                        </Button>
+                        <Button size="small" startIcon={<OpenInNew />} onClick={() => handleDownloadText(
+                          ws.config, `${ws.purpose}-${ws.domain}.${ws.engine === 'nginx' ? 'conf' : 'caddy'}`,
+                        )}>Скачать конфиг</Button>
+                        {ws.staticSiteHtml && (
+                          <Button size="small" onClick={() => void handleCopy(ws.staticSiteHtml!, 'index.html')}>
+                            Копировать index.html
+                          </Button>
+                        )}
+                      </Stack>
+                      {ws.notes.map(note => <Typography key={note} variant="body2">{note}</Typography>)}
+                      {!ws.installCommand && (
+                        <TextField multiline fullWidth label="Проверка и откат" value={[
+                          ws.backupCommand, ws.validateCommand, ws.reloadCommand, ws.rollbackCommand,
+                        ].join('\n')} slotProps={{ input: { readOnly: true } }} />
+                      )}
                     </Stack>
-                    <TextField
-                      multiline
-                      fullWidth
-                      minRows={6}
-                      value={applyCommands}
-                      slotProps={{
-                        input: {
-                          readOnly: true,
-                          sx: { fontFamily: 'monospace', fontSize: 11.5 },
-                        },
-                      }}
-                    />
                   </Box>
                 </Stack>
               );

@@ -194,6 +194,7 @@ describe('DomainsService', () => {
         take: 10,
         skip: 0,
         order: { id: 'DESC' },
+        where: { isEnabled: true },
       });
     });
 
@@ -206,6 +207,7 @@ describe('DomainsService', () => {
         take: 10,
         skip: 0,
         order: { id: 'DESC' },
+        where: { isEnabled: true },
       });
     });
   });
@@ -268,7 +270,7 @@ describe('DomainsService', () => {
       const result = await service.findAllUnpaginated();
 
       expect(result).toEqual(mockDomains);
-      expect(repo.find).toHaveBeenCalledWith({ order: { name: 'ASC' } });
+      expect(repo.find).toHaveBeenCalledWith({ where: { isEnabled: true }, order: { name: 'ASC' } });
     });
   });
 

@@ -2,7 +2,7 @@ import { Repository } from 'typeorm';
 import { SubscriptionLockService } from 'src/subscriptions/subscription-lock.service';
 import { NodeDeletionService } from 'src/nodes/node-deletion.service';
 import { ClientProbeService } from 'src/profiles/client-probe.service';
-import { RotationService } from 'src/rotation/rotation.service';
+import { RotationService, inboundConfigVersion } from 'src/rotation/rotation.service';
 import { Subscription } from 'src/subscriptions/entities/subscription.entity';
 import { Inbound, InboundStatus } from 'src/inbounds/entities/inbound.entity';
 import { Domain } from 'src/domains/entities/domain.entity';
@@ -221,14 +221,12 @@ describe('RotationService resilient generations', () => {
       const sub = subscription();
       const old = {
         id: 502,
+        configId: 'regular',
         nodeId: node.id,
         protocol: 'vless',
         status: InboundStatus.Active,
       };
       sub.inbounds.push(old as Inbound);
-      jest
-        .spyOn(service as any, 'preflightNodeGroup')
-        .mockResolvedValue(undefined);
       jest
         .spyOn(service as any, 'createInbound')
         .mockResolvedValue({ id: 503 });
@@ -237,7 +235,7 @@ describe('RotationService resilient generations', () => {
         node.id,
         {
           node,
-          configs: [{ config: { type: 'vless-tcp-tls' }, position: 1 }],
+          configs: [{ config: { configId: 'regular', type: 'vless-tcp-tls', certificateMode: 'custom' }, position: 1 }],
         },
         [],
       );
@@ -277,6 +275,7 @@ describe('RotationService resilient generations', () => {
       const sub = subscription();
       const old = {
         id: 502,
+        configId: 'regular',
         nodeId: node.id,
         protocol: 'vless',
         status: InboundStatus.Active,
@@ -384,6 +383,7 @@ describe('RotationService resilient generations', () => {
   it('keeps the active generation when an unavailable node cannot create keys', async () => {
     const node = { id: 'node-1', name: 'offline', url: 'https://node' } as Node;
     const old = {
+      configId: 'old-reality',
       id: 10,
       nodeId: node.id,
       status: InboundStatus.Active,
@@ -396,7 +396,7 @@ describe('RotationService resilient generations', () => {
       inbounds: [old],
       inboundsConfig: [
         {
-          type: 'vless-tcp-reality',
+          configId: 'old-reality', type: 'vless-tcp-reality',
           nodeId: node.id,
           port: 443,
           sni: 'example.com',
@@ -427,6 +427,7 @@ describe('RotationService resilient generations', () => {
       id: 11,
       status: InboundStatus.Active,
       protocol: 'vless',
+      configId: 'removed',
       link: 'vless://old',
     };
     const persistent = {
@@ -557,13 +558,14 @@ describe('RotationService resilient generations', () => {
     const old = {
       id: 11,
       status: InboundStatus.Active,
+      configId: 'custom-1',
       protocol: 'custom',
     } as Inbound;
     const subscription = {
       id: 'sub-2',
       name: 'Custom',
       inbounds: [old],
-      inboundsConfig: [{ type: 'custom', link: 'vless://new' }],
+      inboundsConfig: [{ configId: 'custom-1', type: 'custom', link: 'vless://new' }],
     } as Subscription;
 
     const results = await (service as any).rotateSubscription(
@@ -695,6 +697,7 @@ describe('RotationService resilient generations', () => {
       consecutiveFailures: 0,
     } as Node;
     const old = {
+      configId: 'old-tls',
       id: 12,
       nodeId: node.id,
       status: InboundStatus.Active,
@@ -707,7 +710,7 @@ describe('RotationService resilient generations', () => {
       inbounds: [old],
       inboundsConfig: [
         {
-          type: 'vless-tcp-tls',
+          configId: 'old-tls', type: 'vless-tcp-tls',
           nodeId: node.id,
           port: 443,
           certificateMode: 'node',
@@ -1078,10 +1081,12 @@ describe('RotationService resilient generations', () => {
     resolveNodeSpy.mockRestore();
   });
 
-  it('preserves the generation when one requested inbound is rejected', async () => {
+  it('activates the successful inbound and preserves the old one when another port is occupied', async () => {
     const node = {
       id: 'node-partial',
       name: 'Partial node',
+      version: '3.8.5',
+      xrayVersion: '26.7.11',
       url: 'https://node-partial.example.com',
       healthStatus: 'online',
       consecutiveFailures: 0,
@@ -1090,10 +1095,13 @@ describe('RotationService resilient generations', () => {
       id: 'sub-partial',
       name: 'Partial Sub',
       node,
-      inbounds: [],
+      inbounds: [{
+        id: 42, configId: 'fallback', nodeId: node.id, protocol: 'vless',
+        status: InboundStatus.Active, port: 20443,
+      }],
       inboundsConfig: [
         { type: 'vless-ws', nodeId: node.id, port: 8080, sni: 'ya.ru' },
-        { type: 'vmess-tcp', nodeId: node.id, port: 8081 },
+        { configId: 'fallback', type: 'https-fallback', nodeId: node.id, port: 20443, profileSettings: { domain: 'fallback.example.com', reverseProxy: 'nginx' } },
       ],
     } as unknown as Subscription;
 
@@ -1109,9 +1117,10 @@ describe('RotationService resilient generations', () => {
       protocol: 'vless',
       settings: JSON.stringify({ clients: [{ id: 'u1' }] }),
     });
-    inboundBuilder.buildVmessTcp.mockReturnValue({
-      remark: 'vmess-tcp',
-      protocol: 'vmess',
+    inboundBuilder.buildHttpsFallbackInbound.mockReturnValue({
+      remark: 'https-fallback',
+      port: 20443,
+      protocol: 'vless',
       settings: JSON.stringify({ clients: [{ id: 'u2' }] }),
     });
     inboundBuilder.buildInboundLink.mockReturnValue('vless://mock');
@@ -1128,9 +1137,8 @@ describe('RotationService resilient generations', () => {
         },
       })
       .mockResolvedValueOnce(null);
-    xuiService.getLastInboundError.mockReturnValue('Go struct unmarshal error');
-
-    const loggerWarnSpy = jest.spyOn((service as any).logger, 'warn');
+    xuiService.getLastInboundError.mockReturnValue("port 20443 (tcp) already used by inbound 'https-fallback' (#24) on 127.0.0.1 )");
+    inboundRepo.findOne.mockResolvedValue({ subscriptionId: 'other-subscription' });
 
     const results = await (service as any).rotateSubscription(
       subscription,
@@ -1139,21 +1147,20 @@ describe('RotationService resilient generations', () => {
     );
 
     expect(results[0]).toMatchObject({
-      status: 'preserved',
-      created: 0,
-      errorDetails: {
-        code: 'PANEL_INVALID_PAYLOAD',
-        stage: 'create',
-        inboundType: 'vmess-tcp',
-        port: 8081,
-        node: 'Partial node',
-      },
+      status: 'partial',
+      created: 1,
+      inboundResults: [
+        { status: 'activated' },
+        {
+          status: 'preserved', configId: 'fallback',
+          error: { code: 'PORT_CONFLICT', stage: 'create', port: 20443 },
+          conflict: { xuiId: 24, listen: '127.0.0.1', subscriptionId: 'other-subscription' },
+        },
+      ],
     });
-    expect(loggerWarnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('Сводка отклонённых панелью инбаундов'),
-    );
-    expect(loggerWarnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('Go struct unmarshal error'),
+    expect(manager.update).not.toHaveBeenCalledWith(
+      Inbound, { id: expect.objectContaining({ _value: [42] }) },
+      expect.objectContaining({ status: InboundStatus.PendingCleanup }),
     );
   });
 
@@ -1166,6 +1173,7 @@ describe('RotationService resilient generations', () => {
       consecutiveFailures: 0,
     } as Node;
     const oldInbound = {
+      configId: 'old-ws',
       id: 55,
       nodeId: node.id,
       status: InboundStatus.Active,
@@ -1177,7 +1185,7 @@ describe('RotationService resilient generations', () => {
       node,
       inbounds: [oldInbound],
       inboundsConfig: [
-        { type: 'vless-ws', nodeId: node.id, port: 8080, sni: 'ya.ru' },
+        { configId: 'old-ws', type: 'vless-ws', nodeId: node.id, port: 8080, sni: 'ya.ru' },
       ],
     } as unknown as Subscription;
 
@@ -1229,7 +1237,7 @@ describe('RotationService resilient generations', () => {
       subscription: { id: 'ports-sub', inbounds: [] },
       node,
       domains: [],
-      positionedConfig: { position: 0, config: { type: 'vmess-tcp', port } },
+      positionedConfig: { position: 0, config: { configId: 'vmess-1', type: 'vmess-tcp', port } },
       usedPorts: new Set<number>(),
       generationId: 'gen',
     });
@@ -1286,6 +1294,7 @@ describe('RotationService resilient generations', () => {
     it('preserves the old group and cleans up the staged generation when Xray fails', async () => {
       const old = {
         id: 44,
+        configId: 'vmess-1',
         nodeId: node.id,
         status: InboundStatus.Active,
         protocol: 'vmess',
@@ -1511,6 +1520,7 @@ describe('RotationService resilient generations', () => {
     it('prunes terminal RotationOperation rows beyond the retention cap during cleanup', async () => {
       const qb = {
         leftJoinAndSelect: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
@@ -1732,6 +1742,7 @@ describe('RotationService resilient generations', () => {
         inbounds: [
           {
             id: 800,
+            configId: '44444444-4444-4444-8444-444444444444',
             nodeId: oldNode.id,
             protocol: 'vless',
             status: InboundStatus.Active,
@@ -1922,6 +1933,7 @@ describe('RotationService resilient generations', () => {
         inbounds: [
           {
             id: 950,
+            configId: '66666666-6666-4666-8666-666666666666',
             nodeId: node.id,
             protocol: 'vless',
             status: InboundStatus.Active,
@@ -2433,7 +2445,122 @@ describe('RotationService resilient generations', () => {
       expect(updateCalls).toHaveLength(1);
     });
 
-    it('blocks rotation preflight when two configs on the same node collide on fixed or localHttpsPort', async () => {
+    it('activates Self-SNI independently when the XHTTP canary reaches TCP but returns HTTP EOF', async () => {
+      const sub = {
+        id: 'mixed',
+        name: 'Mixed canary results',
+        inboundsConfig: [
+          { configId: 'xhttp', type: 'xhttp-stable', sni: 'www.microsoft.com' },
+          { configId: 'self', type: 'self-sni', sni: 'portal.example.com' },
+        ],
+        inbounds: [
+          { id: 810, configId: 'xhttp', nodeId: node.id, protocol: 'vless', status: InboundStatus.Active },
+          { id: 811, configId: 'self', nodeId: node.id, protocol: 'vless', status: InboundStatus.Active },
+        ],
+      } as Subscription;
+      const probe = {
+        probeClientProfile: jest.fn()
+          .mockResolvedValueOnce({ success: false, stage: 'http', tcpReachable: true, engine: 'xray-core', error: 'EOF' })
+          .mockResolvedValueOnce({ success: true, stage: 'http', tcpReachable: true, engine: 'xray-core', httpStatusCode: 204 }),
+      };
+      const worker = new RotationService(
+        subRepo as unknown as Repository<Subscription>,
+        inboundRepo as unknown as Repository<Inbound>,
+        domainRepo as unknown as Repository<Domain>,
+        settingRepo as unknown as Repository<Setting>,
+        nodeRepo as unknown as Repository<Node>,
+        tunnelRepo as unknown as Repository<Tunnel>,
+        operationRepo as unknown as Repository<RotationOperation>,
+        xuiService as unknown as XuiService,
+        inboundBuilder as unknown as InboundBuilderService,
+        { run: jest.fn(async (_id, work) => work()) } as unknown as SubscriptionLockService,
+        nodeDeletion,
+        probe as unknown as ClientProbeService,
+      );
+      jest.spyOn(worker as any, 'createInbound')
+        .mockResolvedValueOnce({ id: 820, xuiId: 82, port: 14138, profileKind: 'xhttp-stable',
+          clientProfileJson: JSON.stringify({ sni: 'www.microsoft.com' }) })
+        .mockResolvedValueOnce({ id: 821, xuiId: 83, port: 12328, profileKind: 'self-sni',
+          clientProfileJson: JSON.stringify({ sni: 'portal.example.com' }) });
+      xuiService.getNewX25519Cert.mockResolvedValue({ privateKey: 'private', publicKey: 'public' });
+      inboundRepo.count.mockResolvedValue(0);
+      xuiService.deleteInbound.mockResolvedValue(true);
+      const result = await (worker as any).rotateNodeGroup(sub, node.id, {
+        node, configs: sub.inboundsConfig.map((config, position) => ({ config, position })),
+      }, []);
+      expect(result).toMatchObject({
+        status: 'partial', created: 1,
+        inboundResults: [
+          { configId: 'xhttp', status: 'preserved', error: { code: 'CANARY_PROBE_FAILED' },
+            canary: { stage: 'http', tcpReachable: true } },
+          { configId: 'self', status: 'activated', canary: { httpStatusCode: 204 } },
+        ],
+      });
+      expect(xuiService.deleteInbound).toHaveBeenCalledWith(82, node);
+      expect(xuiService.deleteInbound).not.toHaveBeenCalledWith(83, node);
+      expect(manager.update).toHaveBeenCalledWith(
+        Inbound, { id: expect.objectContaining({ _value: [811] }) },
+        expect.objectContaining({ status: InboundStatus.PendingCleanup }),
+      );
+    });
+
+    it.each([true, false])('commits a targeted repair with its candidate only when verification succeeds (%s)', async (success) => {
+      const config = { configId: 'repair-target', type: 'xhttp-stable', port: 14138, sni: 'www.microsoft.com' };
+      const sub = {
+        id: 'repair-sub', name: 'Repair fixture', isEnabled: true,
+        inboundsConfig: [config, { configId: 'sibling', type: 'self-sni' }],
+        inbounds: [{ id: 831, configId: config.configId, nodeId: node.id, protocol: 'vless', status: InboundStatus.Active }],
+      } as Subscription;
+      const operation = {
+        id: 'repair-operation', results: [],
+        target: { operationId: 'failed-operation', subscriptionId: sub.id, configId: config.configId,
+          version: inboundConfigVersion(config), patch: { port: 'random' } },
+      } as RotationOperation;
+      const probe = { probeClientProfile: jest.fn().mockResolvedValue({ success, engine: 'xray-core', error: 'EOF' }) };
+      const worker = new RotationService(
+        subRepo as unknown as Repository<Subscription>,
+        inboundRepo as unknown as Repository<Inbound>,
+        domainRepo as unknown as Repository<Domain>,
+        settingRepo as unknown as Repository<Setting>,
+        nodeRepo as unknown as Repository<Node>,
+        tunnelRepo as unknown as Repository<Tunnel>,
+        operationRepo as unknown as Repository<RotationOperation>,
+        xuiService as unknown as XuiService,
+        inboundBuilder as unknown as InboundBuilderService,
+        { run: jest.fn(async (_id, work) => work()) } as unknown as SubscriptionLockService,
+        nodeDeletion,
+        probe as unknown as ClientProbeService,
+      );
+      subRepo.findOne.mockResolvedValue(sub);
+      domainRepo.find.mockResolvedValue([]);
+      jest.spyOn(worker as any, 'getDefaultNode').mockResolvedValue(node);
+      jest.spyOn(worker as any, 'resolveNode').mockResolvedValue(node);
+      const create = jest.spyOn(worker as any, 'createInbound').mockResolvedValue({
+        id: 832, xuiId: 83, port: 14500, profileKind: 'xhttp-stable',
+        clientProfileJson: JSON.stringify({ sni: config.sni }),
+      });
+      xuiService.getNewX25519Cert.mockResolvedValue({ privateKey: 'private', publicKey: 'public' });
+      const result = await (worker as any).performTargetedRotation(operation);
+      expect(result.success).toBe(success);
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({
+        positionedConfig: { config: expect.objectContaining({ configId: config.configId, port: 'random' }), position: 0 },
+      }));
+      if (success) {
+        expect(manager.update).toHaveBeenCalledWith(Subscription, { id: sub.id }, {
+          inboundsConfig: [expect.objectContaining({ port: 'random' }), sub.inboundsConfig[1]],
+        });
+        expect(manager.update).toHaveBeenCalledWith(RotationOperation, { id: operation.id }, {
+          results: [expect.objectContaining({ status: 'succeeded' })],
+        });
+        expect(manager.transaction).toHaveBeenCalledTimes(1);
+      } else {
+        expect(manager.transaction).not.toHaveBeenCalled();
+        expect(manager.update).not.toHaveBeenCalled();
+      }
+    });
+
+    it('isolates an inbound conflicting with the Self-SNI local port', async () => {
       const sub = {
         id: 'sub-port-collision',
         name: 'SubCollision',
@@ -2487,10 +2614,10 @@ describe('RotationService resilient generations', () => {
         [],
       );
 
-      expect(result.status).toBe('preserved');
-      expect(result.created).toBe(0);
+      expect(result.status).toBe('partial');
+      expect(result.created).toBe(1);
       expect(result.message).toContain('Конфликт порта 8443');
-      expect(xuiService.addInbound).not.toHaveBeenCalled();
+      expect(xuiService.addInbound).toHaveBeenCalledTimes(1);
     });
 
     it('shares one 3x-ui inbound across subscriptions by attaching a separate client UUID and detaching only that client on rollback', async () => {
@@ -2505,6 +2632,13 @@ describe('RotationService resilient generations', () => {
         profileKind: 'self-sni',
         status: InboundStatus.Active,
         subscriptionId: 'sub-owner-a',
+        configId: 'owner-config',
+        subscription: {
+          inboundsConfig: [{
+            configId: 'owner-config', type: 'self-sni',
+            profileSettings: { domain: 'portal.example.com', webServer: 'nginx', localHttpsPort: 8443 },
+          }],
+        } as Subscription,
         clientProfileJson: JSON.stringify({
           kind: 'self-sni',
           protocol: 'vless',
@@ -2702,7 +2836,7 @@ describe('RotationService resilient generations', () => {
         [],
       );
 
-      expect(rotateFail.status).toBe('preserved');
+      expect(rotateFail.status).toBe('failed');
       expect(rotateFail.rolledBack).toBe(true);
       expect(
         (xuiService as Record<string, jest.Mock>).deleteInboundClient,

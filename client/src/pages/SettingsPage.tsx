@@ -14,6 +14,7 @@ import {
 } from '@mui/material';
 import api from '../api';
 import { Logger } from '../utils/logger';
+import { ApiTokensSettings } from '../components/ApiTokensSettings';
 import { InboundsEditor } from '../components/InboundsEditor';
 import { WorkspaceHeader } from '../components/WorkspaceHeader';
 import type { NodeRecord } from '../types/node';
@@ -265,6 +266,8 @@ export default function SettingsPage() {
         title="Настройки"
         description="Профиль, шаблоны подключений и перенос конфигурации."
       />
+
+      <ApiTokensSettings />
 
       <Paper className="workspace-panel workspace-settings-section" sx={{ maxWidth: 760 }}>
         <Stack direction="row" alignItems="baseline" justifyContent="space-between" spacing={2}>

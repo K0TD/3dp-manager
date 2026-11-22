@@ -272,6 +272,7 @@ describe('ProfilesPage', () => {
           staticSitePath: '/var/www/self-sni/portal.example.com/index.html',
           staticSiteHtml: '<html></html>',
           backupCommand: 'cp bak',
+          installCommand: 'sudo sh -c true',
           validateCommand: 'nginx -t',
           reloadCommand: 'systemctl reload nginx',
           rollbackCommand: 'cp rollback',
@@ -296,12 +297,13 @@ describe('ProfilesPage', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText(/Пошаговая установка Nginx на ноде:/),
-      ).toBeInTheDocument();
-      expect(
-        screen.getByDisplayValue(/listen 127\.0\.0\.1:8443 ssl http2;/),
+        screen.getByRole('button', { name: /Копировать команду установки/ }),
       ).toBeInTheDocument();
     });
+    fireEvent.click(screen.getByText('Конфигурация и детали установки'));
+    expect(screen.getByLabelText('Конфиг Nginx')).toHaveValue(
+      'server { listen 127.0.0.1:8443 ssl http2; }',
+    );
   });
 
   it('allows selecting a domain from «Домены» in XHTTP Stable dialog and auto-fills its SNI profile', async () => {

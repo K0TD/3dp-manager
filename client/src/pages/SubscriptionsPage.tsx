@@ -1386,6 +1386,9 @@ export default function SubscriptionsPage() {
             </Alert>
           )}
           <InboundsEditor
+            compact
+            activeConfigIds={new Set(subs.find(sub => sub.id === editingId)?.inbounds
+              ?.map(inbound => inbound.configId).filter((id): id is string => Boolean(id)))}
             inbounds={inbounds}
             onChange={setInbounds}
             nodes={nodes}
