@@ -111,7 +111,7 @@ export function normalizeOperationError(
         'Для Self-SNI убедитесь, что порт Xray (обычно 443/tcp) открыт в firewall ноды, а на 127.0.0.1:<localHttpsPort> запущен локальный HTTPS-сайт (Nginx/Caddy) с TLS 1.3 и валидным сертификатом домена.';
     } else if (inboundType === 'https-fallback' || hasHttpsFallback) {
       hint =
-        'Для HTTPS Fallback проверьте открытость порта, валидность TLS-сертификата и настройки reverse proxy (proxy_buffering off / flush_interval -1).';
+        'Для HTTPS Fallback проверьте открытость порта, совпадение endpoint path, валидность TLS-сертификата и настройки reverse proxy: для Nginx используйте grpc_pass (HTTP/2 h2c) для auto/stream-one (либо mode=packet-up + proxy_buffering off при proxy_pass), для Caddy — versions h2c 1.1 и flush_interval -1.';
     } else {
       hint =
         'Проверьте открытость порта в firewall ноды, доступность SNI с ноды и наличие исходящего доступа для клиентской пробы (можно задать CANARY_PROBE_URL или DISABLE_CANARY_PROBE=true).';

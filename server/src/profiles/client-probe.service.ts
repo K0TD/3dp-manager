@@ -60,7 +60,7 @@ export class ClientProbeService {
     socksPort: number,
   ): XrayClientJsonConfig {
     return {
-      log: { loglevel: 'warning' },
+      log: { loglevel: 'info' },
       inbounds: [
         {
           tag: 'socks-probe',
@@ -787,17 +787,17 @@ export class ClientProbeService {
           !/^Xray\s+\d+/i.test(line) &&
           !/^A unified platform/i.test(line) &&
           !/^Reading config:/i.test(line) &&
-          !/^\[Info\]/i.test(line),
+          !/core:\s+Xray\s+\d+.*started/i.test(line),
       );
     if (lines.length === 0) return '';
     const highlighted = [...lines]
       .reverse()
       .find((line) =>
-        /(?:failed|error|warning|timeout|refused|reset|eof|rejected|invalid|tls:|reality|status|denied|closed)/i.test(
+        /(?:failed|error|timeout|refused|reset|eof|rejected|invalid|tls:|reality|status|denied|closed|bad gateway|not found|forbidden|\b(?:400|403|404|405|500|502|503)\b)/i.test(
           line,
         ),
       );
-    return this.sanitizeError(highlighted || lines[lines.length - 1]);
+    return highlighted ? this.sanitizeError(highlighted) : '';
   }
 
   private sanitizeError(raw: string): string {

@@ -89,10 +89,9 @@ describe('web-server-config.builder', () => {
       publicPort: 443,
       upstreamPort: 20443,
     });
-    expect(nginx.config).toContain('location /api/v2/stream');
-    expect(nginx.config).toContain('proxy_pass http://127.0.0.1:20443;');
-    expect(nginx.config).toContain('proxy_buffering off;');
-    expect(nginx.config).toContain('proxy_request_buffering off;');
+    expect(nginx.config).toContain('location ^~ /api/v2/stream');
+    expect(nginx.config).toContain('grpc_pass grpc://127.0.0.1:20443;');
+    expect(nginx.config).toContain('client_max_body_size 0;');
 
     const caddy = buildHttpsFallbackProxyBundle({
       engine: 'caddy',
@@ -104,5 +103,6 @@ describe('web-server-config.builder', () => {
     expect(caddy.config).toContain('handle /api/v2/stream*');
     expect(caddy.config).toContain('reverse_proxy 127.0.0.1:20443');
     expect(caddy.config).toContain('flush_interval -1');
+    expect(caddy.config).toContain('versions h2c 1.1');
   });
 });
