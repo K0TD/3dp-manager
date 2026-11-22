@@ -9,6 +9,9 @@ import { v4 as uuidv4 } from 'uuid';
 import { buildXrayOutboundFromClientProfile } from './profile-config.builder';
 import type {
   ClientConnectionProbeResult,
+  ClientProbeAttempt,
+  ClientProbeFailure,
+  ClientProbeSignal,
   SeparatedClientProfile,
   XrayClientJsonConfig,
 } from './connection-profile.types';
@@ -27,6 +30,34 @@ interface ProbeTarget {
   port: number;
   path: string;
   url: string;
+}
+
+class SocksProbeError extends Error {
+  constructor(
+    message: string,
+    readonly phase: ClientProbeAttempt['stage'],
+    readonly failure: ClientProbeFailure,
+    readonly socksReply?: number,
+  ) {
+    super(message);
+  }
+}
+
+export function classifyXraySignal(diagnostic: string): ClientProbeSignal | undefined {
+  if (
+    /invalid user|reality.*(?:reject|invalid|verify|authentication)/i.test(
+      diagnostic,
+    )
+  )
+    return 'REALITY_REJECTED';
+  if (/tls:|certificate|tls handshake/i.test(diagnostic)) return 'TLS_ERROR';
+  if (/no such host|lookup.*failed|dns.*(?:failed|timeout)/i.test(diagnostic))
+    return 'DNS_ERROR';
+  if (/connection refused/i.test(diagnostic)) return 'TCP_REFUSED';
+  if (/connection reset/i.test(diagnostic)) return 'CONNECTION_RESET';
+  if (/\bEOF\b/i.test(diagnostic)) return 'EOF';
+  if (/status (?:4|5)[0-9]{2}/i.test(diagnostic)) return 'UPSTREAM_HTTP_ERROR';
+  return undefined;
 }
 
 const DEFAULT_PROBE_TIMEOUT_MS = 10000;
@@ -216,11 +247,30 @@ export class ClientProbeService {
       startedAt: number;
     },
   ): Promise<ClientConnectionProbeResult> {
-    const primaryTarget = ctx.probeTargets[0];
-    let lastProbeUrl = primaryTarget.url;
+    const started = Date.now();
+    const attempts: ClientProbeAttempt[] = [];
     let tmpConfigPath: string | null = null;
     let child: ReturnType<typeof spawn> | null = null;
     let outputTail = '';
+    let tcpReachable: boolean | undefined;
+    let tcpDurationMs: number | undefined;
+    let xrayStartupMs: number | undefined;
+    const result = (
+      extra: Partial<ClientConnectionProbeResult>,
+    ): ClientConnectionProbeResult => ({
+      success: false,
+      engine: 'xray-core',
+      targetAddress: client.address,
+      targetPort: client.port,
+      protocol: 'vless',
+      profileKind: client.kind,
+      latencyMs: Date.now() - ctx.startedAt,
+      tcpReachable,
+      tcpDurationMs,
+      xrayStartupMs,
+      attempts,
+      ...extra,
+    });
 
     try {
       const host = client.address.replace(/^\[|\]$/g, '');
@@ -230,21 +280,14 @@ export class ClientProbeService {
         ctx.waitForPortMs,
         Math.min(3000, ctx.timeoutMs),
       );
-      if (!tcpReady.reachable) {
-        return {
-          success: false,
-          engine: 'xray-core',
-          targetAddress: client.address,
-          targetPort: client.port,
-          protocol: 'vless',
-          profileKind: client.kind,
-          probeUrl: lastProbeUrl,
-          latencyMs: Date.now() - ctx.startedAt,
+      tcpDurationMs = Date.now() - started;
+      tcpReachable = tcpReady.reachable;
+      if (!tcpReachable)
+        return result({
           stage: 'tcp',
-          tcpReachable: false,
+          failure: 'TARGET_UNREACHABLE',
           error: tcpReady.reason,
-        };
-      }
+        });
 
       const socksPort = await this.allocateLocalPort();
       const config = this.buildEphemeralProbeConfig(client, socksPort);
@@ -257,6 +300,7 @@ export class ClientProbeService {
       let exitCode: number | null = null;
       let spawnError: string | null = null;
 
+      const spawning = Date.now();
       child = spawn(xrayBin, ['run', '-c', tmpConfigPath], {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
@@ -279,127 +323,104 @@ export class ClientProbeService {
         Math.min(3000, ctx.timeoutMs),
         () => exitedEarly,
       );
+      xrayStartupMs = Date.now() - spawning;
       if (!listenReady) {
         const sanitizedErr = this.sanitizeError(spawnError || outputTail);
-        return {
-          success: false,
-          engine: 'xray-core',
-          targetAddress: client.address,
-          targetPort: client.port,
-          protocol: 'vless',
-          profileKind: client.kind,
-          probeUrl: lastProbeUrl,
-          latencyMs: Date.now() - ctx.startedAt,
+        return result({
           stage: 'startup',
-          tcpReachable: true,
+          failure: 'XRAY_STARTUP',
           error: exitedEarly
             ? `Xray-клиент завершился с кодом ${String(exitCode)}: ${sanitizedErr || 'ошибка конфигурации'}`
             : 'Локальный SOCKS5 порт Xray-клиента не открылся вовремя',
-        };
+        });
       }
 
-      let lastErr: Error | null = null;
+      let lastError = 'Клиентская проба не завершена';
+      let lastUrl: string | undefined;
       for (const [index, target] of ctx.probeTargets.entries()) {
-        lastProbeUrl = target.url;
-        const remainingTargets = ctx.probeTargets.length - index;
-        const totalRemaining = Math.max(
-          1500,
+        lastUrl = target.url;
+        const remaining = ctx.probeTargets.length - index;
+        const budget = Math.max(
+          1000,
           ctx.timeoutMs - (Date.now() - ctx.startedAt),
         );
-        const perAttemptMs =
-          remainingTargets > 1
-            ? Math.min(5000, Math.max(2500, Math.floor(totalRemaining * 0.6)))
-            : totalRemaining;
+        const perAttempt =
+          remaining > 1
+            ? Math.min(5000, Math.ceil(budget / remaining))
+            : budget;
+        const attemptStarted = Date.now();
+        outputTail = '';
         try {
-          const httpStatus = await this.httpGetThroughSocks5(
+          const status = await this.httpGetThroughSocks5(
             socksPort,
             target.host,
             target.port,
             target.path,
-            perAttemptMs,
+            perAttempt,
           );
-
-          if (httpStatus >= 200 && httpStatus < 400) {
-            return {
-              success: true,
-              engine: 'xray-core',
-              targetAddress: client.address,
-              targetPort: client.port,
-              protocol: 'vless',
-              profileKind: client.kind,
-              stage: 'http',
-              tcpReachable: true,
-              httpStatusCode: httpStatus,
-              probeUrl: target.url,
-              latencyMs: Date.now() - ctx.startedAt,
-            };
-          }
-
-          return {
-            success: false,
-            engine: 'xray-core',
-            targetAddress: client.address,
-            targetPort: client.port,
-            protocol: 'vless',
-            profileKind: client.kind,
-            httpStatusCode: httpStatus,
-            probeUrl: target.url,
-            latencyMs: Date.now() - ctx.startedAt,
+          const success = status >= 200 && status < 400;
+          attempts.push({
+            host: target.host,
+            port: target.port,
             stage: 'http',
-            tcpReachable: true,
-            error: `Пробный HTTP-запрос через клиентский туннель вернул статус ${httpStatus}`,
-          };
-        } catch (attemptErr) {
-          lastErr =
-            attemptErr instanceof Error
-              ? attemptErr
-              : new Error(String(attemptErr));
-          // Allow xray-core a brief moment to flush its warning log line
-          await new Promise((r) => setTimeout(r, 80));
-          const diagSoFar = this.extractXrayDiagnostic(outputTail);
-          // Only try the fallback probe URL if the tunnel didn't fail at the VPS/handshake layer
-          const looksLikeTunnelFailure =
-            /(?:connection refused|tls:|reality|certificate|handshake|invalid user|xhttp|status \d{3})/i.test(
-              diagSoFar,
-            ) || exitedEarly;
-          if (looksLikeTunnelFailure) break;
+            durationMs: Date.now() - attemptStarted,
+            httpStatusCode: status,
+            ...(success ? {} : { failure: 'HTTP_STATUS' as const }),
+          });
+          if (success)
+            return result({
+              success,
+              stage: 'http',
+              httpStatusCode: status,
+              probeUrl: lastUrl,
+            });
+          lastError = `Пробный HTTP-запрос через клиентский туннель вернул статус ${status}`;
+        } catch (error) {
+          const durationMs = Date.now() - attemptStarted;
+          await new Promise((resolve) => setTimeout(resolve, 80));
+          const diagnostic = this.extractXrayDiagnostic(outputTail);
+          const signal = classifyXraySignal(diagnostic);
+          const probeError =
+            error instanceof SocksProbeError ? error : undefined;
+          attempts.push({
+            host: target.host,
+            port: target.port,
+            durationMs,
+            signal,
+            stage: probeError?.phase ?? 'socks',
+            failure: probeError?.failure ?? 'SOCKET_ERROR',
+            socksReply: probeError?.socksReply,
+          });
+          const message = this.sanitizeError(
+            error instanceof Error ? error.message : String(error),
+          );
+          lastError = diagnostic ? `${message} · xray: ${diagnostic}` : message;
+          // A different HTTP target helps distinguish a bad endpoint from a broken tunnel.
+          if (
+            exitedEarly ||
+            signal === 'REALITY_REJECTED' ||
+            signal === 'TLS_ERROR'
+          )
+            break;
         }
       }
-
-      const baseErr = this.sanitizeError(
-        lastErr ? lastErr.message : 'Клиентская проба не завершена',
-      );
-      const xrayDiag = this.extractXrayDiagnostic(outputTail);
-      return {
-        success: false,
-        engine: 'xray-core',
-        targetAddress: client.address,
-        targetPort: client.port,
-        protocol: 'vless',
-        profileKind: client.kind,
-        probeUrl: lastProbeUrl,
-        latencyMs: Date.now() - ctx.startedAt,
-        stage: /этап http/i.test(baseErr) ? 'http' : 'socks',
-        tcpReachable: true,
-        error: xrayDiag ? `${baseErr} · xray: ${xrayDiag}` : baseErr,
-      };
+      const last = attempts.at(-1);
+      return result({
+        stage: last?.stage,
+        failure: last?.failure,
+        httpStatusCode: last?.httpStatusCode,
+        probeUrl: lastUrl,
+        error: lastError,
+      });
     } catch (err) {
-      await new Promise((r) => setTimeout(r, 60));
       const baseErr = this.sanitizeError(
         err instanceof Error ? err.message : String(err),
       );
-      const xrayDiag = this.extractXrayDiagnostic(outputTail);
-      return {
-        success: false,
-        engine: 'xray-core',
-        targetAddress: client.address,
-        targetPort: client.port,
-        protocol: 'vless',
-        profileKind: client.kind,
-        probeUrl: lastProbeUrl,
-        latencyMs: Date.now() - ctx.startedAt,
-        error: xrayDiag ? `${baseErr} · xray: ${xrayDiag}` : baseErr,
-      };
+      return result({
+        stage: tcpReachable ? 'startup' : 'tcp',
+        failure: tcpReachable ? 'XRAY_STARTUP' : 'TARGET_UNREACHABLE',
+        error: baseErr,
+      });
     } finally {
       if (child && !child.killed) {
         try {
@@ -434,6 +455,7 @@ export class ClientProbeService {
       };
 
       const host = client.address.replace(/^\[|\]$/g, '');
+      let tcpDurationMs: number | undefined;
       let activeSocket: net.Socket | tls.TLSSocket | null = null;
       const timer = setTimeout(() => {
         activeSocket?.destroy();
@@ -446,6 +468,13 @@ export class ClientProbeService {
           profileKind: client.kind,
           fallbackReason: ctx.fallbackReason,
           latencyMs: Date.now() - ctx.startedAt,
+          stage:
+            client.security === 'tls' && tcpDurationMs !== undefined
+              ? 'tls'
+              : 'tcp',
+          tcpReachable: tcpDurationMs !== undefined,
+          tcpDurationMs,
+          failure: 'TIMEOUT',
           error: `Таймаут подключения к ${host}:${client.port} (${ctx.timeoutMs} мс)`,
         });
       }, ctx.timeoutMs);
@@ -460,6 +489,9 @@ export class ClientProbeService {
           timeout: ctx.timeoutMs,
         });
         activeSocket = socket;
+        socket.once('connect', () => {
+          tcpDurationMs = Date.now() - ctx.startedAt;
+        });
         socket.once('secureConnect', () => {
           clearTimeout(timer);
           const protocol = socket.getProtocol();
@@ -474,12 +506,19 @@ export class ClientProbeService {
               profileKind: client.kind,
               fallbackReason: ctx.fallbackReason,
               latencyMs: Date.now() - ctx.startedAt,
+              stage: 'tls',
+              tcpReachable: true,
+              tcpDurationMs,
+              failure: 'INVALID_RESPONSE',
               error: 'TLS handshake не согласовал протокол',
             });
             return;
           }
           done({
             success: true,
+            stage: 'tls',
+            tcpReachable: true,
+            tcpDurationMs,
             engine: 'tcp-tls-fallback',
             targetAddress: client.address,
             targetPort: client.port,
@@ -501,6 +540,10 @@ export class ClientProbeService {
             profileKind: client.kind,
             fallbackReason: ctx.fallbackReason,
             latencyMs: Date.now() - ctx.startedAt,
+            stage: tcpDurationMs !== undefined ? 'tls' : 'tcp',
+            tcpReachable: tcpDurationMs !== undefined,
+            tcpDurationMs,
+            failure: 'SOCKET_ERROR',
             error: `Ошибка TLS-подключения: ${this.sanitizeError(err.message)}`,
           });
         });
@@ -518,6 +561,9 @@ export class ClientProbeService {
         socket.end();
         done({
           success: true,
+          stage: 'tcp',
+          tcpReachable: true,
+          tcpDurationMs: Date.now() - ctx.startedAt,
           engine: 'tcp-tls-fallback',
           targetAddress: client.address,
           targetPort: client.port,
@@ -539,6 +585,9 @@ export class ClientProbeService {
           profileKind: client.kind,
           fallbackReason: ctx.fallbackReason,
           latencyMs: Date.now() - ctx.startedAt,
+          stage: 'tcp',
+          tcpReachable: false,
+          failure: 'TARGET_UNREACHABLE',
           error: `TCP-порт ${host}:${client.port} недоступен: ${this.sanitizeError(err.message)}`,
         });
       });
@@ -682,12 +731,23 @@ export class ClientProbeService {
       let buffer = Buffer.alloc(0);
       let settled = false;
 
-      const fail = (message: string) => {
+      const fail = (
+        message: string,
+        failure: ClientProbeFailure,
+        socksReply?: number,
+      ) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         sock.destroy();
-        reject(new Error(message));
+        reject(
+          new SocksProbeError(
+            message,
+            stage === 'http' ? 'http' : 'socks',
+            failure,
+            socksReply,
+          ),
+        );
       };
 
       const succeed = (status: number) => {
@@ -701,15 +761,22 @@ export class ClientProbeService {
       const timer = setTimeout(() => {
         fail(
           `Таймаут клиентской пробы через SOCKS5 (${timeoutMs} мс, этап ${stage})`,
+          'TIMEOUT',
         );
       }, timeoutMs);
 
-      sock.once('error', (err) => fail(err.message));
+      sock.once('error', (err) => fail(err.message, 'SOCKET_ERROR'));
       sock.once('end', () => {
-        fail(`Туннель закрыт до получения ответа (этап ${stage})`);
+        fail(
+          `Туннель закрыт до получения ответа (этап ${stage})`,
+          'TUNNEL_CLOSED',
+        );
       });
       sock.once('close', () => {
-        fail(`Туннель закрыт до получения ответа (этап ${stage})`);
+        fail(
+          `Туннель закрыт до получения ответа (этап ${stage})`,
+          'TUNNEL_CLOSED',
+        );
       });
 
       sock.once('connect', () => {
@@ -723,7 +790,10 @@ export class ClientProbeService {
         if (stage === 'greeting') {
           if (buffer.length < 2) return;
           if (buffer[0] !== 0x05 || buffer[1] !== 0x00) {
-            fail('SOCKS5 handshake отклонён локальным Xray-клиентом');
+            fail(
+              'SOCKS5 handshake отклонён локальным Xray-клиентом',
+              'SOCKS_REJECTED',
+            );
             return;
           }
           buffer = buffer.subarray(2);
@@ -746,6 +816,8 @@ export class ClientProbeService {
           if (buffer[0] !== 0x05 || buffer[1] !== 0x00) {
             fail(
               `Xray-клиент не смог открыть туннель к ${targetHost}:${targetPort} (SOCKS5 код 0x${buffer[1].toString(16)})`,
+              'SOCKS_REJECTED',
+              buffer[1],
             );
             return;
           }
@@ -757,7 +829,7 @@ export class ClientProbeService {
             if (buffer.length < 5) return;
             headerLen = 7 + buffer[4];
           } else {
-            fail('Неожиданный формат ответа SOCKS5');
+            fail('Неожиданный формат ответа SOCKS5', 'INVALID_RESPONSE');
             return;
           }
           if (buffer.length < headerLen) return;
@@ -777,7 +849,10 @@ export class ClientProbeService {
             firstLineEnd === -1 ? text : text.slice(0, firstLineEnd);
           const match = /^HTTP\/\d\.\d\s+(\d{3})/.exec(statusLine);
           if (!match) {
-            fail(`Некорректный HTTP-ответ через туннель: ${statusLine}`);
+            fail(
+              `Некорректный HTTP-ответ через туннель: ${statusLine}`,
+              'INVALID_RESPONSE',
+            );
             return;
           }
           succeed(Number(match[1]));

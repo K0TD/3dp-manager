@@ -62,6 +62,7 @@ describe('RotationService resilient generations', () => {
     waitForXray: jest.fn(),
     deleteInbound: jest.fn(),
     getLastInboundError: jest.fn(),
+    getInbound: jest.fn(),
   };
   const inboundBuilder = {
     buildVlessRealityTcp: jest.fn(),
@@ -857,6 +858,7 @@ describe('RotationService resilient generations', () => {
   it('purges failed cleanup items', async () => {
     inboundRepo.createQueryBuilder.mockReturnValue({
       leftJoinAndSelect: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       getMany: jest.fn().mockResolvedValue([
         { id: 101, cleanupAttempts: 2, status: InboundStatus.PendingCleanup },
@@ -1314,121 +1316,35 @@ describe('RotationService resilient generations', () => {
     });
   });
 
-  describe('cleanupZeroTrafficOrphans', () => {
-    const testNode = { id: 'node-clean-1', name: 'CleanNode' } as Node;
-
-    it('удаляет устаревший одиночный инбаунд с 0 B расхода, не привязанный к активным подпискам', async () => {
-      inboundRepo.find = jest
-        .fn()
-        .mockResolvedValue([{ xuiId: 200, status: InboundStatus.Active }]);
-      (xuiService as any).listRoutingInbounds = jest.fn().mockResolvedValue([
-        {
-          id: 97,
-          remark: 'xhttp-reality',
-          protocol: 'vless',
-          up: 0,
-          down: 0,
-          clientStats: [{ id: 108, up: 0, down: 0, lastOnline: 0 }],
-          settings: JSON.stringify({
-            clients: [
-              {
-                id: 'uuid-1',
-                email: 'test-email',
-                created_at: Date.now() - 3600 * 1000,
-              },
-            ],
-          }),
-        },
-      ]);
-      xuiService.deleteInbound.mockResolvedValue(true);
-
-      const cleaned = await service.cleanupZeroTrafficOrphans(testNode);
-
-      expect(cleaned).toBe(1);
-      expect(xuiService.deleteInbound).toHaveBeenCalledWith(97, testNode);
+  it('keeps exhausted cleanup tasks available for explicit retry and leaves unmanaged panel inbounds alone', async () => {
+    const andWhere = jest.fn().mockReturnThis();
+    const panelList = jest.fn().mockResolvedValue([{ id: 97, up: 0, down: 0 }]);
+    (xuiService as Record<string, unknown>).listRoutingInbounds = panelList;
+    inboundRepo.createQueryBuilder.mockReturnValue({
+      leftJoinAndSelect: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere,
+      orderBy: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue([]),
     });
-
-    it('НЕ удаляет инбаунд, если его xuiId отслеживается в БД как Active/Staged', async () => {
-      inboundRepo.find = jest
-        .fn()
-        .mockResolvedValue([{ xuiId: 97, status: InboundStatus.Active }]);
-      (xuiService as any).listRoutingInbounds = jest.fn().mockResolvedValue([
-        {
-          id: 97,
-          up: 0,
-          down: 0,
-          clientStats: [{ up: 0, down: 0, lastOnline: 0 }],
-          settings: JSON.stringify({ clients: [{ created_at: 1000 }] }),
-        },
-      ]);
-
-      const cleaned = await service.cleanupZeroTrafficOrphans(testNode);
-
-      expect(cleaned).toBe(0);
-      expect(xuiService.deleteInbound).not.toHaveBeenCalled();
+    nodeRepo.createQueryBuilder.mockReturnValue({
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue([]),
     });
+    await service.processCleanupQueue();
+    expect(andWhere).toHaveBeenCalledWith(expect.stringContaining('inbound.cleanupAttempts < :max'), { max: 5 });
+    expect(inboundRepo.delete).not.toHaveBeenCalled();
+    expect(panelList).not.toHaveBeenCalled();
 
-    it('НЕ удаляет инбаунд, если у него есть ненулевой расход трафика', async () => {
-      inboundRepo.find = jest.fn().mockResolvedValue([]);
-      (xuiService as any).listRoutingInbounds = jest.fn().mockResolvedValue([
-        {
-          id: 98,
-          up: 1024,
-          down: 2048,
-          clientStats: [{ up: 1024, down: 2048 }],
-          settings: JSON.stringify({ clients: [{ created_at: 1000 }] }),
-        },
-      ]);
-
-      const cleaned = await service.cleanupZeroTrafficOrphans(testNode);
-
-      expect(cleaned).toBe(0);
-      expect(xuiService.deleteInbound).not.toHaveBeenCalled();
-    });
-
-    it('НЕ удаляет инбаунд с несколькими клиентами (защита персональных инбаундов)', async () => {
-      inboundRepo.find = jest.fn().mockResolvedValue([]);
-      (xuiService as any).listRoutingInbounds = jest.fn().mockResolvedValue([
-        {
-          id: 1,
-          remark: 'Multi-client',
-          up: 0,
-          down: 0,
-          clientStats: [
-            { id: 1, up: 0, down: 0 },
-            { id: 2, up: 0, down: 0 },
-          ],
-          settings: JSON.stringify({
-            clients: [{ id: 'c1' }, { id: 'c2' }],
-          }),
-        },
-      ]);
-
-      const cleaned = await service.cleanupZeroTrafficOrphans(testNode);
-
-      expect(cleaned).toBe(0);
-      expect(xuiService.deleteInbound).not.toHaveBeenCalled();
-    });
-
-    it('НЕ удаляет только что созданный инбаунд (защита по времени создания < 5 минут)', async () => {
-      inboundRepo.find = jest.fn().mockResolvedValue([]);
-      (xuiService as any).listRoutingInbounds = jest.fn().mockResolvedValue([
-        {
-          id: 99,
-          up: 0,
-          down: 0,
-          clientStats: [{ up: 0, down: 0, lastOnline: 0 }],
-          settings: JSON.stringify({
-            clients: [{ created_at: Date.now() - 30 * 1000 }], // 30 sec ago
-          }),
-        },
-      ]);
-
-      const cleaned = await service.cleanupZeroTrafficOrphans(testNode);
-
-      expect(cleaned).toBe(0);
-      expect(xuiService.deleteInbound).not.toHaveBeenCalled();
-    });
+    inboundRepo.findOne.mockResolvedValue({ id: 97, status: InboundStatus.PendingCleanup, cleanupAttempts: 5 });
+    await service.retryCleanup(97);
+    expect(inboundRepo.update).toHaveBeenCalledWith(
+      { id: 97, status: InboundStatus.PendingCleanup },
+      expect.objectContaining({ cleanupAttempts: 0, nextCleanupAt: expect.any(Date) }),
+    );
   });
 
   describe('database outage resilience and operation retention', () => {
@@ -1693,7 +1609,10 @@ describe('RotationService resilient generations', () => {
         sub,
         node.id,
         { node, configs: [{ config: sub.inboundsConfig[0], position: 0 }] },
-        [{ id: 1, name: 'other-random.com', isEnabled: true } as Domain],
+        [
+          { id: 1, name: 'other-random.com', isEnabled: true },
+          { id: 2, name: 'pinned.example.com', isEnabled: true },
+        ],
       );
 
       expect(result).toMatchObject({
@@ -2103,6 +2022,55 @@ describe('RotationService resilient generations', () => {
       };
       expect(lastSaved.profileKind).toBe('https-fallback');
       expect(lastSaved.clientProfileJson).toContain('/api/v2/stream');
+    });
+
+    it.each([true, false])('uses the live compatible Fallback listener when the panel accepts or rejects adding a client (%s)', async (accepted) => {
+      const builder = new InboundBuilderService();
+      const live = builder.buildHttpsFallbackInbound({
+        port: 20443, uuid: 'existing-uuid', remark: 'Legacy fallback',
+        domain: 'fallback.example.com', settings: { reverseProxy: 'nginx' },
+      });
+      inboundRepo.find.mockResolvedValue([{
+        id: 18, xuiId: 24, port: 20443, profileId: 'legacy-profile',
+        subscription: { inboundsConfig: [{ type: 'https-fallback', profileSettings: { mode: 'auto' } }] },
+        clientProfileJson: JSON.stringify({ kind: 'https-fallback', port: 443, sni: 'fallback.example.com' }),
+      }]);
+      xuiService.getInbound.mockResolvedValue(live);
+      inboundBuilder.buildHttpsFallbackInbound.mockImplementation(builder.buildHttpsFallbackInbound.bind(builder));
+      inboundBuilder.buildHttpsFallbackClientBundle.mockImplementation(builder.buildHttpsFallbackClientBundle.bind(builder));
+      const addClient = jest.fn(async (_id, client, _node, matches) => {
+        expect(matches(live)).toBe(true);
+        expect(matches({ ...live, enable: false })).toBe(false);
+        if (!accepted) return null;
+        const settings = JSON.parse(live.settings);
+        settings.clients.push(client);
+        return { id: 24, inbound: { ...live, settings: JSON.stringify(settings) } };
+      });
+      (xuiService as Record<string, unknown>).addInboundClient = addClient;
+      xuiService.getLastInboundError.mockReturnValue('shared client rejected');
+      xuiService.waitForXray.mockResolvedValue(undefined);
+      const config = {
+        configId: 'new-fallback', profileId: 'new-profile', type: 'https-fallback', port: 'random',
+        nodeId: node.id, profileSettings: { domain: 'fallback.example.com', reverseProxy: 'nginx', mode: 'auto' },
+      };
+      const sub = {
+        id: 'another-subscription', name: 'Additional subscriber', inbounds: [], inboundsConfig: [config],
+      } as Subscription;
+      const result = await (service as any).rotateNodeGroup(
+        sub, node.id, { node, configs: [{ config, position: 0 }] }, [],
+      );
+      expect(addClient).toHaveBeenCalledWith(24, expect.objectContaining({ id: expect.any(String) }), node, expect.any(Function));
+      expect(xuiService.addInbound).not.toHaveBeenCalled();
+      expect(result.status).toBe(accepted ? 'succeeded' : 'failed');
+      if (accepted) {
+        const uuid = addClient.mock.calls[0][1].id;
+        expect(uuid).not.toBe('existing-uuid');
+        expect(inboundRepo.save).toHaveBeenCalledWith(expect.objectContaining({
+          xuiId: 24, port: 20443, clientId: uuid,
+          clientProfileJson: expect.stringContaining(uuid),
+        }));
+      }
+      delete (xuiService as Record<string, unknown>).addInboundClient;
     });
 
     it('runs canary real-client probe before switching generation and automatically rolls back on probe failure', async () => {

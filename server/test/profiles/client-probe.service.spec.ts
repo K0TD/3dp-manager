@@ -1,3 +1,5 @@
+import { EventEmitter } from 'node:events';
+import childProcess from 'child_process';
 import * as net from 'net';
 import { ClientProbeService } from 'src/profiles/client-probe.service';
 import type { SeparatedClientProfile } from 'src/profiles/connection-profile.types';
@@ -74,6 +76,79 @@ describe('ClientProbeService', () => {
     expect(failed.success).toBe(false);
     expect(failed.engine).toBe('tcp-tls-fallback');
     expect(failed.error).toBeTruthy();
+  });
+
+  it('tries another HTTP endpoint after a 503 and reports both attempts', async () => {
+    const probe = new ClientProbeService();
+    const worker = probe as unknown as {
+      waitForRemoteTcpPort: () => Promise<{ reachable: boolean }>;
+      allocateLocalPort: () => Promise<number>;
+      waitForLocalPort: () => Promise<boolean>;
+      httpGetThroughSocks5: () => Promise<number>;
+      probeViaXrayCore: (
+        profile: SeparatedClientProfile,
+        binary: string,
+        context: {
+          timeoutMs: number;
+          waitForPortMs: number;
+          startedAt: number;
+          probeTargets: Array<{
+            host: string;
+            port: number;
+            path: string;
+            url: string;
+          }>;
+        },
+      ) => ReturnType<ClientProbeService['probeClientProfile']>;
+    };
+    const child = Object.assign(new EventEmitter(), { killed: true });
+    const spawn = jest
+      .spyOn(childProcess, 'spawn')
+      .mockReturnValue(
+        child as unknown as ReturnType<typeof childProcess.spawn>,
+      );
+    jest
+      .spyOn(worker, 'waitForRemoteTcpPort')
+      .mockResolvedValue({ reachable: true });
+    jest.spyOn(worker, 'allocateLocalPort').mockResolvedValue(12345);
+    jest.spyOn(worker, 'waitForLocalPort').mockResolvedValue(true);
+    jest
+      .spyOn(worker, 'httpGetThroughSocks5')
+      .mockResolvedValueOnce(503)
+      .mockResolvedValueOnce(204);
+    const hosts = ['first.example.com', 'second.example.com'];
+
+    try {
+      const result = await worker.probeViaXrayCore(sampleProfile, 'xray', {
+        timeoutMs: 3000,
+        startedAt: Date.now(),
+        waitForPortMs: 0,
+        probeTargets: hosts.map((host) => ({
+          host,
+          port: 80,
+          path: '/',
+          url: `http://${host}/`,
+        })),
+      });
+      expect(result).toMatchObject({
+        success: true,
+        httpStatusCode: 204,
+        tcpReachable: true,
+        tcpDurationMs: expect.any(Number),
+        xrayStartupMs: expect.any(Number),
+        attempts: [
+          {
+            host: hosts[0],
+            httpStatusCode: 503,
+            stage: 'http',
+            failure: 'HTTP_STATUS',
+          },
+          { host: hosts[1], httpStatusCode: 204, stage: 'http' },
+        ],
+      });
+    } finally {
+      spawn.mockRestore();
+    }
   });
 
   it('rejects malformed profile address or port immediately', async () => {

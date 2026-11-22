@@ -10,6 +10,7 @@ import { ApiTokenGuard } from './api-token.guard';
 import {
   ApiTokensController,
   AutomationController,
+  RotationDiagnosticsController,
 } from './automation.controller';
 import { AutomationService } from './automation.service';
 
@@ -24,6 +25,10 @@ import { AutomationService } from './automation.service';
     RotationModule,
   ],
   providers: [ApiTokenService, ApiTokenGuard, AutomationService],
-  controllers: [ApiTokensController, AutomationController],
+  controllers: [
+    ApiTokensController,
+    AutomationController,
+    RotationDiagnosticsController,
+  ],
 })
 export class AutomationModule {}

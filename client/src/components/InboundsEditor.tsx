@@ -28,9 +28,7 @@ import {
   Restore,
   ExpandMore,
   ExpandLess,
-  Tune,
 } from '@mui/icons-material';
-import api from '../api';
 import type { NodeRecord } from '../types/node';
 import { resolveClientSniProfile } from '../utils/sniProfiles';
 import {
@@ -109,7 +107,6 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
     null,
   );
   const [expandedId, setExpandedId] = useState<string>();
-  const [applyingSniId, setApplyingSniId] = useState<string | null>(null);
 
   const openInboundPreview = (inbound: InboundConfigUI) => {
     setPreviewTarget(inbound);
@@ -158,39 +155,6 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
         </Stack>
       </li>
     );
-  };
-
-  const handleApplySniProfile = async (inbound: InboundConfigUI) => {
-    const cleanSni = inbound.sni?.trim();
-    if (!cleanSni || cleanSni === 'random') return;
-    setApplyingSniId(inbound.id);
-    try {
-      let resolved = resolveClientSniProfile(cleanSni);
-      try {
-        const res = await api.get<{
-          fingerprint?: ReturnType<typeof resolveClientSniProfile>['fingerprint'];
-          spiderX?: string;
-          xhttpPath?: string;
-        }>('/domains/resolve-profile', { params: { sni: cleanSni } });
-        if (res?.data?.fingerprint) {
-          resolved = {
-            ...resolved,
-            fingerprint: res.data.fingerprint,
-            spiderX: res.data.spiderX || resolved.spiderX,
-            xhttpPath: res.data.xhttpPath || resolved.xhttpPath,
-          };
-        }
-      } catch {
-        // Fallback to client-side SNI catalog mirror
-      }
-      handleProfileSettingsChange(inbound.id, {
-        fingerprint: resolved.fingerprint,
-        spiderX: resolved.spiderX || '/',
-        path: resolved.xhttpPath || '/',
-      });
-    } finally {
-      setApplyingSniId(null);
-    }
   };
 
   const handleProfileSettingsChange = (
@@ -282,22 +246,6 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
             next.sni = nextDomain;
           } else {
             next.tlsServerName = nextDomain;
-          }
-        }
-      }
-
-      if (field === 'sni' && next.type === 'xhttp-stable') {
-        const cleanSni = value.trim();
-        if (cleanSni && cleanSni !== 'random') {
-          const matched = resolveClientSniProfile(cleanSni);
-          if (matched.profileId && matched.profileId !== 'default') {
-            next.profileSettings = {
-              ...createDefaultXhttpStableSettings(),
-              ...next.profileSettings,
-              fingerprint: matched.fingerprint,
-              spiderX: matched.spiderX || '/',
-              path: matched.xhttpPath || '/',
-            };
           }
         }
       }
@@ -639,12 +587,16 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
               <Select
                 value={inbound.type}
                 label="Тип"
-                disabled={inbound.awgLocked || inbound.persistentLocked}
+                disabled={MANAGED_PROFILE_TYPES.has(inbound.type) || inbound.awgLocked || inbound.persistentLocked}
                 onChange={(e) =>
                   handleInboundChange(inbound.id, 'type', e.target.value)
                 }
               >
-                {CONNECTION_OPTIONS.map((option) => {
+                {CONNECTION_OPTIONS.filter(option =>
+                  MANAGED_PROFILE_TYPES.has(inbound.type)
+                    ? option === inbound.type
+                    : !MANAGED_PROFILE_TYPES.has(option),
+                ).map((option) => {
                   const supported = isInboundSupported(
                     option,
                     inbound.nodeId,
@@ -1082,32 +1034,9 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                         sx={{ gridColumn: '1 / -1' }}
                       >
                         <Typography variant="caption" color="text.secondary">
-                          XHTTP Stable · минимальная серверная конфигурация + клиентские параметры
+                          Параметры XHTTP берутся из выбранного SNI.
                         </Typography>
                         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                          <Tooltip
-                            title={
-                              inbound.sni && inbound.sni !== 'random'
-                                ? `Подставить fingerprint, spiderX и path из SNI-профиля для ${inbound.sni}`
-                                : 'Выберите конкретный домен в поле SNI, чтобы применить его SNI-профиль'
-                            }
-                          >
-                            <span>
-                              <Button
-                                size="small"
-                                variant="outlined"
-                                startIcon={<Tune />}
-                                disabled={
-                                  !inbound.sni ||
-                                  inbound.sni === 'random' ||
-                                  applyingSniId === inbound.id
-                                }
-                                onClick={() => void handleApplySniProfile(inbound)}
-                              >
-                                Из SNI-профиля
-                              </Button>
-                            </span>
-                          </Tooltip>
                           <Button
                             size="small"
                             variant="outlined"
@@ -1148,38 +1077,6 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                       </FormControl>
 
                       <FormControl size="small" sx={{ width: '100%', minWidth: 0 }}>
-                        <InputLabel>Fingerprint</InputLabel>
-                        <Select
-                          value={profileSettings.fingerprint || 'chrome'}
-                          label="Fingerprint"
-                          onChange={(e) =>
-                            handleProfileSettingsChange(inbound.id, {
-                              fingerprint: e.target.value as ClientFingerprint,
-                            })
-                          }
-                        >
-                          {FINGERPRINT_OPTIONS.map((fp) => (
-                            <MenuItem key={fp} value={fp}>
-                              {fp}
-                            </MenuItem>
-                          ))}
-                        </Select>
-                      </FormControl>
-
-                      <TextField
-                        size="small"
-                        label="XHTTP Path"
-                        placeholder="/"
-                        value={profileSettings.path ?? '/'}
-                        onChange={(e) =>
-                          handleProfileSettingsChange(inbound.id, {
-                            path: e.target.value,
-                          })
-                        }
-                        sx={{ width: '100%', minWidth: 0 }}
-                      />
-
-                      <FormControl size="small" sx={{ width: '100%', minWidth: 0 }}>
                         <InputLabel>Ротация домена</InputLabel>
                         <Select
                           value={profileSettings.rotationPolicy || 'fixed_domain'}
@@ -1199,32 +1096,6 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                           </MenuItem>
                         </Select>
                       </FormControl>
-
-                      <TextField
-                        size="small"
-                        label="XHTTP Host (опционально)"
-                        placeholder="По умолчанию = SNI"
-                        value={profileSettings.host || ''}
-                        onChange={(e) =>
-                          handleProfileSettingsChange(inbound.id, {
-                            host: e.target.value,
-                          })
-                        }
-                        sx={{ width: '100%', minWidth: 0 }}
-                      />
-
-                      <TextField
-                        size="small"
-                        label="SpiderX"
-                        placeholder="/"
-                        value={profileSettings.spiderX || '/'}
-                        onChange={(e) =>
-                          handleProfileSettingsChange(inbound.id, {
-                            spiderX: e.target.value,
-                          })
-                        }
-                        sx={{ width: '100%', minWidth: 0 }}
-                      />
 
                       <Box
                         sx={{

@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { Repository } from 'typeorm';
+import { Domain } from 'src/domains/entities/domain.entity';
 import { ConnectionProfilesService } from 'src/profiles/connection-profiles.service';
 import { ConnectionProfile } from 'src/profiles/entities/connection-profile.entity';
 import { Node } from 'src/nodes/entities/node.entity';
@@ -47,12 +48,16 @@ describe('ConnectionProfilesService', () => {
     probeDomainAndTls: jest.fn(),
   };
 
+  const domainRepo = { find: jest.fn() };
+
   const service = new ConnectionProfilesService(
     profileRepo as unknown as Repository<ConnectionProfile>,
     nodeRepo as unknown as Repository<Node>,
     inboundRepo as unknown as Repository<Inbound>,
     xuiService as unknown as XuiService,
     tlsSiteProbe as unknown as TlsSiteProbeService,
+    undefined,
+    domainRepo as unknown as Repository<Domain>,
   );
 
   beforeEach(() => {
@@ -68,6 +73,21 @@ describe('ConnectionProfilesService', () => {
       webKeyFile: '/key.pem',
     });
     inboundRepo.findOne.mockResolvedValue(null);
+  });
+
+  it('previews random XHTTP Stable with an enabled catalog domain and its settings', async () => {
+    domainRepo.find.mockResolvedValue([{ name: 'speedtest.net' }, { name: 'www.samsung.com' }]);
+    const preview = await service.preview({
+      kind: 'xhttp-stable', sni: 'random',
+      settings: { path: '/legacy', host: 'old.example', fingerprint: 'firefox', spiderX: '/old' },
+    });
+    expect(domainRepo.find).toHaveBeenCalledWith({
+      where: { isEnabled: true }, order: { name: 'ASC' },
+    });
+    expect(preview.clientPreview.clientConfig).toMatchObject({
+      sni: 'www.samsung.com', fingerprint: 'android', spiderX: '/assets/',
+      xhttp: { path: '/sec/assets/', host: 'www.samsung.com' },
+    });
   });
 
   it('creates, updates with previousSnapshot/revision bump, previews, checks, exports, and removes xhttp-stable profile', async () => {

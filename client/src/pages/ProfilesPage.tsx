@@ -40,7 +40,6 @@ import {
   Refresh,
   Restore,
   Terminal,
-  Tune,
 } from '@mui/icons-material';
 import api from '../api';
 import { WorkspaceHeader } from '../components/WorkspaceHeader';
@@ -177,9 +176,6 @@ const DEFAULT_FORM: ProfileFormState = {
   rotationPolicy: 'fixed_domain',
   spec: {
     mode: 'auto',
-    path: '/',
-    fingerprint: 'chrome',
-    spiderX: '/',
     rotationPolicy: 'fixed_domain',
     xmux: { enabled: false },
   },
@@ -287,7 +283,6 @@ export default function ProfilesPage() {
   const [sniRules, setSniRules] = useState<SniProfileRule[]>(
     () => CLIENT_SNI_PROFILES_CATALOG as unknown as SniProfileRule[],
   );
-  const [appliedSniRuleName, setAppliedSniRuleName] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [probeResults, setProbeResults] = useState<
@@ -417,30 +412,8 @@ export default function ProfilesPage() {
     return { ...base, nodeId: nextNodeId };
   };
 
-  const handleXhttpSniSelect = (value: string) => {
-    const clean = value.trim();
-    const matched = findMatchingSniRule(clean, sniRules);
-    if (matched) {
-      setAppliedSniRuleName(matched.name);
-      setForm((prev) => ({
-        ...prev,
-        sni: clean,
-        spec: {
-          ...prev.spec,
-          fingerprint: matched.profile.fingerprint,
-          spiderX: matched.profile.spiderX || '/',
-          path: matched.profile.xhttpPath || prev.spec.path || '/',
-        },
-      }));
-      return;
-    }
-    setAppliedSniRuleName('');
-    setForm((prev) => ({ ...prev, sni: clean }));
-  };
-
   const openCreate = (kind: ManagedProfileKind = 'xhttp-stable') => {
     setEditingId(null);
-    setAppliedSniRuleName('');
     const defaultNodeId = nodes.find((n) => n.isMain)?.id || nodes[0]?.id || '';
     const next = applyNodeDefaults(defaultFormForKind(kind), defaultNodeId);
     setForm(next);
@@ -449,11 +422,6 @@ export default function ProfilesPage() {
 
   const openEdit = (profile: ConnectionProfileRecord) => {
     setEditingId(profile.id);
-    const matched =
-      profile.kind === 'xhttp-stable' && profile.sni
-        ? findMatchingSniRule(profile.sni, sniRules)
-        : null;
-    setAppliedSniRuleName(matched?.name || '');
     setForm({
       name: profile.name,
       kind: profile.kind,
@@ -481,6 +449,13 @@ export default function ProfilesPage() {
         form.port.trim() && /^\d+$/.test(form.port.trim())
           ? Number(form.port.trim())
           : undefined;
+      const spec = { ...form.spec };
+      if (form.kind === 'xhttp-stable') {
+        delete spec.path;
+        delete spec.host;
+        delete spec.fingerprint;
+        delete spec.spiderX;
+      }
       const payload = {
         name: form.name.trim(),
         ...(editingId ? {} : { kind: form.kind }),
@@ -489,10 +464,10 @@ export default function ProfilesPage() {
         sni:
           form.kind === 'self-sni' || form.kind === 'https-fallback'
             ? form.spec.domain?.trim() || form.sni.trim() || undefined
-            : form.sni.trim() || undefined,
+            : form.sni.trim() || 'random',
         rotationPolicy: form.rotationPolicy,
         spec: {
-          ...form.spec,
+          ...spec,
           rotationPolicy: form.rotationPolicy,
         },
       };
@@ -644,17 +619,20 @@ export default function ProfilesPage() {
     forceRandomPort: boolean,
   ): Record<string, unknown> => {
     const domain = profile.spec?.domain?.trim() || profile.sni?.trim() || '';
+    const proxyFallback = profile.kind === 'https-fallback' &&
+      ['nginx', 'caddy'].includes(profile.spec?.reverseProxy || '');
+    const random = forceRandomPort && !proxyFallback;
     const isDirectFallback =
       profile.kind === 'https-fallback' &&
       (profile.spec?.reverseProxy ?? 'none') === 'none';
     const newInbound: Record<string, unknown> = {
       configId: crypto.randomUUID(),
       type: profile.kind,
-      port: forceRandomPort ? 'random' : (profile.port ?? 'random'),
+      port: random ? 'random' : (profile.port ?? (proxyFallback ? 20443 : 'random')),
       nodeId: profile.nodeId || undefined,
       name: profile.name,
       enabled: true,
-      profileId: forceRandomPort ? undefined : profile.id,
+      profileId: random ? undefined : profile.id,
       profileSettings: {
         ...profile.spec,
         rotationPolicy: profile.rotationPolicy,
@@ -1321,8 +1299,7 @@ export default function ProfilesPage() {
                 label="Тип профиля"
                 onChange={(e) => {
                   const nextKind = e.target.value as ManagedProfileKind;
-                  setAppliedSniRuleName('');
-                  const next = applyNodeDefaults(
+                                const next = applyNodeDefaults(
                     defaultFormForKind(nextKind),
                     form.nodeId,
                   );
@@ -1365,7 +1342,9 @@ export default function ProfilesPage() {
             <Stack direction="row" spacing={1.5}>
               <TextField
                 size="small"
-                label="Порт (или пусто для random)"
+                label={form.kind === 'https-fallback' && ['nginx', 'caddy'].includes(form.spec.reverseProxy || '')
+                  ? 'Внутренний порт (по умолчанию 20443)'
+                  : 'Порт (или пусто для random)'}
                 value={form.port}
                 onChange={(e) => setForm({ ...form, port: e.target.value })}
                 fullWidth
@@ -1403,15 +1382,10 @@ export default function ProfilesPage() {
                   onInputChange={(_, newValue, reason) => {
                     if (reason === 'input' || reason === 'clear') {
                       setForm((prev) => ({ ...prev, sni: newValue }));
-                      if (reason === 'clear' || !newValue.trim()) {
-                        setAppliedSniRuleName('');
-                      }
                     }
                   }}
-                  onChange={(_, newValue) =>
-                    handleXhttpSniSelect(
-                      typeof newValue === 'string' ? newValue : '',
-                    )
+                  onChange={(_, value) =>
+                    setForm(prev => ({ ...prev, sni: typeof value === 'string' ? value.trim() : '' }))
                   }
                   renderOption={(props, option) => {
                     const rule = findMatchingSniRule(option, sniRules);
@@ -1456,35 +1430,10 @@ export default function ProfilesPage() {
                       {...params}
                       label="SNI (выбор из «Доменов» / SNI-профилей или свой)"
                       placeholder="random или домен"
-                      helperText={
-                        appliedSniRuleName
-                          ? `Применён SNI-профиль: ${appliedSniRuleName} (fingerprint, path, spiderX — можно изменить вручную)`
-                          : 'Выберите домен из раздела «Домены» для автоподбора fingerprint/path/spiderX'
-                      }
+                      helperText="Параметры XHTTP берутся из выбранного SNI. При random используется домен из справочника."
                     />
                   )}
                 />
-                {(() => {
-                  const matchedManual = findMatchingSniRule(form.sni, sniRules);
-                  if (
-                    !matchedManual ||
-                    matchedManual.name === appliedSniRuleName
-                  ) {
-                    return null;
-                  }
-                  return (
-                    <Box>
-                      <Button
-                        size="small"
-                        variant="outlined"
-                        startIcon={<Tune />}
-                        onClick={() => handleXhttpSniSelect(form.sni)}
-                      >
-                        Применить SNI-профиль «{matchedManual.name}»
-                      </Button>
-                    </Box>
-                  );
-                })()}
                 <Stack direction="row" spacing={1.5}>
                   <FormControl size="small" fullWidth>
                     <InputLabel>Режим XHTTP</InputLabel>
@@ -1508,46 +1457,6 @@ export default function ProfilesPage() {
                       ))}
                     </Select>
                   </FormControl>
-                  <TextField
-                    size="small"
-                    label="XHTTP Path"
-                    value={form.spec.path ?? '/'}
-                    onChange={(e) =>
-                      setForm({
-                        ...form,
-                        spec: { ...form.spec, path: e.target.value },
-                      })
-                    }
-                    fullWidth
-                  />
-                </Stack>
-                <Stack direction="row" spacing={1.5}>
-                  <TextField
-                    size="small"
-                    label="SpiderX"
-                    placeholder="/"
-                    value={form.spec.spiderX ?? '/'}
-                    onChange={(e) =>
-                      setForm({
-                        ...form,
-                        spec: { ...form.spec, spiderX: e.target.value },
-                      })
-                    }
-                    fullWidth
-                  />
-                  <TextField
-                    size="small"
-                    label="XHTTP Host (опц.)"
-                    placeholder="По умолчанию = SNI"
-                    value={form.spec.host || ''}
-                    onChange={(e) =>
-                      setForm({
-                        ...form,
-                        spec: { ...form.spec, host: e.target.value },
-                      })
-                    }
-                    fullWidth
-                  />
                 </Stack>
               </>
             ) : form.kind === 'self-sni' ? (
@@ -1858,6 +1767,7 @@ export default function ProfilesPage() {
               </>
             )}
 
+            {form.kind !== 'xhttp-stable' && (
             <FormControl size="small" fullWidth>
               <InputLabel>Fingerprint</InputLabel>
               <Select
@@ -1880,6 +1790,7 @@ export default function ProfilesPage() {
                 ))}
               </Select>
             </FormControl>
+            )}
 
             {(() => {
               const draftEngine = getWebServerEngine(form.kind, form.spec);
@@ -1923,7 +1834,8 @@ export default function ProfilesPage() {
         const filteredSubs = subscriptions.filter((sub) =>
           sub.name.toLowerCase().includes(subSearch.trim().toLowerCase()),
         );
-        const fixedPortTargets = deployTargets.filter((p) => p.port != null);
+        const fixedPortTargets = deployTargets.filter(p => p.port != null &&
+          !(p.kind === 'https-fallback' && ['nginx', 'caddy'].includes(p.spec?.reverseProxy || '')));
         const hasFixedPortMultiSubWarning =
           targetSubIds.length > 1 && fixedPortTargets.length > 0;
         const plannedAdditions = subscriptions
@@ -2052,9 +1964,8 @@ export default function ProfilesPage() {
                 {targetSubIds.length > 1 && (
                   <Alert severity="info" sx={{ py: 0.5 }}>
                     При добавлении профиля в несколько подписок на одной ноде
-                    автоматически используется <strong>один общий inbound</strong>{' '}
-                    в 3x-ui с отдельным клиентом (UUID) для каждой подписки —
-                    конфликта портов не будет.
+                    совместимые настройки используют один общий инбаунд
+                    в 3x-ui и отдельного клиента для каждой подписки.
                   </Alert>
                 )}
 

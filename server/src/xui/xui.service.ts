@@ -469,9 +469,11 @@ export class XuiService {
     inboundId: number,
     client: Record<string, unknown>,
     node?: Node,
+    matchesInbound?: (inbound: XuiInboundRaw) => boolean,
   ): Promise<XuiCreatedInbound | null> {
     if (!inboundId || inboundId <= 0) return null;
-    const run = () => this.appendInboundClient(inboundId, client, node);
+    const run = () =>
+      this.appendInboundClient(inboundId, client, node, matchesInbound);
     if (!node || !this.routingStore) return run();
     return this.routingStore.withLock(node.id, run);
   }
@@ -480,10 +482,12 @@ export class XuiService {
     inboundId: number,
     client: Record<string, unknown>,
     node?: Node,
+    matchesInbound?: (inbound: XuiInboundRaw) => boolean,
   ): Promise<XuiCreatedInbound | null> {
     const key = node?.id || 'main';
     this.lastInboundErrors.delete(key);
     const clientId = typeof client.id === 'string' ? client.id : '';
+    let accepted: XuiInboundRaw | undefined;
     try {
       return await this.authenticatedRequest(node, async (api) => {
         const currentResp = await api.get<unknown>(
@@ -496,7 +500,12 @@ export class XuiService {
           );
         }
 
-        let added = false;
+        if (matchesInbound && !matchesInbound(current)) {
+          throw new XuiApiError(
+            'Параметры общего инбаунда изменились на панели 3x-ui',
+          );
+        }
+
         try {
           const addResp = await api.post<unknown>(
             '/panel/api/inbounds/addClient',
@@ -506,7 +515,7 @@ export class XuiService {
             },
           );
           responsePayload(addResp.data);
-          added = true;
+          accepted = current;
         } catch (addError) {
           const status = (addError as AxiosError).response?.status;
           if (status === 401 || status === 403) throw addError;
@@ -548,10 +557,9 @@ export class XuiService {
             body,
           );
           responsePayload(updateResp.data);
-          added = true;
+          accepted = current;
         }
 
-        if (!added) return null;
         const savedResp = await api.get<unknown>(
           `/panel/api/inbounds/get/${inboundId}`,
         );
@@ -578,7 +586,9 @@ export class XuiService {
       this.logger.warn(
         `Shared inbound client attach (${node?.name || 'main'}, inbound ${inboundId}): ${message}`,
       );
-      return null;
+      return accepted
+        ? { id: inboundId, inbound: accepted, verificationError: message }
+        : null;
     }
   }
 

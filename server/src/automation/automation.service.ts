@@ -1,3 +1,6 @@
+import { isIP } from 'node:net';
+import { classifyXraySignal } from '../profiles/client-probe.service';
+import type { ClientConnectionProbeResult } from '../profiles/connection-profile.types';
 import {
   BadRequestException,
   ConflictException,
@@ -23,12 +26,68 @@ import {
 } from '../rotation/rotation.service';
 import { sha256 } from './api-token.service';
 
-const errorSummary = (error?: OperationErrorDetails | null) =>
-  error && {
-    code: error.code,
+function errorSummary(error?: OperationErrorDetails | null) {
+  if (!error) return error;
+  const code =
+    error.code === 'PORT_IN_USE' ||
+    (error.code === 'PANEL_REJECTED' &&
+      /port.*already used/i.test(error.raw || ''))
+      ? 'PORT_CONFLICT'
+      : error.code;
+  return {
+    code,
     stage: error.stage,
     port: error.port,
+    inboundType: error.inboundType,
   };
+}
+
+function hostValue(value?: string) {
+  if (typeof value !== 'string' || value.length > 253) return undefined;
+  const host = value.replace(/^\[|\]$/g, '');
+  return isIP(host) ||
+    /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(
+      host,
+    )
+    ? host
+    : undefined;
+}
+
+function versionValue(value?: string) {
+  return value && /^[0-9][a-z0-9.+-]{0,39}$/i.test(value) ? value : undefined;
+}
+
+function probeSummary(
+  probe: ClientConnectionProbeResult & { sni?: string; mode?: string },
+) {
+  return {
+    success: probe.success,
+    engine: probe.engine,
+    stage: probe.stage,
+    failure: probe.failure,
+    signal:
+      probe.attempts?.at(-1)?.signal ?? classifyXraySignal(probe.error || ''),
+    targetAddress: hostValue(probe.targetAddress),
+    targetPort: probe.targetPort,
+    tcpReachable: probe.tcpReachable,
+    tcpDurationMs: probe.tcpDurationMs,
+    xrayStartupMs: probe.xrayStartupMs,
+    latencyMs: probe.latencyMs,
+    httpStatusCode: probe.httpStatusCode,
+    sni: hostValue(probe.sni),
+    mode: probe.mode,
+    attempts: probe.attempts?.map((item) => ({
+      host: hostValue(item.host),
+      port: item.port,
+      stage: item.stage,
+      durationMs: item.durationMs,
+      failure: item.failure,
+      signal: item.signal,
+      httpStatusCode: item.httpStatusCode,
+      socksReply: item.socksReply,
+    })),
+  };
+}
 
 function filters<T extends Inbound | RotationOperation>(
   query: SelectQueryBuilder<T>,
@@ -121,19 +180,26 @@ export class AutomationService {
       createdAt: op.createdAt,
       startedAt: op.startedAt,
       finishedAt: op.finishedAt,
+      sourceOperationId: op.target?.operationId,
       error: errorSummary(op.errorDetails),
       results: (op.results || []).map((result) => ({
         subscriptionId: result.subscriptionId,
         nodeId: result.nodeId,
+        panelVersion: versionValue(result.panelVersion),
+        xrayVersion: versionValue(result.xrayVersion),
         status: result.status,
         created: result.created,
         pendingCleanup: result.pendingCleanup,
         error: errorSummary(result.errorDetails),
+        canary: result.inboundResults?.length
+          ? undefined
+          : result.canaryResults?.map(probeSummary),
         inbounds: result.inboundResults?.map((item) => ({
           configId: item.configId,
           type: item.type,
           status: item.status,
           port: item.port,
+          xuiId: item.xuiId,
           previousActive: item.previousActive,
           cleanupQueued: item.cleanupQueued,
           error: errorSummary(item.error),
@@ -141,16 +207,7 @@ export class AutomationService {
           version:
             item.error &&
             versions.get(`${result.subscriptionId}/${item.configId}`),
-          canary: item.canary && {
-            success: item.canary.success,
-            engine: item.canary.engine,
-            stage: item.canary.stage,
-            tcpReachable: item.canary.tcpReachable,
-            latencyMs: item.canary.latencyMs,
-            httpStatusCode: item.canary.httpStatusCode,
-            sni: item.canary.sni,
-            mode: item.canary.mode,
-          },
+          canary: item.canary && probeSummary(item.canary),
         })),
       })),
     }));

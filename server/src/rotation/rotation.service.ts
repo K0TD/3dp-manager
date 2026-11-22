@@ -45,6 +45,7 @@ import {
   isPortConflict,
   XuiRuntimeError,
   inboundDiagnostic,
+  verifyTlsIdentity,
 } from '../xui/xui-contract';
 import { supportsInboundType } from '../nodes/node-capabilities';
 import { SubscriptionLockService } from '../subscriptions/subscription-lock.service';
@@ -73,6 +74,10 @@ import {
   type SeparatedClientProfile,
 } from '../profiles/connection-profile.types';
 import { evaluateProfileCompatibility } from '../profiles/profile-compatibility';
+import {
+  explicitXhttpStableSni,
+  xhttpStableSniSettings,
+} from '../profiles/profile-config.builder';
 import { ClientProbeService } from '../profiles/client-probe.service';
 
 type InboundConfig = NonNullable<Subscription['inboundsConfig']>[number];
@@ -802,6 +807,10 @@ export class RotationService implements OnModuleInit {
     if (inboundConfigVersion(config) !== target.version)
       throw new ConflictException('Inbound configuration has changed');
     const { port, sni, mode, path } = target.patch;
+    if (path && config.type === 'xhttp-stable')
+      throw new BadRequestException(
+        'XHTTP Stable path is derived from its SNI domain',
+      );
     if (
       (mode || path) &&
       config.type !== 'xhttp-stable' &&
@@ -918,7 +927,7 @@ export class RotationService implements OnModuleInit {
     const occupied = new Map<number, InboundConfig[]>();
     const reserved = new Set<number>();
     for (const { config } of configs) {
-      const port = this.parseFixedPort(config.port);
+      const port = this.fixedInboundPort(config);
       if (port !== null && config.type !== 'custom') {
         usedPorts.add(port);
         occupied.set(port, [...(occupied.get(port) || []), config]);
@@ -990,7 +999,7 @@ export class RotationService implements OnModuleInit {
           result.previousActive = true;
           throw new Error('Неоднозначная связь инбаунда с configId');
         }
-        const port = this.parseFixedPort(config.port);
+        const port = this.fixedInboundPort(config);
         result.port = port ?? undefined;
         if (
           port !== null &&
@@ -1019,7 +1028,12 @@ export class RotationService implements OnModuleInit {
           ));
         const preservable =
           !operation?.target?.patch &&
-          this.findPreservableManagedInbound(config, subscription, node?.id);
+          this.findPreservableManagedInbound(
+            config,
+            subscription,
+            node?.id,
+            domains,
+          );
         if (preservable) {
           preservedPositions.push({ id: preservable.id, position });
           result.status = 'unchanged';
@@ -1072,6 +1086,7 @@ export class RotationService implements OnModuleInit {
               '3x-ui отклонил создание инбаунда',
           );
         result.port = candidate.port;
+        result.xuiId = candidate.xuiId || undefined;
 
         stage = 'verify';
         if (
@@ -1209,6 +1224,8 @@ export class RotationService implements OnModuleInit {
       nodeId: node?.id,
       nodeName:
         node?.name || (key === '__custom' ? 'Локальные ссылки' : 'Без ноды'),
+      panelVersion: node?.version,
+      xrayVersion: node?.xrayVersion,
       status: !failures.length
         ? 'succeeded'
         : replacements.length
@@ -1312,6 +1329,20 @@ export class RotationService implements OnModuleInit {
     }
   }
 
+  private usesFallbackProxy(config: InboundConfig) {
+    return (
+      config.type === 'https-fallback' &&
+      ['nginx', 'caddy'].includes(config.profileSettings?.reverseProxy || '')
+    );
+  }
+
+  private fixedInboundPort(config: InboundConfig) {
+    return (
+      this.parseFixedPort(config.port) ??
+      (this.usesFallbackProxy(config) ? 20443 : null)
+    );
+  }
+
   private parseFixedPort(port?: number | string): number | null {
     const value = Number(port);
     return Number.isInteger(value) && value >= 1 && value <= 65535
@@ -1328,7 +1359,8 @@ export class RotationService implements OnModuleInit {
   private findPreservableManagedInbound(
     config: InboundConfig,
     subscription: Subscription,
-    nodeId?: string,
+    nodeId: string | undefined,
+    domains: Domain[],
   ): Inbound | null {
     if (!isManagedProfileKind(config.type) || !config.configId || !nodeId) {
       return null;
@@ -1337,7 +1369,7 @@ export class RotationService implements OnModuleInit {
       config.profileSettings?.rotationPolicy || 'fixed_domain';
     if (rotationPolicy === 'standard') return null;
 
-    const fixedPort = this.parseFixedPort(config.port);
+    const fixedPort = this.fixedInboundPort(config);
     if (rotationPolicy !== 'preserve_all' && fixedPort === null) {
       return null;
     }
@@ -1363,22 +1395,44 @@ export class RotationService implements OnModuleInit {
     if (parsed.kind !== config.type) return null;
 
     const desiredDomain =
-      config.profileSettings?.domain?.trim().toLowerCase() ||
-      config.tlsServerName?.trim().toLowerCase() ||
-      (config.sni && config.sni.trim() !== 'random'
-        ? config.sni.trim().toLowerCase()
-        : '');
-    if (desiredDomain && parsed.sni?.trim().toLowerCase() !== desiredDomain) {
+      config.type === 'xhttp-stable'
+        ? explicitXhttpStableSni(config.sni, config.profileSettings?.domain)
+        : config.profileSettings?.domain?.trim().toLowerCase() ||
+          config.tlsServerName?.trim().toLowerCase() ||
+          (config.sni && config.sni.trim() !== 'random'
+            ? config.sni.trim().toLowerCase()
+            : '');
+    if (desiredDomain && parsed.sni?.trim().toLowerCase() !== desiredDomain)
       return null;
-    }
 
-    const desiredFp = config.profileSettings?.fingerprint?.trim();
-    if (desiredFp && parsed.fingerprint !== desiredFp) {
+    if (
+      config.type === 'xhttp-stable' &&
+      !desiredDomain &&
+      !domains.some(
+        (domain) =>
+          domain.name.toLowerCase() === parsed.sni?.toLowerCase() &&
+          !isExcludedSniDomain(domain.name),
+      )
+    )
       return null;
-    }
+
+    const automatic =
+      config.type === 'xhttp-stable'
+        ? xhttpStableSniSettings(desiredDomain || parsed.sni)
+        : undefined;
+    if (
+      automatic &&
+      (parsed.xhttp?.host !== automatic.host ||
+        parsed.spiderX !== automatic.spiderX)
+    )
+      return null;
+    const desiredFp =
+      automatic?.fingerprint || config.profileSettings?.fingerprint?.trim();
+    if (desiredFp && parsed.fingerprint !== desiredFp) return null;
 
     if (config.type === 'xhttp-stable' || config.type === 'https-fallback') {
       const desiredPath = (
+        automatic?.path ||
         config.profileSettings?.path?.trim() ||
         (config.type === 'https-fallback' ? '/api/v2/stream' : '/')
       ).replace(/^(?!\/)/, '/');
@@ -1407,10 +1461,47 @@ export class RotationService implements OnModuleInit {
    * subscriptions can share one 3x-ui inbound (one port) with separate per-subscription
    * VLESS clients (UUIDs) instead of colliding on the same port.
    */
+  private matchesFallbackListener(
+    expected: XuiInboundRaw,
+    actual: XuiInboundRaw,
+  ) {
+    try {
+      if (
+        !actual.enable ||
+        actual.protocol !== expected.protocol ||
+        actual.port !== expected.port ||
+        (actual.listen || '0.0.0.0') !== (expected.listen || '0.0.0.0')
+      )
+        return false;
+      const desired = JSON.parse(expected.streamSettings) as XuiStreamSettings;
+      const current = JSON.parse(actual.streamSettings) as XuiStreamSettings;
+      const xhttp = current.xhttpSettings;
+      if (
+        current.network !== desired.network ||
+        (current.security || 'none') !== desired.security ||
+        !xhttp ||
+        xhttp.host?.toLowerCase() !==
+          desired.xhttpSettings?.host?.toLowerCase() ||
+        xhttp.path !== desired.xhttpSettings?.path ||
+        (xhttp.mode || 'auto') !== desired.xhttpSettings?.mode ||
+        Boolean(xhttp.noGRPCHeader) !==
+          Boolean(desired.xhttpSettings?.noGRPCHeader)
+      ) {
+        return false;
+      }
+      verifyTlsIdentity(expected, actual);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private async findSharedManagedInbound(
     config: InboundConfig,
     nodeId: string,
     sni: string,
+    expected: XuiInboundRaw,
+    node: Node,
   ): Promise<Inbound | null> {
     if (
       !isManagedProfileKind(config.type) ||
@@ -1418,7 +1509,8 @@ export class RotationService implements OnModuleInit {
     ) {
       return null;
     }
-    const fixedPort = this.parseFixedPort(config.port);
+    const fallbackProxy = this.usesFallbackProxy(config);
+    const fixedPort = this.fixedInboundPort(config);
     if (!config.profileId && fixedPort === null) {
       return null;
     }
@@ -1428,27 +1520,74 @@ export class RotationService implements OnModuleInit {
         nodeId,
         status: InboundStatus.Active,
         profileKind: config.type,
+        ...(fixedPort === null
+          ? { profileId: config.profileId }
+          : { port: fixedPort }),
       },
       order: { createdAt: 'DESC' },
-      relations: ['subscription'],
+      ...(config.type === 'https-fallback'
+        ? {}
+        : { relations: ['subscription'] }),
     });
     if (!Array.isArray(candidates) || candidates.length === 0) return null;
 
     const normalize = (value: string | undefined) =>
       value?.trim().toLowerCase() || '';
+    const checkedFallbackListeners = new Set<number>();
     for (const candidate of candidates) {
       if (!candidate.xuiId || !candidate.clientProfileJson) continue;
       if (fixedPort !== null && candidate.port !== fixedPort) continue;
       if (fixedPort === null && candidate.profileId !== config.profileId)
         continue;
+      if (config.type === 'https-fallback') {
+        // For a profile on a random direct port, compare the live listener at its assigned port.
+        const expectedAtPort = { ...expected, port: candidate.port };
+        try {
+          const client = JSON.parse(
+            candidate.clientProfileJson,
+          ) as SeparatedClientProfile;
+          if (
+            client.kind !== 'https-fallback' ||
+            client.port !==
+              (fallbackProxy
+                ? (config.profileSettings?.publicPort ?? 443)
+                : candidate.port) ||
+            (sni && normalize(client.sni) !== normalize(sni))
+          )
+            continue;
+          if (checkedFallbackListeners.has(candidate.xuiId)) continue;
+          checkedFallbackListeners.add(candidate.xuiId);
+          const current = await this.xuiService.getInbound(
+            candidate.xuiId,
+            node,
+          );
+          if (this.matchesFallbackListener(expectedAtPort, current))
+            return candidate;
+        } catch {
+          // A missing or stale panel record is not a safe target for attaching a client.
+        }
+        continue;
+      }
       const owner = candidate.subscription?.inboundsConfig?.find(
         (item) => item.configId === candidate.configId,
       );
       if (!owner || owner.type !== config.type) continue;
-      const settings = (item: InboundConfig) =>
-        Object.entries(item.profileSettings || {})
-          .filter(([key]) => key !== 'rotationPolicy')
+      const settings = (item: InboundConfig) => {
+        const ignored =
+          item.type === 'xhttp-stable'
+            ? [
+                'rotationPolicy',
+                'domain',
+                'path',
+                'host',
+                'spiderX',
+                'fingerprint',
+              ]
+            : ['rotationPolicy'];
+        return Object.entries(item.profileSettings || {})
+          .filter(([key]) => !ignored.includes(key))
           .sort(([left], [right]) => left.localeCompare(right));
+      };
       if (
         JSON.stringify(settings(owner)) !== JSON.stringify(settings(config)) ||
         owner.certificateMode !== config.certificateMode ||
@@ -1462,11 +1601,16 @@ export class RotationService implements OnModuleInit {
           candidate.clientProfileJson,
         ) as SeparatedClientProfile;
         if (sni && normalize(parsed.sni) !== normalize(sni)) continue;
-        if (
-          config.profileSettings?.path &&
-          parsed.xhttp?.path !== config.profileSettings.path
-        )
-          continue;
+        if (config.type === 'xhttp-stable') {
+          const auto = xhttpStableSniSettings(sni);
+          if (
+            parsed.xhttp?.path !== auto.path ||
+            parsed.xhttp?.host !== auto.host ||
+            parsed.fingerprint !== auto.fingerprint ||
+            parsed.spiderX !== auto.spiderX
+          )
+            continue;
+        }
         if (
           config.profileSettings?.mode &&
           parsed.xhttp?.mode !== config.profileSettings.mode
@@ -1660,9 +1804,13 @@ export class RotationService implements OnModuleInit {
       return '';
     if (isManagedProfileKind(config.type)) {
       const explicitDomain =
-        config.profileSettings?.domain?.trim() ||
-        config.tlsServerName?.trim() ||
-        (config.sni && config.sni.trim() !== 'random' ? config.sni.trim() : '');
+        config.type === 'xhttp-stable'
+          ? explicitXhttpStableSni(config.sni, config.profileSettings?.domain)
+          : config.profileSettings?.domain?.trim() ||
+            config.tlsServerName?.trim() ||
+            (config.sni && config.sni.trim() !== 'random'
+              ? config.sni.trim()
+              : '');
       if (explicitDomain) return explicitDomain;
       const rotationPolicy =
         config.profileSettings?.rotationPolicy || 'fixed_domain';
@@ -1671,7 +1819,16 @@ export class RotationService implements OnModuleInit {
           subscription,
           config.configId,
         );
-        if (previousSni) return previousSni;
+        if (
+          previousSni &&
+          (config.type !== 'xhttp-stable' ||
+            domains.some(
+              (domain) =>
+                domain.name.toLowerCase() === previousSni.toLowerCase() &&
+                !isExcludedSniDomain(domain.name),
+            ))
+        )
+          return previousSni;
       }
       if (config.type === 'self-sni') {
         throw new Error(
@@ -1775,10 +1932,8 @@ export class RotationService implements OnModuleInit {
     });
     const flag =
       config.flag || node.flag || flagSetting?.value || '%F0%9F%92%AF';
-    const port =
-      config.port === 'random' || !config.port
-        ? await this.getFreePort(usedPorts)
-        : Number(config.port);
+    const fixedPort = this.fixedInboundPort(config);
+    const port = fixedPort ?? (await this.getFreePort(usedPorts));
     usedPorts.add(port);
     const uuid = uuidv4();
     const email = formatClientEmail(subscription.name, uuid);
@@ -1815,7 +1970,7 @@ export class RotationService implements OnModuleInit {
     };
     request.diagnostics?.push(diagnostic);
 
-    const randomPort = config.port === 'random' || !config.port;
+    const randomPort = fixedPort === null;
     if (this.nodeDeletion.isDeleting(node.id)) {
       throw new Error(`Нода «${node.name}» удаляется`);
     }
@@ -1825,7 +1980,13 @@ export class RotationService implements OnModuleInit {
       isManagedProfileKind(config.type) &&
       typeof this.xuiService.addInboundClient === 'function'
     ) {
-      const shared = await this.findSharedManagedInbound(config, node.id, sni);
+      const shared = await this.findSharedManagedInbound(
+        config,
+        node.id,
+        sni,
+        built,
+        node,
+      );
       if (shared) {
         const clientEntry = {
           id: uuid,
@@ -1838,11 +1999,29 @@ export class RotationService implements OnModuleInit {
           subId: '',
           reset: 0,
         };
-        const attached = await this.xuiService.addInboundClient(
-          shared.xuiId,
-          clientEntry,
-          node,
-        );
+        const attached =
+          config.type === 'https-fallback'
+            ? await this.xuiService.addInboundClient(
+                shared.xuiId,
+                clientEntry,
+                node,
+                (current) =>
+                  this.matchesFallbackListener(
+                    { ...built, port: shared.port },
+                    current,
+                  ),
+              )
+            : await this.xuiService.addInboundClient(
+                shared.xuiId,
+                clientEntry,
+                node,
+              );
+        if (!attached && config.type === 'https-fallback') {
+          throw new Error(
+            this.xuiService.getLastInboundError(node) ||
+              '3x-ui отклонила добавление клиента в общий HTTPS Fallback',
+          );
+        }
         if (attached) {
           result = attached;
           attachedToShared = true;
@@ -1912,7 +2091,7 @@ export class RotationService implements OnModuleInit {
             actual.xhttpSettings?.path !== xhttp.path ||
             (actual.xhttpSettings?.mode || 'auto') !== xhttp.mode ||
             actual.xhttpSettings?.host !== xhttp.host ||
-            !actual.realitySettings?.serverNames?.includes(sni))
+            !actual.realitySettings?.serverNames?.includes(xhttp.host || sni))
         ) {
           throw new Error(
             '3x-ui не сохранила SNI, Host, Path или режим XHTTP по запрошенной конфигурации',
@@ -2153,26 +2332,21 @@ export class RotationService implements OnModuleInit {
             now: new Date(),
           },
         )
+        .andWhere(
+          '(inbound.cleanupAttempts < :max OR node.deletedAt IS NOT NULL)',
+          {
+            max: this.maxCleanupAttempts,
+          },
+        )
         .orderBy('inbound.createdAt', 'ASC')
         .take(50)
         .getMany();
       this.dbAvailability.recordSuccess(this.logger, 'RotationService');
 
       const failedNodeIdsInBatch = new Set<string>();
-      const successfulNodes = new Map<string, Node>();
 
       for (const inbound of items) {
         const attempts = inbound.cleanupAttempts || 0;
-
-        // 1. If max cleanup attempts exceeded, purge from DB
-        if (attempts >= this.maxCleanupAttempts) {
-          this.logger.warn(
-            `Превышен лимит попыток очистки (${this.maxCleanupAttempts}) для инбаунда ${inbound.id} (xuiId ${inbound.xuiId}). Запись удалена из локальной БД.`,
-          );
-          await this.inboundRepo.delete(inbound.id);
-          continue;
-        }
-
         const node = await this.resolveInboundNode(inbound);
 
         // 2. If inbound has nodeId but node does not exist, purge from DB
@@ -2241,9 +2415,6 @@ export class RotationService implements OnModuleInit {
             : await this.removeOrDetachInboundFromPanel(inbound, node);
 
         if (deleted) {
-          if (node?.id) {
-            successfulNodes.set(node.id, node);
-          }
           await this.inboundRepo.delete(inbound.id);
           continue;
         }
@@ -2258,10 +2429,6 @@ export class RotationService implements OnModuleInit {
           Date.now() + this.cleanupDelay(inbound.cleanupAttempts),
         );
         await this.inboundRepo.save(inbound);
-      }
-
-      for (const node of successfulNodes.values()) {
-        await this.cleanupZeroTrafficOrphans(node);
       }
 
       await this.finalizeDeletedNodes();
@@ -2365,13 +2532,13 @@ export class RotationService implements OnModuleInit {
     const items = await this.inboundRepo
       .createQueryBuilder('inbound')
       .leftJoinAndSelect('inbound.node', 'node')
+      .addSelect('inbound.clientId')
       .where('inbound.status = :status', {
         status: InboundStatus.PendingCleanup,
       })
       .getMany();
 
     let purgedCount = 0;
-    const nodesToClean = new Map<string, Node>();
 
     for (const item of items) {
       const isFailed =
@@ -2388,7 +2555,6 @@ export class RotationService implements OnModuleInit {
             const resolvedNode = await this.resolveInboundNode(item);
             if (resolvedNode) {
               await this.removeOrDetachInboundFromPanel(item, resolvedNode);
-              nodesToClean.set(resolvedNode.id, resolvedNode);
             }
           } catch {
             // Node might be offline; continue purge
@@ -2399,134 +2565,10 @@ export class RotationService implements OnModuleInit {
       }
     }
 
-    try {
-      const defaultNode = await this.getDefaultNode();
-      if (defaultNode && !nodesToClean.has(defaultNode.id)) {
-        nodesToClean.set(defaultNode.id, defaultNode);
-      }
-    } catch {
-      // Continue
-    }
-
-    for (const node of nodesToClean.values()) {
-      await this.cleanupZeroTrafficOrphans(node);
-    }
-
     this.logger.log(
       `Принудительно очищено ${purgedCount} зависших задач очистки.`,
     );
     return { success: true, purgedCount };
-  }
-
-  async cleanupZeroTrafficOrphans(node: Node): Promise<number> {
-    try {
-      if (!this.xuiService.listRoutingInbounds) {
-        return 0;
-      }
-      const panelInbounds = await this.xuiService.listRoutingInbounds(node);
-      if (!Array.isArray(panelInbounds) || !panelInbounds.length) {
-        return 0;
-      }
-
-      const trackedInbounds = await this.inboundRepo.find({
-        where: {
-          nodeId: node.id,
-          status: In([InboundStatus.Active, InboundStatus.Staged]),
-        },
-        select: ['xuiId'],
-      });
-      const trackedXuiIds = new Set(
-        trackedInbounds
-          .map((i) => i.xuiId)
-          .filter((id): id is number => typeof id === 'number' && id > 0),
-      );
-
-      let cleanedCount = 0;
-      const now = Date.now();
-      const MIN_AGE_MS = 5 * 60 * 1000;
-
-      for (const raw of panelInbounds) {
-        if (!raw.id || trackedXuiIds.has(raw.id)) {
-          continue;
-        }
-
-        const totalTraffic = (Number(raw.up) || 0) + (Number(raw.down) || 0);
-        if (totalTraffic > 0) {
-          continue;
-        }
-
-        const clientStats = Array.isArray(raw.clientStats)
-          ? raw.clientStats
-          : [];
-        if (clientStats.length > 1) {
-          continue;
-        }
-
-        const hasClientTraffic = clientStats.some(
-          (cs: Record<string, unknown>) =>
-            (Number(cs.up) || 0) > 0 || (Number(cs.down) || 0) > 0,
-        );
-        if (hasClientTraffic) {
-          continue;
-        }
-
-        let clients: Array<Record<string, unknown>> = [];
-        try {
-          const rawSettings: unknown =
-            typeof raw.settings === 'string'
-              ? JSON.parse(raw.settings)
-              : raw.settings;
-          const parsedSettings =
-            typeof rawSettings === 'object' && rawSettings !== null
-              ? (rawSettings as { clients?: unknown })
-              : null;
-          clients = Array.isArray(parsedSettings?.clients)
-            ? (parsedSettings.clients as Array<Record<string, unknown>>)
-            : [];
-        } catch {
-          continue;
-        }
-
-        if (clients.length > 1) {
-          continue;
-        }
-
-        const createdAt =
-          Number(clients[0]?.created_at) ||
-          Number((clientStats[0] as Record<string, unknown>)?.created_at) ||
-          0;
-        if (createdAt > 0 && now - createdAt < MIN_AGE_MS) {
-          continue;
-        }
-
-        const lastOnline =
-          Number((clientStats[0] as Record<string, unknown>)?.lastOnline) || 0;
-        if (lastOnline > 0 && now - lastOnline < MIN_AGE_MS) {
-          continue;
-        }
-
-        try {
-          const deleted = await this.xuiService.deleteInbound(raw.id, node);
-          if (deleted) {
-            cleanedCount++;
-            this.logger.log(
-              `[Cleanup] Удален устаревший инбаунд ${raw.id} (${raw.remark || raw.protocol}) с 0 B расхода на ноде «${node.name}»`,
-            );
-          }
-        } catch (err) {
-          this.logger.warn(
-            `[Cleanup] Ошибка удаления устаревшего инбаунда ${raw.id} на ноде «${node.name}»: ${this.safeMessage(err)}`,
-          );
-        }
-      }
-
-      return cleanedCount;
-    } catch (err) {
-      this.logger.warn(
-        `[Cleanup] Не удалось выполнить проверку неактивных инбаундов на ноде «${node.name}»: ${this.safeMessage(err)}`,
-      );
-      return 0;
-    }
   }
 
   listCleanup() {

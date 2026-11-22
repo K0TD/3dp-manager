@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { InboundsEditor } from '../../src/components/InboundsEditor';
 import { ThemeProvider } from '../../src/ThemeContext';
-import api from '../../src/api';
 import type { NodeRecord } from '../../src/types/node';
 import type { CountryOption, Domain, InboundConfigUI, Tunnel } from '../../src/types/inbound';
 
@@ -268,8 +267,15 @@ describe('InboundsEditor', () => {
     expect(screen.getByText('Добавить инбаунд')).toBeEnabled();
   });
 
+  it('shows ordinary XHTTP Reality in the type selector and hides managed profiles', () => {
+    renderEditor({ inbounds: [initialInbounds[0]] });
+    fireEvent.mouseDown(screen.getAllByRole('combobox')[0]);
+    expect(screen.getByRole('option', { name: /vless-xhttp-reality/ })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /XHTTP Stable|Self-SNI|HTTPS Fallback/ })).not.toBeInTheDocument();
+  });
+
   it('renders XHTTP Stable settings, validates conflicting XMUX ranges, and opens preview button', () => {
-    const { handleChange } = renderEditor({
+    renderEditor({
       nodes: [
         {
           ...mockNodes[0],
@@ -305,7 +311,7 @@ describe('InboundsEditor', () => {
     });
 
     expect(
-      screen.getByText(/XHTTP Stable · минимальная серверная конфигурация/),
+      screen.getByText(/Параметры XHTTP берутся из выбранного SNI/),
     ).toBeInTheDocument();
     expect(
       screen.getByText(/maxConcurrency, либо maxConnections/),
@@ -314,17 +320,8 @@ describe('InboundsEditor', () => {
       screen.getByRole('button', { name: /Предпросмотр и проверка/ }),
     ).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText('XHTTP Path'), {
-      target: { value: '/api/stream' },
-    });
-    expect(handleChange).toHaveBeenCalledWith([
-      expect.objectContaining({
-        id: 'inb-xhttp',
-        profileSettings: expect.objectContaining({
-          path: '/api/stream',
-        }),
-      }),
-    ]);
+    expect(screen.queryByLabelText('XHTTP Path')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('SpiderX')).not.toBeInTheDocument();
   });
 
   it('renders Self-SNI settings, validates Xray vs local HTTPS port conflict, and syncs own domain', () => {
@@ -368,7 +365,7 @@ describe('InboundsEditor', () => {
     ).toBeInTheDocument();
     expect(
       screen.getByRole('button', {
-        name: /Предпросмотр, Nginx\/Caddy и проверка/,
+        name: /Предпросмотр/,
       }),
     ).toBeInTheDocument();
 
@@ -429,7 +426,7 @@ describe('InboundsEditor', () => {
     ).toBeInTheDocument();
     expect(screen.queryByText('TLS панели ноды')).not.toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: /Предпросмотр, Proxy и проверка/ }),
+      screen.getByRole('button', { name: /Предпросмотр/ }),
     ).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText('Endpoint Path (выделенный)'), {
@@ -445,17 +442,8 @@ describe('InboundsEditor', () => {
     ]);
   });
 
-  it('applies curated SNI profile parameters to XHTTP Stable via "Из SNI-профиля" button', async () => {
-    vi.mocked(api.get).mockResolvedValueOnce({
-      data: {
-        sni: 'swdist.apple.com',
-        fingerprint: 'safari',
-        spiderX: '/content/downloads/',
-        xhttpPath: '/download/updates/',
-      },
-    });
-
-    const { handleChange } = renderEditor({
+  it('uses the selected SNI without a separate apply action', () => {
+    renderEditor({
       domains: [
         ...mockDomains,
         { id: 3, name: 'swdist.apple.com', isEnabled: true },
@@ -494,21 +482,6 @@ describe('InboundsEditor', () => {
       screen.getByText(/Профиль: Apple \(safari, \/download\/updates\/\)/),
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: /Из SNI-профиля/ }));
-    await waitFor(() => {
-      expect(api.get).toHaveBeenCalledWith('/domains/resolve-profile', {
-        params: { sni: 'swdist.apple.com' },
-      });
-      expect(handleChange).toHaveBeenCalledWith([
-        expect.objectContaining({
-          id: 'inb-xhttp-sni',
-          profileSettings: expect.objectContaining({
-            fingerprint: 'safari',
-            spiderX: '/content/downloads/',
-            path: '/download/updates/',
-          }),
-        }),
-      ]);
-    });
+    expect(screen.queryByRole('button', { name: /Из SNI-профиля/ })).not.toBeInTheDocument();
   });
 });

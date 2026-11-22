@@ -42,7 +42,7 @@ export const PROFILE_CATALOG: readonly ProfileCatalogEntry[] = [
     title: 'XHTTP Stable',
     transportSummary: 'VLESS + XHTTP + REALITY',
     description:
-      'Управляемый профиль XHTTP поверх REALITY с минимальной конфигурацией по умолчанию, выбором режима (auto / stream-one / packet-up), fingerprint и опциональным клиентским XMUX.',
+      'Управляемый профиль XHTTP поверх REALITY с минимальной конфигурацией по умолчанию, выбором режима (auto / stream-one / packet-up) и опциональным клиентским XMUX.',
     minXrayVersion: '24.11.30',
     defaults: {
       mode: 'auto',
@@ -326,6 +326,7 @@ export function validateManagedProfileSettings(
   const input = settings ?? {};
 
   if (
+    kind !== 'xhttp-stable' &&
     input.fingerprint &&
     !(CLIENT_FINGERPRINTS as readonly string[]).includes(input.fingerprint)
   ) {
@@ -366,12 +367,16 @@ export function validateManagedProfileSettings(
         `Недопустимый режим XHTTP: ${input.mode} (ожидается auto, stream-one или packet-up)`,
       );
     }
-    if (!isValidXhttpPath(input.path)) {
+    if (kind === 'https-fallback' && !isValidXhttpPath(input.path)) {
       errors.push(
         'Некорректный XHTTP path: путь не должен содержать пробелы, "?", "#" и управляющие символы',
       );
     }
-    if (input.host?.trim() && !isValidHostname(input.host)) {
+    if (
+      kind === 'https-fallback' &&
+      input.host?.trim() &&
+      !isValidHostname(input.host)
+    ) {
       errors.push('Некорректный XHTTP host: укажите валидное доменное имя');
     }
   }
@@ -579,7 +584,8 @@ export function evaluateProfileCompatibility(
       code: 'SNI_DOMAIN_EXCLUDED',
       severity: 'warning',
       title: 'Домен исключён из справочника',
-      message: 'Выберите доступный домен из раздела «Домены» перед следующей ротацией.',
+      message:
+        'Выберите доступный домен из раздела «Домены» перед следующей ротацией.',
     });
   }
 

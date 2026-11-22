@@ -104,9 +104,6 @@ export const isInboundSupported = (
 
 export const createDefaultXhttpStableSettings = (): ManagedProfileSettings => ({
   mode: 'auto',
-  path: '/',
-  fingerprint: 'chrome',
-  spiderX: '/',
   rotationPolicy: 'fixed_domain',
   xmux: { enabled: false },
 });
@@ -175,9 +172,6 @@ export const validateXhttpStableSettings = (
   settings?: ManagedProfileSettings,
 ): string | null => {
   if (!settings) return null;
-  if (settings.path && /[\s?#]/.test(settings.path.trim())) {
-    return 'XHTTP path не должен содержать пробелы, ? или #';
-  }
   if (settings.xmux?.enabled) {
     const x = settings.xmux;
     if (x.maxConcurrency?.trim() && x.maxConnections?.trim()) {

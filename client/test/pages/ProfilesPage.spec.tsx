@@ -219,7 +219,7 @@ describe('ProfilesPage', () => {
 
     // Info about shared multi-client inbound should appear across >1 sub
     expect(
-      screen.getByText(/один общий inbound/),
+      screen.getByText(/один общий инбаунд/),
     ).toBeInTheDocument();
 
     // Planned additions: Main Sub gets 2, Backup Sub already has prof-1 so gets 1 => total 3
@@ -306,7 +306,7 @@ describe('ProfilesPage', () => {
     );
   });
 
-  it('allows selecting a domain from «Домены» in XHTTP Stable dialog and auto-fills its SNI profile', async () => {
+  it('allows selecting a domain from «Домены» in XHTTP Stable dialog without manual SNI overrides', async () => {
     vi.mocked(api.post).mockResolvedValue({ data: { id: 'prof-new' } });
 
     render(
@@ -331,17 +331,10 @@ describe('ProfilesPage', () => {
     fireEvent.mouseDown(sniInput);
     fireEvent.click(await screen.findByText('swdist.apple.com'));
 
-    await waitFor(() => {
-      expect(
-        screen.getByText(/Применён SNI-профиль: Apple CDN & Services/),
-      ).toBeInTheDocument();
-    });
-    expect(screen.getByLabelText('XHTTP Path')).toHaveValue(
-      '/download/updates/',
-    );
-    expect(screen.getByLabelText('SpiderX')).toHaveValue(
-      '/content/downloads/',
-    );
+    expect(sniInput).toHaveValue('swdist.apple.com');
+    expect(screen.queryByLabelText('XHTTP Path')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('SpiderX')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Fingerprint')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
     await waitFor(() => {
@@ -351,11 +344,7 @@ describe('ProfilesPage', () => {
           name: 'Apple XHTTP',
           kind: 'xhttp-stable',
           sni: 'swdist.apple.com',
-          spec: expect.objectContaining({
-            fingerprint: 'safari',
-            path: '/download/updates/',
-            spiderX: '/content/downloads/',
-          }),
+          spec: expect.not.objectContaining({ path: expect.anything() }),
         }),
       );
     });

@@ -48,7 +48,7 @@ describe('profile-config.builder (XHTTP Stable)', () => {
     expect(stream.realitySettings.dest).toBe('www.microsoft.com:443');
     expect(stream.realitySettings.serverNames).toEqual(['www.microsoft.com']);
     expect(stream.xhttpSettings).toEqual({
-      path: '/',
+      path: '/msdownload/update/',
       host: 'www.microsoft.com',
       mode: 'auto',
     });
@@ -82,8 +82,8 @@ describe('profile-config.builder (XHTTP Stable)', () => {
         xhttpSettings: Record<string, unknown>;
       };
       expect(serverStream.xhttpSettings).toEqual({
-        path: '/cdn/assets',
-        host: 'edge.example.com',
+        path: '/msdownload/update/',
+        host: 'www.microsoft.com',
         mode,
       });
       expect(serverStream.xhttpSettings).not.toHaveProperty('xmux');
@@ -103,9 +103,10 @@ describe('profile-config.builder (XHTTP Stable)', () => {
       expect(parsedUrl.searchParams.get('type')).toBe('xhttp');
       expect(parsedUrl.searchParams.get('security')).toBe('reality');
       expect(parsedUrl.searchParams.get('mode')).toBe(mode);
-      expect(parsedUrl.searchParams.get('fp')).toBe('firefox');
-      expect(parsedUrl.searchParams.get('path')).toBe('/cdn/assets');
-      expect(parsedUrl.searchParams.get('host')).toBe('edge.example.com');
+      expect(parsedUrl.searchParams.get('fp')).toBe('edge');
+      expect(parsedUrl.searchParams.get('path')).toBe('/msdownload/update/');
+      expect(parsedUrl.searchParams.get('host')).toBe('www.microsoft.com');
+      expect(bundle.clientConfig.spiderX).toBe('/content/');
       expect(parsedUrl.searchParams.get('flow')).toBeNull();
       expect(JSON.parse(parsedUrl.searchParams.get('extra') || '{}')).toEqual({
         xmux: {
@@ -148,7 +149,7 @@ describe('profile-config.builder (XHTTP Stable)', () => {
     const parsedUrl = new URL(bundle.vlessLink);
     expect(parsedUrl.searchParams.get('extra')).toBeNull();
     expect(parsedUrl.searchParams.get('mode')).toBe('auto');
-    expect(parsedUrl.searchParams.get('path')).toBe('/');
+    expect(parsedUrl.searchParams.get('path')).toBe('/msdownload/update/');
     const outbound = bundle.xrayClientJson.outbounds[0] as {
       streamSettings: { xhttpSettings: Record<string, unknown> };
     };

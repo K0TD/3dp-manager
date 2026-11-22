@@ -1,3 +1,5 @@
+import { Domain } from '../domains/entities/domain.entity';
+import { isExcludedSniDomain } from '../domains/sni-exclusions';
 import {
   BadRequestException,
   Injectable,
@@ -30,6 +32,7 @@ import {
   buildSelfSniServerInbound,
   buildXhttpStableExportBundle,
   buildXhttpStableServerInbound,
+  explicitXhttpStableSni,
   buildXrayClientJsonFromProfile,
   buildVlessUriFromClientProfile,
   sanitizeServerInboundPreview,
@@ -71,6 +74,9 @@ export class ConnectionProfilesService {
     private readonly tlsSiteProbe?: TlsSiteProbeService,
     @Optional()
     private readonly clientProbe?: ClientProbeService,
+    @Optional()
+    @InjectRepository(Domain)
+    private readonly domainRepo?: Repository<Domain>,
   ) {}
 
   private get probe(): TlsSiteProbeService {
@@ -268,12 +274,28 @@ export class ConnectionProfilesService {
       dto.port && dto.port !== 'random' && /^\d+$/.test(String(dto.port))
         ? Number(dto.port)
         : 443;
+    const selectedSni = dto.sni?.trim();
     const explicitDomain =
-      normalized.domain?.trim() ||
-      (dto.sni && dto.sni !== 'random' ? dto.sni.trim() : '');
-    const effectiveSni =
-      explicitDomain ||
-      (dto.kind === 'xhttp-stable' ? 'www.microsoft.com' : 'example.com');
+      dto.kind === 'xhttp-stable'
+        ? explicitXhttpStableSni(selectedSni, dto.settings?.domain)
+        : normalized.domain?.trim() || selectedSni;
+    const concreteDomain =
+      explicitDomain && explicitDomain !== 'random' ? explicitDomain : '';
+    let effectiveSni = concreteDomain || 'example.com';
+    if (dto.kind === 'xhttp-stable' && !concreteDomain) {
+      const eligible = await this.domainRepo?.find({
+        where: { isEnabled: true },
+        order: { name: 'ASC' },
+      });
+      const sample = eligible?.find(
+        (domain) => !isExcludedSniDomain(domain.name),
+      );
+      if (!sample)
+        throw new BadRequestException(
+          'Добавьте активный домен в справочник SNI',
+        );
+      effectiveSni = sample.name;
+    }
     const remark = dto.name?.trim() || dto.kind;
 
     let occupiedPorts: number[] | undefined;
@@ -295,7 +317,7 @@ export class ConnectionProfilesService {
         occupiedPorts = liveNode.occupiedPorts;
         nodeResources = liveNode.nodeResources;
       }
-      if (explicitDomain && isValidHostname(explicitDomain)) {
+      if (concreteDomain && isValidHostname(concreteDomain)) {
         const probePort =
           dto.kind === 'self-sni'
             ? normalized.webServer === 'none'
@@ -305,9 +327,9 @@ export class ConnectionProfilesService {
               ? (normalized.publicPort ?? numericPort)
               : 443;
         tlsProbe = await this.probe.probeDomainAndTls({
-          domain: explicitDomain,
+          domain: concreteDomain,
           port: probePort,
-          expectedHostIps: this.resolveExpectedNodeIps(node, explicitDomain),
+          expectedHostIps: this.resolveExpectedNodeIps(node, concreteDomain),
           checkHttpSite: dto.kind !== 'xhttp-stable',
         });
         dnsResolvedIps = tlsProbe.dnsResolvedIps;
@@ -371,7 +393,7 @@ export class ConnectionProfilesService {
         settings: normalized,
       });
       const exportBundle = buildSelfSniExportBundle({
-        address: explicitDomain || address,
+        address: concreteDomain || address,
         port: numericPort,
         uuid: PREVIEW_UUID,
         remark,
@@ -425,7 +447,7 @@ export class ConnectionProfilesService {
       settings: normalized,
     });
     const clientPreview = buildHttpsFallbackExportBundle({
-      address: explicitDomain || address,
+      address: concreteDomain || address,
       port: fallbackUpstreamPort,
       uuid: PREVIEW_UUID,
       remark,
@@ -494,8 +516,10 @@ export class ConnectionProfilesService {
     let dnsError: string | undefined;
     let tlsProbe: TlsSiteProbeResult | undefined;
     const domainToResolve =
-      profile.spec?.domain?.trim() ||
-      (profile.sni && profile.sni !== 'random' ? profile.sni.trim() : '');
+      profile.kind === 'xhttp-stable'
+        ? explicitXhttpStableSni(profile.sni, profile.spec?.domain)
+        : profile.spec?.domain?.trim() ||
+          (profile.sni && profile.sni !== 'random' ? profile.sni.trim() : '');
     if (domainToResolve && isValidHostname(domainToResolve)) {
       if (profile.kind === 'self-sni' || profile.kind === 'https-fallback') {
         const probePort =

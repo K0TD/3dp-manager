@@ -29,8 +29,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
     // Проверяем, что это браузер (не API запрос)
     const userAgent = request.headers['user-agent'] || '';
     const isBrowser = /Mozilla|Chrome|Safari|Firefox|Edge/.test(userAgent);
-    const isAutomation = request.path.startsWith('/api/v1/');
-    const path = isAutomation ? request.path : request.url;
+    const pathname = request.path ?? request.url.split('?')[0];
+    const isAutomation = pathname.startsWith('/api/v1/');
+    const path = isAutomation ? pathname : request.url;
     const isBusRequest = !isAutomation && request.url.includes('/bus/');
 
     if (exception instanceof HttpException) {

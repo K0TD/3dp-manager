@@ -51,6 +51,17 @@ export class ApiTokensController {
   }
 }
 
+@Controller('rotation/operations')
+export class RotationDiagnosticsController {
+  constructor(private readonly automation: AutomationService) {}
+
+  @Get(':id/diagnostics')
+  @Header('Cache-Control', 'no-store')
+  getDiagnostics(@Param('id', ParseUUIDPipe) id: string) {
+    return this.automation.getOperation(id);
+  }
+}
+
 function rotationTarget(
   operationId: string,
   body: unknown,

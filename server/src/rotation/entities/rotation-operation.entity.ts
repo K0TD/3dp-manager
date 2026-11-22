@@ -30,6 +30,7 @@ export interface RotationConfigResult {
   previousActive: boolean;
   port?: number;
   cleanupQueued?: boolean;
+  xuiId?: number;
   error?: OperationErrorDetails;
   conflict?: { xuiId?: number; listen?: string; subscriptionId?: string };
   canary?: ClientConnectionProbeResult & {
@@ -58,6 +59,8 @@ export interface RotationNodeResult {
   subscriptionName: string;
   nodeId?: string;
   nodeName: string;
+  panelVersion?: string;
+  xrayVersion?: string;
   status: 'succeeded' | 'partial' | 'preserved' | 'failed';
   inboundResults?: RotationConfigResult[];
   created: number;

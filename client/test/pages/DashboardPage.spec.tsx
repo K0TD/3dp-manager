@@ -2,6 +2,9 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import DashboardPage from '../../src/pages/DashboardPage'
+import { copyToClipboard } from '../../src/utils/copyToClipboard'
+
+vi.mock('../../src/utils/copyToClipboard', () => ({ copyToClipboard: vi.fn(async () => {}) }))
 
 const mockGet = vi.fn()
 const mockDelete = vi.fn()
@@ -186,6 +189,29 @@ describe('DashboardPage', () => {
     expect(screen.getByText('Old node failure reason')).toBeInTheDocument();
     expect(screen.queryByText('Технические детали')).not.toBeInTheDocument();
   });
+
+  it('copies the diagnostics projection instead of the raw operation', async () => {
+    const report = { id: 'op-export', results: [{ inbounds: [{ canary: { failure: 'TUNNEL_CLOSED' } }] }] }
+    mockGet.mockImplementation((url: string) => {
+      const responses: Record<string, unknown> = {
+        '/nodes': [],
+        '/subscriptions/count': { count: 1 },
+        '/rotation/operations': [
+          { id: 'op-export', status: 'failed', createdAt: new Date().toISOString(), error: 'raw fixture' },
+        ],
+        '/rotation/cleanup': [],
+        '/rotation/operations/op-export/diagnostics': report,
+      }
+      return Promise.resolve({ data: responses[url] })
+    })
+
+    renderPage()
+    fireEvent.click(await screen.findByText('Подробности операции'))
+    fireEvent.click(screen.getByRole('button', { name: 'Копировать диагностику для ИИ' }))
+    await waitFor(() => {
+      expect(copyToClipboard).toHaveBeenCalledWith(JSON.stringify(report, null, 2))
+    })
+  })
 
   it('displays canaryResults, auto-rollback chip, and preserved count in operation details', async () => {
     mockGet.mockImplementation((url: string) => {

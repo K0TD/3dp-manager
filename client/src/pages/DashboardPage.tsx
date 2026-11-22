@@ -69,6 +69,17 @@ interface CleanupItem {
   node?: { name?: string; host?: string; healthStatus?: string };
 }
 
+interface CanaryAttempt {
+  host: string;
+  port: number;
+  stage: 'socks' | 'http';
+  durationMs: number;
+  failure?: string;
+  signal?: string;
+  httpStatusCode?: number;
+  socksReply?: number;
+}
+
 interface CanaryProbeResult {
   success: boolean;
   engine: string;
@@ -78,6 +89,10 @@ interface CanaryProbeResult {
   httpStatusCode?: number;
   latencyMs: number;
   fallbackReason?: string;
+  failure?: string;
+  tcpDurationMs?: number;
+  xrayStartupMs?: number;
+  attempts?: CanaryAttempt[];
   error?: string;
 }
 
@@ -85,12 +100,16 @@ interface OperationResult {
   subscriptionId?: string;
   subscriptionName?: string;
   nodeName: string;
+  panelVersion?: string;
+  xrayVersion?: string;
   status: 'succeeded' | 'partial' | 'preserved' | 'failed';
   inboundResults?: Array<{
     configId?: string;
     type?: string;
     name?: string;
     port?: number;
+    xuiId?: number;
+    cleanupQueued?: boolean;
     status: 'activated' | 'unchanged' | 'preserved' | 'failed';
     error?: OperationErrorDetails;
     conflict?: { xuiId?: number; listen?: string; subscriptionId?: string };
@@ -272,8 +291,16 @@ export default function DashboardPage() {
   }
 
 
-  const operationReport = (operation: Operation) =>
-    JSON.stringify(operation, null, 2);
+  const copyDiagnostics = async (id: string) => {
+    setRetryMessage(undefined);
+    try {
+      const { data } = await api.get(`/rotation/operations/${id}/diagnostics`);
+      await copyToClipboard(JSON.stringify(data, null, 2));
+      setRetryMessage({ ok: true, text: 'Диагностика скопирована' });
+    } catch {
+      setRetryMessage({ ok: false, text: 'Не удалось скопировать диагностику' });
+    }
+  };
 
   const load = useCallback(async () => {
     try {
@@ -748,7 +775,7 @@ export default function DashboardPage() {
                   )}
                   <Button
                     size="small"
-                    onClick={() => setSelectedOperation(operation)}
+                    onClick={() => { setRetryMessage(undefined); setSelectedOperation(operation); }}
                   >
                     Подробности операции
                   </Button>
@@ -805,6 +832,13 @@ export default function DashboardPage() {
                       {result.subscriptionName || 'Подписка не указана'} ·{' '}
                       {result.nodeName}
                     </Typography>
+                    {(result.panelVersion || result.xrayVersion) && (
+                      <Typography variant="caption" color="text.secondary">
+                        {result.panelVersion && `3x-ui ${result.panelVersion}`}
+                        {result.panelVersion && result.xrayVersion && ' · '}
+                        {result.xrayVersion && `Xray ${result.xrayVersion}`}
+                      </Typography>
+                    )}
                     {result.rolledBack && !result.inboundResults?.length && (
                       <Chip
                         size="small"
@@ -832,6 +866,12 @@ export default function DashboardPage() {
                               preserved: 'Старое подключение сохранено', failed: 'Создание не удалось',
                             }[item.status]}
                           </Typography>
+                          {(item.xuiId || item.cleanupQueued) && (
+                            <Typography variant="caption" color="text.secondary">
+                              {item.xuiId ? `3x-ui #${item.xuiId}` : ''}
+                              {item.cleanupQueued ? ' · Ожидает очистки' : ''}
+                            </Typography>
+                          )}
                           {item.error && <ErrorDetailsBlock errorDetails={item.error} />}
                           {item.conflict?.xuiId && (
                             <Typography variant="body2">
@@ -843,12 +883,33 @@ export default function DashboardPage() {
                           {item.canary && (
                             <Typography variant="caption">
                               {item.canary.engine} · {item.canary.success ? 'Проверка пройдена' : item.canary.stage || 'Проверка не пройдена'}
+                              {item.canary.failure ? ` · ${item.canary.failure}` : ''}
+                              {item.canary.tcpReachable === true ? ' · TCP доступен' : item.canary.tcpReachable === false ? ' · TCP недоступен' : ''}
                               {item.canary.sni ? ` · SNI ${item.canary.sni}` : ''}
                               {item.canary.host ? ` · Host ${item.canary.host}` : ''}
                               {item.canary.path ? ` · Path ${item.canary.path}` : ''}
                               {item.canary.mode ? ` · ${item.canary.mode}` : ''}
                             </Typography>
                           )}
+                          {item.canary && (item.canary.attempts?.length || item.canary.tcpDurationMs !== undefined) ? (
+                            <Box component="details">
+                              <summary>Клиентская проверка{item.canary.attempts?.length ? ` (${item.canary.attempts.length} попыток)` : ''}</summary>
+                              <Typography variant="caption" display="block">
+                                {item.canary.tcpDurationMs !== undefined && `TCP ${item.canary.tcpDurationMs} мс · `}
+                                {item.canary.xrayStartupMs !== undefined && `Запуск Xray ${item.canary.xrayStartupMs} мс · `}
+                                Всего {item.canary.latencyMs} мс
+                              </Typography>
+                              {item.canary.attempts?.map((attempt, index) => (
+                                <Typography key={index} variant="body2">
+                                  {attempt.host}:{attempt.port} · {attempt.stage.toUpperCase()} · {attempt.durationMs} мс
+                                  {attempt.httpStatusCode ? ` · HTTP ${attempt.httpStatusCode}` : ''}
+                                  {attempt.socksReply !== undefined ? ` · SOCKS5 0x${attempt.socksReply.toString(16)}` : ''}
+                                  {attempt.failure ? ` · ${attempt.failure}` : ''}
+                                  {attempt.signal ? ` · ${attempt.signal}` : ''}
+                                </Typography>
+                              ))}
+                            </Box>
+                          ) : null}
                           {item.error && item.configId && result.subscriptionId && (
                             <Button size="small" sx={{ alignSelf: 'flex-start' }} disabled={Boolean(retryingInbound)}
                               onClick={() => void retryInbound(selectedOperation.id, result.subscriptionId!, item.configId!)}>
@@ -958,12 +1019,9 @@ export default function DashboardPage() {
         </DialogContent>
         <DialogActions>
           <Button
-            onClick={() =>
-              selectedOperation &&
-              void copyToClipboard(operationReport(selectedOperation))
-            }
+            onClick={() => selectedOperation && void copyDiagnostics(selectedOperation.id)}
           >
-            Копировать отчёт
+            Копировать диагностику для ИИ
           </Button>
           <Button onClick={() => setSelectedOperation(null)}>Закрыть</Button>
         </DialogActions>

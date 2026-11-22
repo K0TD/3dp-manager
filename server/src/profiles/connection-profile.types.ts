@@ -164,6 +164,36 @@ export interface TlsSiteProbeResult {
   durationMs: number;
 }
 
+export type ClientProbeFailure =
+  | 'TARGET_UNREACHABLE'
+  | 'XRAY_STARTUP'
+  | 'SOCKS_REJECTED'
+  | 'TUNNEL_CLOSED'
+  | 'TIMEOUT'
+  | 'SOCKET_ERROR'
+  | 'INVALID_RESPONSE'
+  | 'HTTP_STATUS';
+
+export type ClientProbeSignal =
+  | 'TCP_REFUSED'
+  | 'DNS_ERROR'
+  | 'TLS_ERROR'
+  | 'REALITY_REJECTED'
+  | 'CONNECTION_RESET'
+  | 'EOF'
+  | 'UPSTREAM_HTTP_ERROR';
+
+export interface ClientProbeAttempt {
+  host: string;
+  port: number;
+  stage: 'socks' | 'http';
+  durationMs: number;
+  failure?: ClientProbeFailure;
+  signal?: ClientProbeSignal;
+  httpStatusCode?: number;
+  socksReply?: number;
+}
+
 export interface ClientConnectionProbeResult {
   success: boolean;
   engine: 'xray-core' | 'tcp-tls-fallback';
@@ -177,6 +207,10 @@ export interface ClientConnectionProbeResult {
   fallbackReason?: string;
   stage?: 'tcp' | 'startup' | 'socks' | 'http' | 'tls';
   tcpReachable?: boolean;
+  tcpDurationMs?: number;
+  xrayStartupMs?: number;
+  failure?: ClientProbeFailure;
+  attempts?: ClientProbeAttempt[];
   error?: string;
 }
 

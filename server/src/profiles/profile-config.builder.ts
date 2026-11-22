@@ -1,3 +1,4 @@
+import { resolveSniProfile } from '../inbounds/sni-profiles';
 import * as crypto from 'crypto';
 import type { XuiInboundRaw } from '../inbounds/xui-inbound.types';
 import {
@@ -80,6 +81,24 @@ export interface BuildHttpsFallbackClientParams {
   settings?: ManagedProfileSettings | null;
 }
 
+export function explicitXhttpStableSni(
+  sni?: string | null,
+  legacyDomain?: string,
+) {
+  const selected = (sni?.trim() || legacyDomain?.trim() || '').toLowerCase();
+  return selected === 'random' ? '' : selected;
+}
+
+export function xhttpStableSniSettings(sni: string) {
+  const profile = resolveSniProfile(sni);
+  return {
+    path: normalizeXhttpPath(profile.xhttpPath),
+    host: profile.sni,
+    fingerprint: profile.fingerprint,
+    spiderX: profile.spiderX,
+  };
+}
+
 /**
  * Minimal XHTTP Stable server inbound for 3x-ui (VLESS + XHTTP + REALITY).
  * Keeps server configuration strictly minimal: no client XMUX, no Vision flow,
@@ -92,11 +111,10 @@ export function buildXhttpStableServerInbound(
     'xhttp-stable',
     params.settings,
   );
-  const path = normalizeXhttpPath(normalized.path);
-  const host = normalized.host?.trim() || params.sni;
+  const { path, host, fingerprint, spiderX } = xhttpStableSniSettings(
+    params.sni,
+  );
   const mode: XhttpMode = normalized.mode || 'auto';
-  const fingerprint: ClientFingerprint = normalized.fingerprint || 'chrome';
-  const spiderX = normalized.spiderX || '/';
   const shortIds =
     params.shortIds && params.shortIds.length > 0
       ? params.shortIds
@@ -145,9 +163,9 @@ export function buildXhttpStableServerInbound(
       realitySettings: {
         show: false,
         xver: 0,
-        target: `${params.sni}:443`,
-        dest: `${params.sni}:443`,
-        serverNames: [params.sni],
+        target: `${host}:443`,
+        dest: `${host}:443`,
+        serverNames: [host],
         privateKey: params.privateKey,
         shortIds,
         settings: {
@@ -261,8 +279,9 @@ export function buildXhttpStableClientProfile(
     'xhttp-stable',
     params.settings,
   );
-  const path = normalizeXhttpPath(normalized.path);
-  const host = normalized.host?.trim() || params.sni;
+  const { path, host, fingerprint, spiderX } = xhttpStableSniSettings(
+    params.sni,
+  );
   const mode: XhttpMode = normalized.mode || 'auto';
   const extra = buildXhttpClientExtra(normalized);
 
@@ -275,11 +294,11 @@ export function buildXhttpStableClientProfile(
     remark: params.remark,
     network: 'xhttp',
     security: 'reality',
-    sni: params.sni,
-    fingerprint: normalized.fingerprint || 'chrome',
+    sni: host,
+    fingerprint,
     publicKey: params.publicKey,
     shortId: params.shortId,
-    spiderX: normalized.spiderX || '/',
+    spiderX,
     xhttp: {
       path,
       host,
