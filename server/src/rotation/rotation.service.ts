@@ -942,8 +942,10 @@ export class RotationService implements OnModuleInit {
               parsedClient = null;
             }
             if (!parsedClient) continue;
-            const probeResult =
-              await this.clientProbe.probeClientProfile(parsedClient);
+            const probeResult = await this.clientProbe.probeClientProfile(
+              parsedClient,
+              { waitForPortMs: 3000 },
+            );
             canaryResults.push(probeResult);
             if (!probeResult.success) {
               failedCanaries.push({ candidate, result: probeResult });

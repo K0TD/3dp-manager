@@ -15,16 +15,35 @@ import type {
 
 export interface ClientProbeOptions {
   timeoutMs?: number;
+  waitForPortMs?: number;
   probeHost?: string;
   probePort?: number;
   probePath?: string;
   forceFallback?: boolean;
 }
 
-const DEFAULT_PROBE_TIMEOUT_MS = 8000;
-const DEFAULT_PROBE_HOST = 'cp.cloudflare.com';
-const DEFAULT_PROBE_PORT = 80;
-const DEFAULT_PROBE_PATH = '/generate_204';
+interface ProbeTarget {
+  host: string;
+  port: number;
+  path: string;
+  url: string;
+}
+
+const DEFAULT_PROBE_TIMEOUT_MS = 10000;
+const DEFAULT_PROBE_TARGETS: readonly ProbeTarget[] = [
+  {
+    host: 'cp.cloudflare.com',
+    port: 80,
+    path: '/generate_204',
+    url: 'http://cp.cloudflare.com:80/generate_204',
+  },
+  {
+    host: 'connectivitycheck.gstatic.com',
+    port: 80,
+    path: '/generate_204',
+    url: 'http://connectivitycheck.gstatic.com:80/generate_204',
+  },
+];
 
 @Injectable()
 export class ClientProbeService {
@@ -97,9 +116,8 @@ export class ClientProbeService {
   ): Promise<ClientConnectionProbeResult> {
     const startedAt = Date.now();
     const timeoutMs = options?.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
-    const probeHost = options?.probeHost || DEFAULT_PROBE_HOST;
-    const probePort = options?.probePort || DEFAULT_PROBE_PORT;
-    const probePath = options?.probePath || DEFAULT_PROBE_PATH;
+    const waitForPortMs = Math.max(0, options?.waitForPortMs ?? 0);
+    const probeTargets = this.resolveProbeTargets(options);
 
     if (!client.address || !Number.isInteger(client.port) || client.port < 1) {
       return {
@@ -138,9 +156,8 @@ export class ClientProbeService {
     if (xrayBin) {
       return this.probeViaXrayCore(client, xrayBin, {
         timeoutMs,
-        probeHost,
-        probePort,
-        probePath,
+        waitForPortMs,
+        probeTargets,
         startedAt,
       });
     }
@@ -153,22 +170,80 @@ export class ClientProbeService {
     });
   }
 
+  private resolveProbeTargets(options?: ClientProbeOptions): ProbeTarget[] {
+    if (options?.probeHost) {
+      const port = options.probePort || 80;
+      const targetPath = options.probePath || '/generate_204';
+      return [
+        {
+          host: options.probeHost,
+          port,
+          path: targetPath,
+          url: `http://${options.probeHost}:${port}${targetPath}`,
+        },
+      ];
+    }
+    const envUrl = process.env.CANARY_PROBE_URL?.trim();
+    if (envUrl) {
+      try {
+        const parsed = new URL(envUrl);
+        if (parsed.protocol === 'http:' && parsed.hostname) {
+          const port = parsed.port ? Number(parsed.port) : 80;
+          const targetPath = `${parsed.pathname || '/'}${parsed.search || ''}`;
+          return [
+            {
+              host: parsed.hostname,
+              port,
+              path: targetPath,
+              url: `http://${parsed.hostname}:${port}${targetPath}`,
+            },
+          ];
+        }
+      } catch {
+        // Fallback to built-in probe targets
+      }
+    }
+    return [...DEFAULT_PROBE_TARGETS];
+  }
+
   private async probeViaXrayCore(
     client: SeparatedClientProfile,
     xrayBin: string,
     ctx: {
       timeoutMs: number;
-      probeHost: string;
-      probePort: number;
-      probePath: string;
+      waitForPortMs: number;
+      probeTargets: ProbeTarget[];
       startedAt: number;
     },
   ): Promise<ClientConnectionProbeResult> {
-    const probeUrl = `http://${ctx.probeHost}:${ctx.probePort}${ctx.probePath}`;
+    const primaryTarget = ctx.probeTargets[0];
+    let lastProbeUrl = primaryTarget.url;
     let tmpConfigPath: string | null = null;
     let child: ReturnType<typeof spawn> | null = null;
+    let outputTail = '';
 
     try {
+      const host = client.address.replace(/^\[|\]$/g, '');
+      const tcpReady = await this.waitForRemoteTcpPort(
+        host,
+        client.port,
+        ctx.waitForPortMs,
+        Math.min(3000, ctx.timeoutMs),
+      );
+      if (!tcpReady.reachable) {
+        return {
+          success: false,
+          engine: 'xray-core',
+          targetAddress: client.address,
+          targetPort: client.port,
+          protocol: 'vless',
+          profileKind: client.kind,
+          probeUrl: lastProbeUrl,
+          latencyMs: Date.now() - ctx.startedAt,
+          error: tcpReady.reason,
+        };
+      }
+
       const socksPort = await this.allocateLocalPort();
       const config = this.buildEphemeralProbeConfig(client, socksPort);
       tmpConfigPath = path.join(os.tmpdir(), `3dp-probe-${uuidv4()}.json`);
@@ -176,7 +251,6 @@ export class ClientProbeService {
         mode: 0o600,
       });
 
-      let outputTail = '';
       let exitedEarly = false;
       let exitCode: number | null = null;
       let spawnError: string | null = null;
@@ -185,7 +259,7 @@ export class ClientProbeService {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       const appendOutput = (chunk: Buffer) => {
-        outputTail = `${outputTail}${chunk.toString('utf8')}`.slice(-1536);
+        outputTail = `${outputTail}${chunk.toString('utf8')}`.slice(-3072);
       };
       child.stdout?.on('data', appendOutput);
       child.stderr?.on('data', appendOutput);
@@ -212,7 +286,7 @@ export class ClientProbeService {
           targetPort: client.port,
           protocol: 'vless',
           profileKind: client.kind,
-          probeUrl,
+          probeUrl: lastProbeUrl,
           latencyMs: Date.now() - ctx.startedAt,
           error: exitedEarly
             ? `Xray-клиент завершился с кодом ${String(exitCode)}: ${sanitizedErr || 'ошибка конфигурации'}`
@@ -220,32 +294,74 @@ export class ClientProbeService {
         };
       }
 
-      const remainingMs = Math.max(
-        1500,
-        ctx.timeoutMs - (Date.now() - ctx.startedAt),
-      );
-      const httpStatus = await this.httpGetThroughSocks5(
-        socksPort,
-        ctx.probeHost,
-        ctx.probePort,
-        ctx.probePath,
-        remainingMs,
-      );
+      let lastErr: Error | null = null;
+      for (const [index, target] of ctx.probeTargets.entries()) {
+        lastProbeUrl = target.url;
+        const remainingTargets = ctx.probeTargets.length - index;
+        const totalRemaining = Math.max(
+          1500,
+          ctx.timeoutMs - (Date.now() - ctx.startedAt),
+        );
+        const perAttemptMs =
+          remainingTargets > 1
+            ? Math.min(5000, Math.max(2500, Math.floor(totalRemaining * 0.6)))
+            : totalRemaining;
+        try {
+          const httpStatus = await this.httpGetThroughSocks5(
+            socksPort,
+            target.host,
+            target.port,
+            target.path,
+            perAttemptMs,
+          );
 
-      if (httpStatus >= 200 && httpStatus < 400) {
-        return {
-          success: true,
-          engine: 'xray-core',
-          targetAddress: client.address,
-          targetPort: client.port,
-          protocol: 'vless',
-          profileKind: client.kind,
-          httpStatusCode: httpStatus,
-          probeUrl,
-          latencyMs: Date.now() - ctx.startedAt,
-        };
+          if (httpStatus >= 200 && httpStatus < 400) {
+            return {
+              success: true,
+              engine: 'xray-core',
+              targetAddress: client.address,
+              targetPort: client.port,
+              protocol: 'vless',
+              profileKind: client.kind,
+              httpStatusCode: httpStatus,
+              probeUrl: target.url,
+              latencyMs: Date.now() - ctx.startedAt,
+            };
+          }
+
+          return {
+            success: false,
+            engine: 'xray-core',
+            targetAddress: client.address,
+            targetPort: client.port,
+            protocol: 'vless',
+            profileKind: client.kind,
+            httpStatusCode: httpStatus,
+            probeUrl: target.url,
+            latencyMs: Date.now() - ctx.startedAt,
+            error: `Пробный HTTP-запрос через клиентский туннель вернул статус ${httpStatus}`,
+          };
+        } catch (attemptErr) {
+          lastErr =
+            attemptErr instanceof Error
+              ? attemptErr
+              : new Error(String(attemptErr));
+          // Allow xray-core a brief moment to flush its warning log line
+          await new Promise((r) => setTimeout(r, 80));
+          const diagSoFar = this.extractXrayDiagnostic(outputTail);
+          // Only try the fallback probe URL if the tunnel didn't fail at the VPS/handshake layer
+          const looksLikeTunnelFailure =
+            /(?:connection refused|tls:|reality|certificate|handshake|invalid user|xhttp|status \d{3})/i.test(
+              diagSoFar,
+            ) || exitedEarly;
+          if (looksLikeTunnelFailure) break;
+        }
       }
 
+      const baseErr = this.sanitizeError(
+        lastErr ? lastErr.message : 'Клиентская проба не завершена',
+      );
+      const xrayDiag = this.extractXrayDiagnostic(outputTail);
       return {
         success: false,
         engine: 'xray-core',
@@ -253,12 +369,16 @@ export class ClientProbeService {
         targetPort: client.port,
         protocol: 'vless',
         profileKind: client.kind,
-        httpStatusCode: httpStatus,
-        probeUrl,
+        probeUrl: lastProbeUrl,
         latencyMs: Date.now() - ctx.startedAt,
-        error: `Пробный HTTP-запрос через клиентский туннель вернул статус ${httpStatus}`,
+        error: xrayDiag ? `${baseErr} · xray: ${xrayDiag}` : baseErr,
       };
     } catch (err) {
+      await new Promise((r) => setTimeout(r, 60));
+      const baseErr = this.sanitizeError(
+        err instanceof Error ? err.message : String(err),
+      );
+      const xrayDiag = this.extractXrayDiagnostic(outputTail);
       return {
         success: false,
         engine: 'xray-core',
@@ -266,11 +386,9 @@ export class ClientProbeService {
         targetPort: client.port,
         protocol: 'vless',
         profileKind: client.kind,
-        probeUrl,
+        probeUrl: lastProbeUrl,
         latencyMs: Date.now() - ctx.startedAt,
-        error: this.sanitizeError(
-          err instanceof Error ? err.message : String(err),
-        ),
+        error: xrayDiag ? `${baseErr} · xray: ${xrayDiag}` : baseErr,
       };
     } finally {
       if (child && !child.killed) {
@@ -467,6 +585,80 @@ export class ClientProbeService {
     return false;
   }
 
+  async waitForRemoteTcpPort(
+    host: string,
+    port: number,
+    retryBudgetMs: number,
+    connectTimeoutMs = 3000,
+  ): Promise<{ reachable: boolean; reason?: string }> {
+    const deadline = Date.now() + Math.max(0, retryBudgetMs);
+    let lastCode = '';
+    let lastMessage = '';
+
+    for (;;) {
+      const attemptTimeout = Math.min(
+        connectTimeoutMs,
+        retryBudgetMs > 0
+          ? Math.max(800, deadline - Date.now())
+          : connectTimeoutMs,
+      );
+      const outcome = await new Promise<{
+        ok: boolean;
+        code?: string;
+        message?: string;
+      }>((resolve) => {
+        let settled = false;
+        const done = (res: {
+          ok: boolean;
+          code?: string;
+          message?: string;
+        }) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          sock.destroy();
+          resolve(res);
+        };
+        const sock = net.createConnection({ host, port });
+        const timer = setTimeout(() => {
+          done({ ok: false, code: 'ETIMEDOUT', message: 'timeout' });
+        }, attemptTimeout);
+        sock.once('connect', () => done({ ok: true }));
+        sock.once('error', (err: NodeJS.ErrnoException) =>
+          done({ ok: false, code: err.code || '', message: err.message }),
+        );
+      });
+
+      if (outcome.ok) return { reachable: true };
+      lastCode = outcome.code || '';
+      lastMessage = outcome.message || '';
+
+      // Retry ECONNREFUSED within the retry budget (e.g. while 3x-ui finishes reloading Xray)
+      if (lastCode === 'ECONNREFUSED' && Date.now() < deadline - 200) {
+        await new Promise((r) => setTimeout(r, 350));
+        continue;
+      }
+      break;
+    }
+
+    if (lastCode === 'ECONNREFUSED') {
+      return {
+        reachable: false,
+        reason: `TCP-порт ${host}:${port} отклоняет соединение (ECONNREFUSED) — Xray на ноде не слушает этот порт или не успел перезапуститься`,
+      };
+    }
+    if (lastCode === 'ETIMEDOUT') {
+      return {
+        reachable: false,
+        reason: `TCP-порт ${host}:${port} не отвечает (таймаут) — проверьте firewall ноды/провайдера и доступность порта`,
+      };
+    }
+    return {
+      reachable: false,
+      reason: `TCP-порт ${host}:${port} недоступен (${this.sanitizeError(lastMessage || lastCode || 'network error')})`,
+    };
+  }
+
   private httpGetThroughSocks5(
     socksPort: number,
     targetHost: string,
@@ -478,18 +670,37 @@ export class ClientProbeService {
       const sock = net.createConnection({ host: '127.0.0.1', port: socksPort });
       let stage: 'greeting' | 'connect' | 'http' = 'greeting';
       let buffer = Buffer.alloc(0);
+      let settled = false;
 
       const fail = (message: string) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
         sock.destroy();
         reject(new Error(message));
       };
 
+      const succeed = (status: number) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        sock.destroy();
+        resolve(status);
+      };
+
       const timer = setTimeout(() => {
-        fail(`Таймаут клиентской пробы через SOCKS5 (${timeoutMs} мс)`);
+        fail(
+          `Таймаут клиентской пробы через SOCKS5 (${timeoutMs} мс, этап ${stage})`,
+        );
       }, timeoutMs);
 
       sock.once('error', (err) => fail(err.message));
+      sock.once('end', () => {
+        fail(`Туннель закрыт до получения ответа (этап ${stage})`);
+      });
+      sock.once('close', () => {
+        fail(`Туннель закрыт до получения ответа (этап ${stage})`);
+      });
 
       sock.once('connect', () => {
         // SOCKS5 greeting: version 5, 1 auth method, 0x00 (no auth)
@@ -497,6 +708,7 @@ export class ClientProbeService {
       });
 
       sock.on('data', (chunk: Buffer) => {
+        if (settled) return;
         buffer = Buffer.concat([buffer, chunk]);
         if (stage === 'greeting') {
           if (buffer.length < 2) return;
@@ -554,18 +766,38 @@ export class ClientProbeService {
           const statusLine =
             firstLineEnd === -1 ? text : text.slice(0, firstLineEnd);
           const match = /^HTTP\/\d\.\d\s+(\d{3})/.exec(statusLine);
-          clearTimeout(timer);
-          sock.destroy();
           if (!match) {
-            reject(
-              new Error(`Некорректный HTTP-ответ через туннель: ${statusLine}`),
-            );
+            fail(`Некорректный HTTP-ответ через туннель: ${statusLine}`);
             return;
           }
-          resolve(Number(match[1]));
+          succeed(Number(match[1]));
         }
       });
     });
+  }
+
+  extractXrayDiagnostic(rawOutput: string): string {
+    if (!rawOutput) return '';
+    const lines = rawOutput
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(
+        (line) =>
+          Boolean(line) &&
+          !/^Xray\s+\d+/i.test(line) &&
+          !/^A unified platform/i.test(line) &&
+          !/^Reading config:/i.test(line) &&
+          !/^\[Info\]/i.test(line),
+      );
+    if (lines.length === 0) return '';
+    const highlighted = [...lines]
+      .reverse()
+      .find((line) =>
+        /(?:failed|error|warning|timeout|refused|reset|eof|rejected|invalid|tls:|reality|status|denied|closed)/i.test(
+          line,
+        ),
+      );
+    return this.sanitizeError(highlighted || lines[lines.length - 1]);
   }
 
   private sanitizeError(raw: string): string {

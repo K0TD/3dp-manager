@@ -107,6 +107,18 @@ describe('operation error normalization', () => {
     );
     expect(xhttp.code).toBe('CANARY_PROBE_FAILED');
     expect(xhttp.hint).toContain('DISABLE_CANARY_PROBE=true');
+
+    const multi = normalizeOperationError(
+      'Canary-проверка профиля «xh» (xhttp-stable) не пройдена (xray-core): timeout; Canary-проверка профиля «self-sni» (self-sni) не пройдена (xray-core): timeout',
+      {
+        node: 'mscone',
+        stage: 'verify',
+        inboundType: 'xhttp-stable',
+        port: 22655,
+      },
+    );
+    expect(multi.code).toBe('CANARY_PROBE_FAILED');
+    expect(multi.hint).toContain('Несколько профилей одновременно');
   });
 
   it('classifies a free-form panel rejection when the caller identifies its source', () => {

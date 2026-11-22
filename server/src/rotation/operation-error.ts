@@ -94,19 +94,27 @@ export function normalizeOperationError(
   if (/Canary-проверка профиля/i.test(raw)) {
     code = 'CANARY_PROBE_FAILED';
     stage = 'verify';
+    const hasSelfSni = /\(self-sni\)/i.test(raw);
+    const hasHttpsFallback = /\(https-fallback\)/i.test(raw);
+    const hasXhttpStable = /\(xhttp-stable\)/i.test(raw);
+    const failedKindCount = [
+      hasSelfSni,
+      hasHttpsFallback,
+      hasXhttpStable,
+    ].filter(Boolean).length;
     title = `Canary-проверка${connection}${portLabel} не пройдена — выполнен автооткат`;
-    if (inboundType === 'self-sni' || /\(self-sni\)/i.test(raw)) {
+    if (failedKindCount > 1) {
+      hint =
+        'Несколько профилей одновременно не прошли canary-проверку. Проверьте статус Xray в 3x-ui (нет ли ошибки перезапуска), firewall ноды/провайдера и исходящий доступ с ноды до проверочного URL (можно задать CANARY_PROBE_URL или DISABLE_CANARY_PROBE=true). Для Self-SNI дополнительно требуется работающий локальный HTTPS-сайт на 127.0.0.1:<localHttpsPort>.';
+    } else if (inboundType === 'self-sni' || hasSelfSni) {
       hint =
         'Для Self-SNI убедитесь, что порт Xray (обычно 443/tcp) открыт в firewall ноды, а на 127.0.0.1:<localHttpsPort> запущен локальный HTTPS-сайт (Nginx/Caddy) с TLS 1.3 и валидным сертификатом домена.';
-    } else if (
-      inboundType === 'https-fallback' ||
-      /\(https-fallback\)/i.test(raw)
-    ) {
+    } else if (inboundType === 'https-fallback' || hasHttpsFallback) {
       hint =
         'Для HTTPS Fallback проверьте открытость порта, валидность TLS-сертификата и настройки reverse proxy (proxy_buffering off / flush_interval -1).';
     } else {
       hint =
-        'Проверьте открытость порта в firewall ноды, доступность SNI с ноды и наличие исходящего доступа для клиентской пробы (или задайте DISABLE_CANARY_PROBE=true).';
+        'Проверьте открытость порта в firewall ноды, доступность SNI с ноды и наличие исходящего доступа для клиентской пробы (можно задать CANARY_PROBE_URL или DISABLE_CANARY_PROBE=true).';
     }
   } else if (/csrf/i.test(raw)) {
     code = 'CSRF_FAILED';

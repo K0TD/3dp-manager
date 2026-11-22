@@ -94,4 +94,37 @@ describe('ClientProbeService', () => {
     expect(res.success).toBe(false);
     expect(res.error).toContain('не развёрнут на ноде');
   });
+
+  it('extracts meaningful xray warning diagnostics while filtering startup banners and secrets', () => {
+    const sampleOutput = [
+      'Xray 25.3.6 (Xray, Penetrates Everything.)',
+      'A unified platform for anti-censorship.',
+      'Reading config: /tmp/3dp-probe.json',
+      '2026/11/22 19:00:00 [Warning] proxy/vless/outbound: failed to dial mscone.samx.pw:443 > tls: handshake failure privateKey=secret123',
+    ].join('\n');
+
+    const diag = service.extractXrayDiagnostic(sampleOutput);
+    expect(diag).toContain('tls: handshake failure');
+    expect(diag).not.toContain('secret123');
+    expect(diag).not.toContain('A unified platform');
+  });
+
+  it('reports ECONNREFUSED cleanly via waitForRemoteTcpPort when target port is closed', async () => {
+    const server = net.createServer();
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', () => resolve()),
+    );
+    const addr = server.address();
+    const closedPort = typeof addr === 'object' && addr ? addr.port : 0;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+
+    const res = await service.waitForRemoteTcpPort(
+      '127.0.0.1',
+      closedPort,
+      0,
+      1000,
+    );
+    expect(res.reachable).toBe(false);
+    expect(res.reason).toContain('ECONNREFUSED');
+  });
 });
