@@ -27,6 +27,20 @@ RUN git init . \
     && git checkout --detach FETCH_HEAD
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /out/RealiTLScanner-linux-64 .
 
+FROM golang:1.24-alpine AS xray-builder
+
+ARG XRAY_REPO=https://github.com/XTLS/Xray-core.git
+# Pin to an immutable release tag supporting XHTTP (stream-one/XMUX), REALITY, Vision, and TLS.
+ARG XRAY_REF=v25.3.6
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+
+WORKDIR /xray-src
+
+RUN apk add --no-cache git
+RUN git clone --depth 1 --branch ${XRAY_REF} ${XRAY_REPO} . \
+    && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /out/xray -trimpath -ldflags "-s -w -buildid=" ./main
+
 FROM node:24-alpine
 
 WORKDIR /app
@@ -48,10 +62,12 @@ RUN apk add --no-cache \
 
 COPY --from=builder /app/dist ./dist
 COPY --from=scanner-builder /out/RealiTLScanner-linux-64 /usr/local/bin/RealiTLScanner-linux-64
-RUN chmod +x /usr/local/bin/RealiTLScanner-linux-64
+COPY --from=xray-builder /out/xray /usr/local/bin/xray
+RUN chmod +x /usr/local/bin/RealiTLScanner-linux-64 /usr/local/bin/xray
 
 ENV NODE_ENV=production
 ENV PORT=3100
+ENV XRAY_BIN=/usr/local/bin/xray
 
 EXPOSE 3100
 

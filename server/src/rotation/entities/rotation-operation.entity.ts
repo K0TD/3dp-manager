@@ -7,6 +7,7 @@ import {
 } from 'typeorm';
 import type { XuiInboundDiagnostic } from '../../xui/xui-contract';
 import type { OperationErrorDetails } from '../operation-error';
+import type { ClientConnectionProbeResult } from '../../profiles/connection-profile.types';
 
 export interface RotationInboundDiagnostic extends XuiInboundDiagnostic {
   configId?: string;
@@ -29,6 +30,8 @@ export interface RotationNodeResult {
   status: 'succeeded' | 'preserved' | 'failed';
   created: number;
   pendingCleanup: number;
+  rolledBack?: boolean;
+  canaryResults?: ClientConnectionProbeResult[];
   message?: string;
   errorDetails?: OperationErrorDetails;
   details?: {

@@ -63,6 +63,9 @@ export interface XuiConnectionStatus {
   xrayVersion?: string;
   xrayState?: string;
   xrayError?: string;
+  cpuPercent?: number;
+  memPercent?: number;
+  diskPercent?: number;
   webCertificateFile?: string;
   webKeyFile?: string;
   responseTimeMs?: number;
@@ -550,6 +553,24 @@ export class XuiService {
         ]);
         const payload = asRecord(asRecord(status?.data)?.obj);
         const xray = asRecord(payload?.xray);
+        const mem = asRecord(payload?.mem);
+        const disk = asRecord(payload?.disk);
+        const toPercent = (rec: Record<string, unknown> | undefined) => {
+          const current = Number(rec?.current);
+          const total = Number(rec?.total);
+          if (
+            !Number.isFinite(current) ||
+            !Number.isFinite(total) ||
+            total <= 0
+          ) {
+            return undefined;
+          }
+          return Math.min(100, Math.max(0, (current / total) * 100));
+        };
+        const rawCpu = Number(payload?.cpu);
+        const cpuPercent = Number.isFinite(rawCpu)
+          ? Math.min(100, Math.max(0, rawCpu))
+          : undefined;
         const files = this.parseCertificateFiles(
           asRecord(certificate?.data)?.obj,
         );
@@ -566,6 +587,9 @@ export class XuiService {
           xrayError: xray?.errorMsg
             ? safePanelMessage(xray.errorMsg)
             : undefined,
+          cpuPercent,
+          memPercent: toPercent(mem),
+          diskPercent: toPercent(disk),
           webCertificateFile: files?.certificateFile,
           webKeyFile: files?.keyFile,
         };

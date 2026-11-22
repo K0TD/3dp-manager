@@ -983,7 +983,9 @@ http://<host>:<port>/bus/<uuid>
 - `GET /api/profiles` / `GET /api/profiles/:id` — список и карточка профиля (без приватных ключей)
 - `POST /api/profiles` / `PUT /api/profiles/:id` / `DELETE /api/profiles/:id` — CRUD профиля с инкрементом ревизии и сохранением снимка предыдущей конфигурации (`previousSnapshot`)
 - `POST /api/profiles/preview` — предпросмотр серверного inbound (с скрытым `privateKey`), клиентской VLESS-ссылки, полного Xray JSON, отчёта совместимости и готового конфига веб-сервера (`webServerConfig` для Nginx/Caddy на `self-sni` с командами бэкапа, `nginx -t`/`caddy validate`, reload и rollback). При `"liveCheck": true` дополнительно выполняет проверку DNS, TLS 1.3, ALPN, сертификата, локального HTTPS-сайта и занятых портов 3x-ui (`tlsProbe`)
-- `POST /api/profiles/:id/check` — live-проверка совместимости Xray/3x-ui, занятости порта на ноде, DNS, TLS 1.3, сертификата и доступности локального HTTPS-сайта
+- `POST /api/profiles/:id/check` — live-проверка совместимости Xray/3x-ui, занятости порта на ноде, ресурсов ноды (CPU/RAM/Disk), DNS, TLS 1.3, сертификата и доступности локального HTTPS-сайта
+- `POST /api/profiles/:id/probe` — проверка реального клиентского подключения (`ClientProbeService`: эфемерный `xray-core` SOCKS5 + HTTP-проба через клиентский JSON, с graceful TCP/TLS fallback)
+- `POST /api/profiles/:id/rollback` — откат профиля к предыдущей сохранённой ревизии (`previousSnapshot`)
 - `GET /api/profiles/:id/export` — экспорт клиентской VLESS-ссылки и полного Xray JSON для активного inbound или предпросмотра
 
 В `inboundsConfig` подписки поддерживаются:

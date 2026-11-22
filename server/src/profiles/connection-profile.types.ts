@@ -163,6 +163,20 @@ export interface TlsSiteProbeResult {
   durationMs: number;
 }
 
+export interface ClientConnectionProbeResult {
+  success: boolean;
+  engine: 'xray-core' | 'tcp-tls-fallback';
+  targetAddress: string;
+  targetPort: number;
+  protocol: 'vless';
+  profileKind?: ManagedProfileKind;
+  httpStatusCode?: number;
+  latencyMs: number;
+  probeUrl?: string;
+  fallbackReason?: string;
+  error?: string;
+}
+
 /**
  * Reserved extension slot for future mihomo monitoring and RU -> EU multi-hop routing.
  * Persisted cleanly without executing mihomo/RU->EU logic in Stage 1.

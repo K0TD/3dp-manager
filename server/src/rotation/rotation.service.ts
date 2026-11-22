@@ -3,6 +3,7 @@ import {
   OnModuleInit,
   NotFoundException,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -58,9 +59,11 @@ import {
 } from '../database/database-availability';
 import {
   isManagedProfileKind,
+  type ClientConnectionProbeResult,
   type SeparatedClientProfile,
 } from '../profiles/connection-profile.types';
 import { evaluateProfileCompatibility } from '../profiles/profile-compatibility';
+import { ClientProbeService } from '../profiles/client-probe.service';
 
 type InboundConfig = NonNullable<Subscription['inboundsConfig']>[number];
 
@@ -127,6 +130,7 @@ export class RotationService implements OnModuleInit {
     private inboundBuilder: InboundBuilderService,
     private subscriptionLock: SubscriptionLockService,
     private nodeDeletion: NodeDeletionService,
+    @Optional() private readonly clientProbe?: ClientProbeService,
   ) {}
 
   async onModuleInit() {
@@ -740,6 +744,8 @@ export class RotationService implements OnModuleInit {
     let failedPort: number | undefined;
     let failureReason: string | undefined;
     let diagnosticStart = 0;
+    let canaryFailed = false;
+    const canaryResults: ClientConnectionProbeResult[] = [];
     let realityKeys:
       | Awaited<ReturnType<XuiService['getNewX25519Cert']>>
       | undefined;
@@ -870,6 +876,37 @@ export class RotationService implements OnModuleInit {
       )
         await this.xuiService.waitForXray(group.node);
 
+      if (this.clientProbe && process.env.DISABLE_CANARY_PROBE !== 'true') {
+        const managedStaged = created.filter(
+          (item) => item.profileKind && item.clientProfileJson,
+        );
+        if (managedStaged.length > 0) {
+          phase = 'Canary-проверка клиентского подключения';
+          stage = 'verify';
+          for (const candidate of managedStaged) {
+            const rawClient = candidate.clientProfileJson;
+            if (!rawClient) continue;
+            let parsedClient: SeparatedClientProfile | null = null;
+            try {
+              parsedClient = JSON.parse(rawClient) as SeparatedClientProfile;
+            } catch {
+              parsedClient = null;
+            }
+            if (!parsedClient) continue;
+            const probeResult =
+              await this.clientProbe.probeClientProfile(parsedClient);
+            canaryResults.push(probeResult);
+            if (!probeResult.success) {
+              canaryFailed = true;
+              failedPort = candidate.port;
+              throw new Error(
+                `Canary-проверка профиля «${candidate.remark || candidate.profileKind}» (${candidate.profileKind}) не пройдена (${probeResult.engine}): ${probeResult.error || 'соединение не установлено'}`,
+              );
+            }
+          }
+        }
+      }
+
       const old = (subscription.inbounds || []).filter((inbound) => {
         if (PERSISTENT_INBOUND_TYPES.has(inbound.protocol)) return false;
         if (inbound.status !== InboundStatus.Active) return false;
@@ -904,6 +941,7 @@ export class RotationService implements OnModuleInit {
         status: 'succeeded',
         created: created.length,
         pendingCleanup: old.length,
+        ...(canaryResults.length ? { canaryResults } : {}),
       };
     } catch (error) {
       const errMessage = this.safeMessage(error);
@@ -930,7 +968,41 @@ export class RotationService implements OnModuleInit {
           ? redactOperationError(error.stack, 16384)
           : undefined,
       );
-      await this.queueCleanup(created);
+      const pendingForCleanup: Inbound[] = [];
+      if (canaryFailed && group.node && created.length > 0) {
+        const removedImmediately: Inbound[] = [];
+        for (const stagedInbound of created) {
+          let deletedOnPanel = false;
+          if (stagedInbound.xuiId > 0) {
+            try {
+              deletedOnPanel = await this.xuiService.deleteInbound(
+                stagedInbound.xuiId,
+                group.node,
+              );
+            } catch {
+              deletedOnPanel = false;
+            }
+          }
+          if (deletedOnPanel) {
+            removedImmediately.push(stagedInbound);
+          } else {
+            pendingForCleanup.push(stagedInbound);
+          }
+        }
+        if (
+          removedImmediately.length > 0 &&
+          typeof this.inboundRepo.remove === 'function'
+        ) {
+          await this.inboundRepo.remove(removedImmediately).catch(() => {
+            pendingForCleanup.push(...removedImmediately);
+          });
+        } else {
+          pendingForCleanup.push(...removedImmediately);
+        }
+      } else {
+        pendingForCleanup.push(...created);
+      }
+      await this.queueCleanup(pendingForCleanup);
       return {
         subscriptionId: subscription.id,
         subscriptionName: subscription.name,
@@ -940,7 +1012,9 @@ export class RotationService implements OnModuleInit {
           (key === '__custom' ? 'Локальные ссылки' : 'Без ноды'),
         status: 'preserved',
         created: 0,
-        pendingCleanup: created.length,
+        pendingCleanup: pendingForCleanup.length,
+        ...(created.length > 0 ? { rolledBack: true } : {}),
+        ...(canaryResults.length ? { canaryResults } : {}),
         message: errMessage,
         errorDetails: normalizeOperationError(failureReason || errMessage, {
           node: group.node?.name,

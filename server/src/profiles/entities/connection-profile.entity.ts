@@ -23,6 +23,7 @@ export interface ConnectionProfileSnapshot {
   savedAt: string;
   name: string;
   kind: ManagedProfileKind;
+  nodeId?: string | null;
   port?: number | null;
   sni?: string | null;
   rotationPolicy: ProfileRotationPolicy;

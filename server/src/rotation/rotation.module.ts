@@ -16,6 +16,7 @@ import { Tunnel } from '../tunnels/entities/tunnel.entity';
 import { RotationOperation } from './entities/rotation-operation.entity';
 import { SubscriptionLockService } from '../subscriptions/subscription-lock.service';
 import { NodeDeletionModule } from '../nodes/node-deletion.module';
+import { ConnectionProfilesModule } from '../profiles/connection-profiles.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { NodeDeletionModule } from '../nodes/node-deletion.module';
     XuiModule,
     InboundsModule,
     NodeDeletionModule,
+    ConnectionProfilesModule,
   ],
   providers: [RotationService, SubscriptionLockService],
   exports: [RotationService, SubscriptionLockService],

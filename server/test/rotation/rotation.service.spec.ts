@@ -1,6 +1,7 @@
 import { Repository } from 'typeorm';
 import { SubscriptionLockService } from 'src/subscriptions/subscription-lock.service';
 import { NodeDeletionService } from 'src/nodes/node-deletion.service';
+import { ClientProbeService } from 'src/profiles/client-probe.service';
 import { RotationService } from 'src/rotation/rotation.service';
 import { Subscription } from 'src/subscriptions/entities/subscription.entity';
 import { Inbound, InboundStatus } from 'src/inbounds/entities/inbound.entity';
@@ -2090,6 +2091,208 @@ describe('RotationService resilient generations', () => {
       };
       expect(lastSaved.profileKind).toBe('https-fallback');
       expect(lastSaved.clientProfileJson).toContain('/api/v2/stream');
+    });
+
+    it('runs canary real-client probe before switching generation and automatically rolls back on probe failure', async () => {
+      const mockClientProbe = {
+        probeClientProfile: jest.fn(),
+      };
+      const canaryService = new RotationService(
+        subRepo as unknown as Repository<Subscription>,
+        inboundRepo as unknown as Repository<Inbound>,
+        domainRepo as unknown as Repository<Domain>,
+        settingRepo as unknown as Repository<Setting>,
+        nodeRepo as unknown as Repository<Node>,
+        tunnelRepo as unknown as Repository<Tunnel>,
+        operationRepo as unknown as Repository<RotationOperation>,
+        xuiService as unknown as XuiService,
+        inboundBuilder as unknown as InboundBuilderService,
+        {
+          run: jest.fn((_id: string, work: () => Promise<unknown>) => work()),
+        } as unknown as SubscriptionLockService,
+        nodeDeletion,
+        mockClientProbe as unknown as ClientProbeService,
+      );
+
+      const configId = '88888888-8888-4888-8888-888888888888';
+      const sub = {
+        id: 'sub-canary',
+        name: 'SubCanary',
+        isEnabled: true,
+        isAutoRotationEnabled: true,
+        inboundsConfig: [
+          {
+            configId,
+            type: 'xhttp-stable',
+            port: 443,
+            sni: 'www.microsoft.com',
+            nodeId: node.id,
+            name: 'Canary XHTTP',
+            profileSettings: { mode: 'auto', fingerprint: 'chrome' },
+          },
+        ],
+        inbounds: [
+          {
+            id: 980,
+            xuiId: 98,
+            configId,
+            nodeId: node.id,
+            protocol: 'vless',
+            status: InboundStatus.Active,
+          } as Inbound,
+        ],
+      } as Subscription;
+
+      const builtInbound = {
+        enable: true,
+        port: 443,
+        protocol: 'vless',
+        remark: 'Canary XHTTP',
+        settings: JSON.stringify({ clients: [{ id: 'u-can', flow: '' }] }),
+        streamSettings: JSON.stringify({
+          network: 'xhttp',
+          security: 'reality',
+          realitySettings: {
+            serverNames: ['www.microsoft.com'],
+            shortIds: ['cafebabe'],
+            settings: { publicKey: 'CAN_PUB', fingerprint: 'chrome' },
+          },
+          xhttpSettings: { path: '/', host: 'www.microsoft.com', mode: 'auto' },
+        }),
+      };
+
+      xuiService.assertXrayHealthy.mockResolvedValue(undefined);
+      xuiService.getNewX25519Cert.mockResolvedValue({
+        privateKey: 'CAN_PRIV',
+        publicKey: 'CAN_PUB',
+      });
+      inboundBuilder.buildXhttpStableInbound.mockReturnValue(builtInbound);
+      xuiService.addInbound.mockResolvedValue({
+        id: 99,
+        inbound: { ...builtInbound, id: 99 },
+      });
+      inboundBuilder.buildXhttpStableClientBundle.mockReturnValue({
+        kind: 'xhttp-stable',
+        vlessLink:
+          'vless://u-can@eu.example.com:443?type=xhttp&security=reality#Canary',
+        clientConfig: {
+          kind: 'xhttp-stable',
+          protocol: 'vless',
+          address: 'eu.example.com',
+          port: 443,
+          uuid: 'u-can',
+          remark: 'Canary XHTTP',
+          network: 'xhttp',
+          security: 'reality',
+          sni: 'www.microsoft.com',
+          fingerprint: 'chrome',
+          publicKey: 'CAN_PUB',
+          shortId: 'cafebabe',
+          xhttp: { path: '/', host: 'www.microsoft.com', mode: 'auto' },
+        },
+        xrayClientJson: {
+          log: { loglevel: 'warning' },
+          inbounds: [],
+          outbounds: [],
+          routing: {},
+        },
+      });
+
+      // 1) Canary probe FAILS -> automatic rollback, active generation preserved
+      mockClientProbe.probeClientProfile.mockResolvedValueOnce({
+        success: false,
+        engine: 'xray-core',
+        targetAddress: 'eu.example.com',
+        targetPort: 443,
+        protocol: 'vless',
+        profileKind: 'xhttp-stable',
+        latencyMs: 512,
+        error: 'SOCKS5 handshake timeout',
+      });
+      xuiService.deleteInbound.mockResolvedValueOnce(true);
+
+      const failedResult = await (
+        canaryService as unknown as {
+          rotateNodeGroup: (
+            s: Subscription,
+            k: string,
+            g: {
+              node?: Node;
+              configs: Array<{ config: unknown; position: number }>;
+            },
+            d: Domain[],
+          ) => Promise<{
+            status: string;
+            created: number;
+            rolledBack?: boolean;
+            message?: string;
+            canaryResults?: Array<{ success: boolean }>;
+          }>;
+        }
+      ).rotateNodeGroup(
+        sub,
+        node.id,
+        { node, configs: [{ config: sub.inboundsConfig[0], position: 0 }] },
+        [],
+      );
+
+      expect(failedResult.status).toBe('preserved');
+      expect(failedResult.created).toBe(0);
+      expect(failedResult.rolledBack).toBe(true);
+      expect(failedResult.message).toContain('Canary-проверка');
+      expect(failedResult.canaryResults?.[0]?.success).toBe(false);
+      // Working generation was NEVER deactivated
+      expect(inboundRepo.manager.transaction).not.toHaveBeenCalled();
+      // Staged panel inbound was immediately rolled back
+      expect(xuiService.deleteInbound).toHaveBeenCalledWith(99, node);
+
+      // 2) Canary probe SUCCEEDS -> generation switches cleanly
+      mockClientProbe.probeClientProfile.mockResolvedValueOnce({
+        success: true,
+        engine: 'xray-core',
+        targetAddress: 'eu.example.com',
+        targetPort: 443,
+        protocol: 'vless',
+        profileKind: 'xhttp-stable',
+        httpStatusCode: 204,
+        latencyMs: 74,
+      });
+
+      const okResult = await (
+        canaryService as unknown as {
+          rotateNodeGroup: (
+            s: Subscription,
+            k: string,
+            g: {
+              node?: Node;
+              configs: Array<{ config: unknown; position: number }>;
+            },
+            d: Domain[],
+          ) => Promise<{
+            status: string;
+            created: number;
+            pendingCleanup: number;
+            canaryResults?: Array<{
+              success: boolean;
+              httpStatusCode?: number;
+            }>;
+          }>;
+        }
+      ).rotateNodeGroup(
+        sub,
+        node.id,
+        { node, configs: [{ config: sub.inboundsConfig[0], position: 0 }] },
+        [],
+      );
+
+      expect(okResult.status).toBe('succeeded');
+      expect(okResult.created).toBe(1);
+      expect(okResult.pendingCleanup).toBe(1);
+      expect(okResult.canaryResults?.[0]).toMatchObject({
+        success: true,
+        httpStatusCode: 204,
+      });
+      expect(inboundRepo.manager.transaction).toHaveBeenCalledTimes(1);
     });
   });
 });

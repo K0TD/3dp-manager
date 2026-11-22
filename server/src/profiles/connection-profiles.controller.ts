@@ -62,6 +62,16 @@ export class ConnectionProfilesController {
     return this.profilesService.checkProfile(id);
   }
 
+  @Post(':id/probe')
+  probe(@Param('id', ParseUUIDPipe) id: string) {
+    return this.profilesService.probeProfile(id);
+  }
+
+  @Post(':id/rollback')
+  rollback(@Param('id', ParseUUIDPipe) id: string) {
+    return this.profilesService.rollback(id);
+  }
+
   @Get(':id/export')
   exportProfile(@Param('id', ParseUUIDPipe) id: string) {
     return this.profilesService.exportProfile(id);

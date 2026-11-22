@@ -7,6 +7,7 @@ import { XuiModule } from '../xui/xui.module';
 import { ConnectionProfilesService } from './connection-profiles.service';
 import { ConnectionProfilesController } from './connection-profiles.controller';
 import { TlsSiteProbeService } from './tls-site-probe.service';
+import { ClientProbeService } from './client-probe.service';
 
 @Module({
   imports: [
@@ -14,7 +15,16 @@ import { TlsSiteProbeService } from './tls-site-probe.service';
     XuiModule,
   ],
   controllers: [ConnectionProfilesController],
-  providers: [ConnectionProfilesService, TlsSiteProbeService],
-  exports: [ConnectionProfilesService, TlsSiteProbeService, TypeOrmModule],
+  providers: [
+    ConnectionProfilesService,
+    TlsSiteProbeService,
+    ClientProbeService,
+  ],
+  exports: [
+    ConnectionProfilesService,
+    TlsSiteProbeService,
+    ClientProbeService,
+    TypeOrmModule,
+  ],
 })
 export class ConnectionProfilesModule {}

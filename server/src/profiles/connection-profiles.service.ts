@@ -39,7 +39,9 @@ import {
   buildSelfSniWebServerBundle,
 } from './web-server-config.builder';
 import { TlsSiteProbeService } from './tls-site-probe.service';
+import { ClientProbeService } from './client-probe.service';
 import type {
+  ClientConnectionProbeResult,
   ManagedProfileKind,
   ProfileCompatibilityReport,
   ProfileExportBundle,
@@ -55,6 +57,7 @@ const PREVIEW_SHORT_ID = 'a1b2c3d4';
 @Injectable()
 export class ConnectionProfilesService {
   private readonly fallbackProbe = new TlsSiteProbeService();
+  private readonly fallbackClientProbe = new ClientProbeService();
 
   constructor(
     @InjectRepository(ConnectionProfile)
@@ -66,10 +69,16 @@ export class ConnectionProfilesService {
     private readonly xuiService: XuiService,
     @Optional()
     private readonly tlsSiteProbe?: TlsSiteProbeService,
+    @Optional()
+    private readonly clientProbe?: ClientProbeService,
   ) {}
 
   private get probe(): TlsSiteProbeService {
     return this.tlsSiteProbe ?? this.fallbackProbe;
+  }
+
+  private get clientVerifier(): ClientProbeService {
+    return this.clientProbe ?? this.fallbackClientProbe;
   }
 
   getCatalog() {
@@ -241,7 +250,14 @@ export class ConnectionProfilesService {
     const remark = dto.name?.trim() || dto.kind;
 
     let occupiedPorts: number[] | undefined;
-    let nodeResources: { xrayState?: string } | undefined;
+    let nodeResources:
+      | {
+          cpuPercent?: number;
+          memPercent?: number;
+          diskPercent?: number;
+          xrayState?: string;
+        }
+      | undefined;
     let dnsResolvedIps: string[] | undefined;
     let dnsError: string | undefined;
     let tlsProbe: TlsSiteProbeResult | undefined;
@@ -429,7 +445,14 @@ export class ConnectionProfilesService {
       : null;
 
     let occupiedPorts: number[] | undefined;
-    let nodeResources: { xrayState?: string } | undefined;
+    let nodeResources:
+      | {
+          cpuPercent?: number;
+          memPercent?: number;
+          diskPercent?: number;
+          xrayState?: string;
+        }
+      | undefined;
     if (node) {
       const liveNode = await this.queryLiveNodeState(node);
       occupiedPorts = liveNode.occupiedPorts;
@@ -498,9 +521,116 @@ export class ConnectionProfilesService {
     };
   }
 
+  async probeProfile(id: string): Promise<{
+    id: string;
+    source: 'active_inbound' | 'preview';
+    probe: ClientConnectionProbeResult;
+    checkedAt: string;
+  }> {
+    const profile = await this.findOne(id);
+    const exported = await this.exportProfile(id);
+    const probe = await this.clientVerifier.probeClientProfile(
+      exported.exportBundle.clientConfig,
+    );
+    const checkedAt = new Date();
+    const existingChecks = profile.lastCheckResult?.checks || [];
+    const filtered = existingChecks.filter(
+      (item) =>
+        item.code !== 'CLIENT_PROBE_OK' && item.code !== 'CLIENT_PROBE_FAILED',
+    );
+    const nextChecks = [
+      ...filtered,
+      probe.success
+        ? {
+            code: 'CLIENT_PROBE_OK',
+            severity: 'ok' as const,
+            title: `Клиентская проверка пройдена (${probe.engine})`,
+            message: `Подключение к ${probe.targetAddress}:${probe.targetPort} подтверждено за ${probe.latencyMs} мс${probe.httpStatusCode ? ` (HTTP ${probe.httpStatusCode})` : ''}.`,
+          }
+        : {
+            code: 'CLIENT_PROBE_FAILED',
+            severity: 'error' as const,
+            title: `Клиентская проверка не пройдена (${probe.engine})`,
+            message:
+              probe.error || 'Не удалось установить клиентское соединение.',
+          },
+    ];
+    const hasError = nextChecks.some((c) => c.severity === 'error');
+    const hasWarn = nextChecks.some((c) => c.severity === 'warning');
+    profile.lastCheckResult = {
+      compatible: !hasError,
+      status: hasError ? 'failed' : hasWarn ? 'warning' : 'passed',
+      checks: nextChecks,
+    };
+    profile.lastCheckStatus = profile.lastCheckResult.status;
+    profile.lastCheckedAt = checkedAt;
+    await this.profileRepo.save(profile);
+
+    return {
+      id: profile.id,
+      source: exported.source,
+      probe,
+      checkedAt: checkedAt.toISOString(),
+    };
+  }
+
+  async rollback(id: string): Promise<ConnectionProfile> {
+    const profile = await this.findOne(id);
+    const snapshot = profile.previousSnapshot;
+    if (!snapshot) {
+      throw new BadRequestException(
+        'У профиля нет предыдущей ревизии (previousSnapshot) для отката',
+      );
+    }
+
+    const currentSnapshot = {
+      revision: profile.activeRevision,
+      savedAt: new Date().toISOString(),
+      name: profile.name,
+      kind: profile.kind,
+      nodeId: profile.nodeId,
+      port: profile.port,
+      sni: profile.sni,
+      rotationPolicy: profile.rotationPolicy,
+      spec: profile.spec,
+    };
+
+    profile.name = snapshot.name;
+    if (snapshot.nodeId !== undefined) {
+      profile.nodeId = snapshot.nodeId ?? null;
+    }
+    profile.port = snapshot.port ?? null;
+    profile.sni = snapshot.sni ?? null;
+    profile.rotationPolicy = snapshot.rotationPolicy;
+    profile.spec = normalizeManagedProfileSettings(profile.kind, snapshot.spec);
+    profile.previousSnapshot = currentSnapshot;
+    profile.activeRevision += 1;
+
+    const node = profile.nodeId
+      ? await this.loadNodeMeta(profile.nodeId)
+      : null;
+    const compatibility = evaluateProfileCompatibility({
+      kind: profile.kind,
+      port: profile.port ?? 'random',
+      sni: profile.sni,
+      settings: profile.spec,
+      node: this.toNodeCompatInput(node),
+    });
+    profile.lastCheckStatus = compatibility.status;
+    profile.lastCheckResult = compatibility;
+    profile.lastCheckedAt = new Date();
+
+    return this.profileRepo.save(profile);
+  }
+
   private async queryLiveNodeState(node: Node): Promise<{
     occupiedPorts?: number[];
-    nodeResources?: { xrayState?: string };
+    nodeResources?: {
+      cpuPercent?: number;
+      memPercent?: number;
+      diskPercent?: number;
+      xrayState?: string;
+    };
   }> {
     try {
       const panelInboundsPromise: Promise<Array<{ port?: number }>> =
@@ -514,11 +644,23 @@ export class ConnectionProfilesService {
         this.xuiService.checkNodeConnection(node),
         panelInboundsPromise,
       ]);
-      let nodeResources: { xrayState?: string } | undefined;
+      let nodeResources:
+        | {
+            cpuPercent?: number;
+            memPercent?: number;
+            diskPercent?: number;
+            xrayState?: string;
+          }
+        | undefined;
       if (status.success) {
         if (status.version) node.version = status.version;
         if (status.xrayVersion) node.xrayVersion = status.xrayVersion;
-        nodeResources = { xrayState: status.xrayState };
+        nodeResources = {
+          cpuPercent: status.cpuPercent,
+          memPercent: status.memPercent,
+          diskPercent: status.diskPercent,
+          xrayState: status.xrayState,
+        };
       }
       const occupiedPorts = panelInbounds
         .map((item) => item.port)
