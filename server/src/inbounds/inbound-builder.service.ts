@@ -16,6 +16,8 @@ import { resolveSniProfile } from './sni-profiles';
 import { buildProxyLink, buildWireguardLink } from './connection-profiles';
 import { panelInboundProtocol } from '../subscriptions/inbound-config.constants';
 import {
+  buildSelfSniExportBundle,
+  buildSelfSniServerInbound,
   buildXhttpStableExportBundle,
   buildXhttpStableServerInbound,
 } from '../profiles/profile-config.builder';
@@ -519,6 +521,57 @@ export class InboundBuilderService {
           mode:
             (stream.xhttpSettings?.mode as ManagedProfileSettings['mode']) ||
             profileSettings?.mode,
+          fingerprint:
+            (reality.settings
+              .fingerprint as ManagedProfileSettings['fingerprint']) ||
+            profileSettings?.fingerprint,
+          spiderX: reality.settings.spiderX || profileSettings?.spiderX,
+        },
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  buildSelfSniInbound(params: {
+    port: number;
+    uuid: string;
+    email?: string;
+    remark?: string;
+    domain: string;
+    privateKey: string;
+    publicKey: string;
+    settings?: ManagedProfileSettings | null;
+  }) {
+    return buildSelfSniServerInbound(params);
+  }
+
+  buildSelfSniClientBundle(
+    inbound: XuiInboundRaw,
+    address: string,
+    flagEmoji: string,
+    profileSettings?: ManagedProfileSettings | null,
+  ): ProfileExportBundle | null {
+    try {
+      const stream = JSON.parse(inbound.streamSettings) as XuiStreamSettings;
+      const settings = JSON.parse(inbound.settings) as XuiInboundSettings;
+      const client = settings.clients?.[0];
+      const reality = stream.realitySettings;
+      if (!client?.id || !reality?.settings?.publicKey) return null;
+      const domain = reality.serverNames?.[0] || profileSettings?.domain || '';
+      if (!domain) return null;
+      return buildSelfSniExportBundle({
+        address,
+        port: inbound.port,
+        uuid: client.id,
+        remark: inbound.remark || 'self-sni',
+        domain,
+        publicKey: reality.settings.publicKey,
+        shortId: reality.shortIds?.[0] || '',
+        flagEmoji,
+        settings: {
+          ...profileSettings,
+          domain,
           fingerprint:
             (reality.settings
               .fingerprint as ManagedProfileSettings['fingerprint']) ||

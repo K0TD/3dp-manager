@@ -6,6 +6,7 @@ import { Inbound } from '../inbounds/entities/inbound.entity';
 import { XuiModule } from '../xui/xui.module';
 import { ConnectionProfilesService } from './connection-profiles.service';
 import { ConnectionProfilesController } from './connection-profiles.controller';
+import { TlsSiteProbeService } from './tls-site-probe.service';
 
 @Module({
   imports: [
@@ -13,7 +14,7 @@ import { ConnectionProfilesController } from './connection-profiles.controller';
     XuiModule,
   ],
   controllers: [ConnectionProfilesController],
-  providers: [ConnectionProfilesService],
-  exports: [ConnectionProfilesService, TypeOrmModule],
+  providers: [ConnectionProfilesService, TlsSiteProbeService],
+  exports: [ConnectionProfilesService, TlsSiteProbeService, TypeOrmModule],
 })
 export class ConnectionProfilesModule {}

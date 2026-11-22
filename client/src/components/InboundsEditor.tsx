@@ -41,10 +41,12 @@ import {
   type ManagedProfileKind,
   type ManagedProfileSettings,
   type ProfileRotationPolicy,
+  type ReverseProxyEngine,
   type Tunnel,
   type XhttpMode,
 } from '../types/inbound';
 import {
+  createDefaultSelfSniSettings,
   createDefaultXhttpStableSettings,
   createInboundTemplate,
   getNodeAddress,
@@ -54,6 +56,7 @@ import {
   hasSni,
   isInboundSupported,
   isValidPort,
+  validateSelfSniSettings,
   validateXhttpStableSettings,
 } from '../utils/inboundUtils';
 import { FlagOptionLabel } from '../utils/flags';
@@ -98,13 +101,21 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
   ) => {
     const updated = inbounds.map((inbound) => {
       if (inbound.id !== id) return inbound;
+      const defaults =
+        inbound.type === 'self-sni'
+          ? createDefaultSelfSniSettings()
+          : createDefaultXhttpStableSettings();
+      const nextSettings: ManagedProfileSettings = {
+        ...defaults,
+        ...inbound.profileSettings,
+        ...patch,
+      };
       return {
         ...inbound,
-        profileSettings: {
-          ...createDefaultXhttpStableSettings(),
-          ...inbound.profileSettings,
-          ...patch,
-        },
+        ...(inbound.type === 'self-sni' && patch.domain !== undefined
+          ? { sni: patch.domain.trim() }
+          : {}),
+        profileSettings: nextSettings,
       };
     });
     onChange(updated);
@@ -183,7 +194,28 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
         next.keyFile = '';
       }
 
-      if (field === 'type' && value !== 'xhttp-stable' && !MANAGED_PROFILE_TYPES.has(value)) {
+      if (field === 'type' && value === 'self-sni') {
+        const nodeAddr = getNodeAddress(next.nodeId, nodes);
+        const defaultDomain =
+          next.profileSettings?.domain?.trim() ||
+          (next.sni && next.sni !== 'random' ? next.sni.trim() : '') ||
+          (/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(nodeAddr) ? nodeAddr : '');
+        next.profileSettings = {
+          ...createDefaultSelfSniSettings(defaultDomain),
+          ...next.profileSettings,
+          domain: defaultDomain,
+        };
+        next.sni = defaultDomain;
+        if (!next.port || next.port === 'random') {
+          next.port = '443';
+        }
+        next.certificateMode = undefined;
+        next.tlsServerName = undefined;
+        next.certificateFile = '';
+        next.keyFile = '';
+      }
+
+      if (field === 'type' && !MANAGED_PROFILE_TYPES.has(value)) {
         next.profileSettings = undefined;
         next.profileId = undefined;
       }
@@ -421,16 +453,14 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                         : option === 'xhttp-stable'
                           ? 'XHTTP Stable (VLESS + XHTTP + REALITY)'
                           : option === 'self-sni'
-                            ? 'Self-SNI (Этап 2)'
+                            ? 'Self-SNI (VLESS + RAW + REALITY + Vision)'
                             : option === 'https-fallback'
                               ? 'HTTPS Fallback (Этап 3)'
                               : option;
                   return (
                     <MenuItem key={option} value={option} disabled={!supported}>
                       {label}
-                      {supported ||
-                      option === 'self-sni' ||
-                      option === 'https-fallback'
+                      {supported || option === 'https-fallback'
                         ? ''
                         : ' · несовместимо'}
                     </MenuItem>
@@ -1000,6 +1030,222 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                                   ...xmux,
                                   hMaxReusableSecs: e.target.value,
                                 },
+                              })
+                            }
+                            sx={{ width: '100%', minWidth: 0 }}
+                          />
+                        </>
+                      )}
+                    </Box>
+                  );
+                })()}
+
+                {inbound.type === 'self-sni' && (() => {
+                  const profileSettings = {
+                    ...createDefaultSelfSniSettings(),
+                    ...inbound.profileSettings,
+                  };
+                  const webServer = profileSettings.webServer ?? 'nginx';
+                  const selfSniValidationError = validateSelfSniSettings(
+                    profileSettings,
+                    inbound.port,
+                  );
+                  return (
+                    <Box
+                      sx={{
+                        gridColumn: '1 / -1',
+                        display: 'grid',
+                        gap: 2,
+                        pt: 2,
+                        borderTop: 1,
+                        borderColor: 'divider',
+                        gridTemplateColumns: {
+                          xs: 'minmax(0, 1fr)',
+                          sm: 'repeat(2, minmax(0, 1fr))',
+                          lg: 'repeat(4, minmax(0, 1fr))',
+                        },
+                      }}
+                    >
+                      <Stack
+                        direction="row"
+                        alignItems="center"
+                        justifyContent="space-between"
+                        flexWrap="wrap"
+                        gap={1}
+                        sx={{ gridColumn: '1 / -1' }}
+                      >
+                        <Typography variant="caption" color="text.secondary">
+                          Self-SNI · VLESS + RAW + REALITY + Vision на собственном домене и локальном HTTPS-сайте
+                        </Typography>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          startIcon={<OpenInNew />}
+                          onClick={() => setPreviewTarget(inbound)}
+                        >
+                          Предпросмотр, Nginx/Caddy и проверка
+                        </Button>
+                      </Stack>
+
+                      {selfSniValidationError && (
+                        <Alert
+                          severity="error"
+                          sx={{ gridColumn: '1 / -1', py: 0.25 }}
+                        >
+                          {selfSniValidationError}
+                        </Alert>
+                      )}
+
+                      <TextField
+                        size="small"
+                        label="Собственный домен (Self-SNI)"
+                        placeholder="site.example.com"
+                        value={profileSettings.domain || ''}
+                        onChange={(e) =>
+                          handleProfileSettingsChange(inbound.id, {
+                            domain: e.target.value,
+                          })
+                        }
+                        sx={{ width: '100%', minWidth: 0 }}
+                      />
+
+                      <FormControl size="small" sx={{ width: '100%', minWidth: 0 }}>
+                        <InputLabel>Веб-сервер локального сайта</InputLabel>
+                        <Select
+                          value={webServer}
+                          label="Веб-сервер локального сайта"
+                          onChange={(e) =>
+                            handleProfileSettingsChange(inbound.id, {
+                              webServer: e.target.value as ReverseProxyEngine,
+                            })
+                          }
+                        >
+                          <MenuItem value="nginx">Nginx (127.0.0.1)</MenuItem>
+                          <MenuItem value="caddy">Caddy (127.0.0.1)</MenuItem>
+                          <MenuItem value="none">Внешний / ручной target</MenuItem>
+                        </Select>
+                      </FormControl>
+
+                      {webServer !== 'none' ? (
+                        <TextField
+                          size="small"
+                          type="number"
+                          label="Локальный HTTPS-порт"
+                          value={profileSettings.localHttpsPort ?? 8443}
+                          onChange={(e) =>
+                            handleProfileSettingsChange(inbound.id, {
+                              localHttpsPort: Number(e.target.value) || 8443,
+                            })
+                          }
+                          sx={{ width: '100%', minWidth: 0 }}
+                        />
+                      ) : (
+                        <TextField
+                          size="small"
+                          type="number"
+                          label="Целевой HTTPS-порт (destPort)"
+                          value={profileSettings.destPort ?? 443}
+                          onChange={(e) =>
+                            handleProfileSettingsChange(inbound.id, {
+                              destPort: Number(e.target.value) || 443,
+                            })
+                          }
+                          sx={{ width: '100%', minWidth: 0 }}
+                        />
+                      )}
+
+                      <FormControl size="small" sx={{ width: '100%', minWidth: 0 }}>
+                        <InputLabel>Fingerprint</InputLabel>
+                        <Select
+                          value={profileSettings.fingerprint || 'chrome'}
+                          label="Fingerprint"
+                          onChange={(e) =>
+                            handleProfileSettingsChange(inbound.id, {
+                              fingerprint: e.target.value as ClientFingerprint,
+                            })
+                          }
+                        >
+                          {FINGERPRINT_OPTIONS.map((fp) => (
+                            <MenuItem key={fp} value={fp}>
+                              {fp}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+
+                      <FormControl size="small" sx={{ width: '100%', minWidth: 0 }}>
+                        <InputLabel>PROXY protocol (xver)</InputLabel>
+                        <Select
+                          value={profileSettings.xver ?? 0}
+                          label="PROXY protocol (xver)"
+                          onChange={(e) =>
+                            handleProfileSettingsChange(inbound.id, {
+                              xver: Number(e.target.value) as 0 | 1 | 2,
+                            })
+                          }
+                        >
+                          <MenuItem value={0}>0 — выключен (рекомендуется)</MenuItem>
+                          <MenuItem value={1}>1 — PROXY protocol v1</MenuItem>
+                          <MenuItem value={2}>2 — PROXY protocol v2</MenuItem>
+                        </Select>
+                      </FormControl>
+
+                      <FormControl size="small" sx={{ width: '100%', minWidth: 0 }}>
+                        <InputLabel>Политика ротации</InputLabel>
+                        <Select
+                          value={profileSettings.rotationPolicy || 'fixed_domain'}
+                          label="Политика ротации"
+                          onChange={(e) =>
+                            handleProfileSettingsChange(inbound.id, {
+                              rotationPolicy: e.target
+                                .value as ProfileRotationPolicy,
+                            })
+                          }
+                        >
+                          <MenuItem value="fixed_domain">
+                            Фиксированный домен (рекомендуется)
+                          </MenuItem>
+                          <MenuItem value="preserve_all">
+                            Сохранять домен и параметры
+                          </MenuItem>
+                        </Select>
+                      </FormControl>
+
+                      <TextField
+                        size="small"
+                        label="SpiderX"
+                        placeholder="/"
+                        value={profileSettings.spiderX || '/'}
+                        onChange={(e) =>
+                          handleProfileSettingsChange(inbound.id, {
+                            spiderX: e.target.value,
+                          })
+                        }
+                        sx={{ width: '100%', minWidth: 0 }}
+                      />
+
+                      {webServer !== 'none' && (
+                        <>
+                          <TextField
+                            size="small"
+                            label="Путь сертификата (для шаблона, опц.)"
+                            placeholder="/etc/letsencrypt/live/.../fullchain.pem"
+                            value={profileSettings.certificateFile || ''}
+                            onChange={(e) =>
+                              handleProfileSettingsChange(inbound.id, {
+                                certificateFile: e.target.value,
+                              })
+                            }
+                            sx={{ width: '100%', minWidth: 0 }}
+                          />
+                          <TextField
+                            size="small"
+                            label="Путь ключа (для шаблона, опц.)"
+                            placeholder="/etc/letsencrypt/live/.../privkey.pem"
+                            value={profileSettings.keyFile || ''}
+                            onChange={(e) =>
+                              handleProfileSettingsChange(inbound.id, {
+                                keyFile: e.target.value,
                               })
                             }
                             sx={{ width: '100%', minWidth: 0 }}

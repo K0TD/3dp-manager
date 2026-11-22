@@ -68,6 +68,8 @@ describe('RotationService resilient generations', () => {
     buildVlessXhttpGet: jest.fn(),
     buildXhttpStableInbound: jest.fn(),
     buildXhttpStableClientBundle: jest.fn(),
+    buildSelfSniInbound: jest.fn(),
+    buildSelfSniClientBundle: jest.fn(),
     buildVlessRealityGrpc: jest.fn(),
     buildVlessWs: jest.fn(),
     buildVlessTlsTcp: jest.fn(),
@@ -1761,6 +1763,197 @@ describe('RotationService resilient generations', () => {
       expect(result.message).toContain('25.1.30');
       expect(xuiService.addInbound).not.toHaveBeenCalled();
       expect(inboundRepo.manager.transaction).not.toHaveBeenCalled();
+    });
+
+    it('rotates self-sni keeping its own domain, saving Vision clientProfileJson without privateKey', async () => {
+      const configId = '55555555-5555-4555-8555-555555555555';
+      const sub = {
+        id: 'sub-self-sni',
+        name: 'SubSelfSni',
+        isEnabled: true,
+        isAutoRotationEnabled: true,
+        inboundsConfig: [
+          {
+            configId,
+            type: 'self-sni',
+            port: 443,
+            sni: 'portal.example.com',
+            nodeId: node.id,
+            name: 'SelfSNI Portal',
+            profileSettings: {
+              domain: 'portal.example.com',
+              webServer: 'nginx',
+              localHttpsPort: 8443,
+              fingerprint: 'chrome',
+              xver: 0,
+              rotationPolicy: 'fixed_domain',
+            },
+          },
+        ],
+        inbounds: [
+          {
+            id: 900,
+            xuiId: 90,
+            configId,
+            nodeId: node.id,
+            protocol: 'vless',
+            status: InboundStatus.Active,
+          } as Inbound,
+        ],
+      } as Subscription;
+
+      const builtInbound = {
+        enable: true,
+        port: 443,
+        protocol: 'vless',
+        remark: 'SelfSNI Portal',
+        settings: JSON.stringify({
+          clients: [{ id: 'u-self', flow: 'xtls-rprx-vision' }],
+        }),
+        streamSettings: JSON.stringify({
+          network: 'tcp',
+          security: 'reality',
+          realitySettings: {
+            target: '127.0.0.1:8443',
+            serverNames: ['portal.example.com'],
+            shortIds: ['11223344'],
+            settings: { publicKey: 'SELF_PUB_KEY', fingerprint: 'chrome' },
+          },
+        }),
+      };
+
+      xuiService.assertXrayHealthy.mockResolvedValue(undefined);
+      xuiService.getNewX25519Cert.mockResolvedValue({
+        privateKey: 'SELF_SECRET_PRIV',
+        publicKey: 'SELF_PUB_KEY',
+      });
+      inboundBuilder.buildSelfSniInbound.mockReturnValue(builtInbound);
+      xuiService.addInbound.mockResolvedValue({
+        id: 91,
+        inbound: { ...builtInbound, id: 91 },
+      });
+      inboundBuilder.buildSelfSniClientBundle.mockReturnValue({
+        kind: 'self-sni',
+        vlessLink:
+          'vless://u-self@eu.example.com:443?type=tcp&security=reality&flow=xtls-rprx-vision&sni=portal.example.com#SelfSNI',
+        clientConfig: {
+          kind: 'self-sni',
+          protocol: 'vless',
+          address: 'eu.example.com',
+          port: 443,
+          uuid: 'u-self',
+          remark: 'SelfSNI Portal',
+          flow: 'xtls-rprx-vision',
+          network: 'tcp',
+          security: 'reality',
+          sni: 'portal.example.com',
+          fingerprint: 'chrome',
+          publicKey: 'SELF_PUB_KEY',
+          shortId: '11223344',
+        },
+        xrayClientJson: {
+          log: { loglevel: 'warning' },
+          inbounds: [],
+          outbounds: [],
+          routing: {},
+        },
+      });
+
+      const result = await (
+        service as unknown as {
+          rotateNodeGroup: (
+            s: Subscription,
+            k: string,
+            g: {
+              node?: Node;
+              configs: Array<{ config: unknown; position: number }>;
+            },
+            d: Domain[],
+          ) => Promise<{
+            status: string;
+            created: number;
+            pendingCleanup: number;
+          }>;
+        }
+      ).rotateNodeGroup(
+        sub,
+        node.id,
+        { node, configs: [{ config: sub.inboundsConfig[0], position: 0 }] },
+        [{ id: 1, name: 'random-foreign.com', isEnabled: true } as Domain],
+      );
+
+      expect(result).toMatchObject({
+        status: 'succeeded',
+        created: 1,
+        pendingCleanup: 1,
+      });
+      expect(inboundBuilder.buildSelfSniInbound).toHaveBeenCalledWith(
+        expect.objectContaining({
+          domain: 'portal.example.com',
+        }),
+      );
+      const lastSaved = inboundRepo.save.mock.calls.at(-1)?.[0] as {
+        profileKind?: string;
+        clientProfileJson?: string;
+      };
+      expect(lastSaved.profileKind).toBe('self-sni');
+      expect(lastSaved.clientProfileJson).toContain('xtls-rprx-vision');
+      expect(lastSaved.clientProfileJson).not.toContain('SELF_SECRET_PRIV');
+    });
+
+    it('blocks self-sni rotation when own domain is missing and preserves working generation', async () => {
+      const sub = {
+        id: 'sub-self-sni-bad',
+        name: 'SubSelfSniBad',
+        isEnabled: true,
+        inboundsConfig: [
+          {
+            configId: '66666666-6666-4666-8666-666666666666',
+            type: 'self-sni',
+            port: 443,
+            sni: 'random',
+            nodeId: node.id,
+            profileSettings: { webServer: 'nginx', localHttpsPort: 8443 },
+          },
+        ],
+        inbounds: [
+          {
+            id: 950,
+            nodeId: node.id,
+            protocol: 'vless',
+            status: InboundStatus.Active,
+          } as Inbound,
+        ],
+      } as Subscription;
+
+      const result = await (
+        service as unknown as {
+          rotateNodeGroup: (
+            s: Subscription,
+            k: string,
+            g: {
+              node?: Node;
+              configs: Array<{ config: unknown; position: number }>;
+            },
+            d: Domain[],
+          ) => Promise<{ status: string; created: number; message?: string }>;
+        }
+      ).rotateNodeGroup(
+        sub,
+        node.id,
+        { node, configs: [{ config: sub.inboundsConfig[0], position: 0 }] },
+        [
+          {
+            id: 1,
+            name: 'should-never-be-picked.com',
+            isEnabled: true,
+          } as Domain,
+        ],
+      );
+
+      expect(result.status).toBe('preserved');
+      expect(result.created).toBe(0);
+      expect(xuiService.addInbound).not.toHaveBeenCalled();
     });
   });
 });

@@ -318,4 +318,63 @@ describe('InboundsEditor', () => {
       }),
     ]);
   });
+
+  it('renders Self-SNI settings, validates Xray vs local HTTPS port conflict, and syncs own domain', () => {
+    const { handleChange } = renderEditor({
+      nodes: [
+        {
+          ...mockNodes[0],
+          capabilities: {
+            ...mockNodes[0].capabilities!,
+            supportedInboundTypes: ['vless-tcp-reality', 'self-sni'],
+          },
+        },
+      ],
+      inbounds: [
+        {
+          id: 'inb-self-sni',
+          configId: 'cfg-self-sni',
+          type: 'self-sni',
+          port: '8443',
+          sni: 'portal.example.com',
+          nodeId: 'node-1',
+          flag: '🇩🇪',
+          name: 'Portal SelfSNI',
+          profileSettings: {
+            domain: 'portal.example.com',
+            webServer: 'nginx',
+            localHttpsPort: 8443,
+            fingerprint: 'chrome',
+            xver: 0,
+            rotationPolicy: 'fixed_domain',
+          },
+        },
+      ],
+    });
+
+    expect(
+      screen.getByText(/Self-SNI · VLESS \+ RAW \+ REALITY \+ Vision/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Порт Xray \(8443\) не должен совпадать/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', {
+        name: /Предпросмотр, Nginx\/Caddy и проверка/,
+      }),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Собственный домен (Self-SNI)'), {
+      target: { value: 'edge.example.org' },
+    });
+    expect(handleChange).toHaveBeenCalledWith([
+      expect.objectContaining({
+        id: 'inb-self-sni',
+        sni: 'edge.example.org',
+        profileSettings: expect.objectContaining({
+          domain: 'edge.example.org',
+        }),
+      }),
+    ]);
+  });
 });

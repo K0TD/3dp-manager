@@ -531,7 +531,7 @@ export class SubscriptionsService {
     if (!isManagedProfileKind(config.type)) return;
     if (!ACTIVE_MANAGED_PROFILE_TYPES.has(config.type)) {
       throw new BadRequestException(
-        `Профиль ${config.type} запланирован на следующие этапы внедрения; в Этапе 1 доступен xhttp-stable`,
+        `Профиль ${config.type} запланирован на следующий этап внедрения; сейчас доступны: ${[...ACTIVE_MANAGED_PROFILE_TYPES].join(', ')}`,
       );
     }
     const errors = validateManagedProfileSettings(

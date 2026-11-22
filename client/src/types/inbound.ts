@@ -12,6 +12,7 @@ export type ClientFingerprint =
   | 'random'
   | 'randomized';
 export type ProfileRotationPolicy = 'fixed_domain' | 'preserve_all' | 'standard';
+export type ReverseProxyEngine = 'none' | 'nginx' | 'caddy';
 
 export interface XhttpXmuxSettings {
   enabled?: boolean;
@@ -33,6 +34,57 @@ export interface ManagedProfileSettings {
   noGRPCHeader?: boolean;
   xmux?: XhttpXmuxSettings;
   rotationPolicy?: ProfileRotationPolicy;
+  destPort?: number;
+  localHttpsPort?: number;
+  webServer?: ReverseProxyEngine;
+  reverseProxy?: ReverseProxyEngine;
+  publicPort?: number;
+  xver?: 0 | 1 | 2;
+  certificateFile?: string;
+  keyFile?: string;
+}
+
+export interface WebServerConfigBundle {
+  engine: 'nginx' | 'caddy';
+  purpose: 'self-sni' | 'https-fallback';
+  domain: string;
+  filename: string;
+  config: string;
+  staticSitePath?: string;
+  staticSiteHtml?: string;
+  backupCommand: string;
+  validateCommand: string;
+  reloadCommand: string;
+  rollbackCommand: string;
+  notes: string[];
+}
+
+export interface TlsCertificateProbeInfo {
+  subjectCN?: string;
+  subjectAltName?: string;
+  issuer?: string;
+  validFrom?: string;
+  validTo?: string;
+  daysRemaining?: number;
+  authorized: boolean;
+  authorizationError?: string;
+  hostnameMatches?: boolean;
+}
+
+export interface TlsSiteProbeResult {
+  domain: string;
+  port: number;
+  reachable: boolean;
+  dnsResolvedIps: string[];
+  dnsError?: string;
+  dnsMatchesNodeIp?: boolean;
+  tlsProtocol?: string;
+  alpnProtocol?: string;
+  certificate?: TlsCertificateProbeInfo;
+  httpStatusCode?: number;
+  httpServerHeader?: string;
+  error?: string;
+  durationMs: number;
 }
 
 export interface ProfileCompatibilityItem {
@@ -58,6 +110,8 @@ export interface ProfilePreviewResponse {
     clientConfig: Record<string, unknown>;
     xrayClientJson: Record<string, unknown>;
   };
+  webServerConfig?: WebServerConfigBundle;
+  tlsProbe?: TlsSiteProbeResult;
 }
 
 export interface InboundConfigUI {
@@ -138,7 +192,10 @@ export const MANAGED_PROFILE_TYPES = new Set<string>([
   'https-fallback',
 ]);
 
-export const ACTIVE_MANAGED_PROFILE_TYPES = new Set<string>(['xhttp-stable']);
+export const ACTIVE_MANAGED_PROFILE_TYPES = new Set<string>([
+  'xhttp-stable',
+  'self-sni',
+]);
 
 export const ROUTING_INBOUND_TYPES = new Set<string>([
   'happ-routing',

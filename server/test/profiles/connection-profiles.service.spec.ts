@@ -5,6 +5,7 @@ import { ConnectionProfile } from 'src/profiles/entities/connection-profile.enti
 import { Node } from 'src/nodes/entities/node.entity';
 import { Inbound } from 'src/inbounds/entities/inbound.entity';
 import { XuiService } from 'src/xui/xui.service';
+import { TlsSiteProbeService } from 'src/profiles/tls-site-probe.service';
 import { buildXhttpStableClientProfile } from 'src/profiles/profile-config.builder';
 
 describe('ConnectionProfilesService', () => {
@@ -42,11 +43,16 @@ describe('ConnectionProfilesService', () => {
     listRoutingInbounds: jest.fn(),
   };
 
+  const tlsSiteProbe = {
+    probeDomainAndTls: jest.fn(),
+  };
+
   const service = new ConnectionProfilesService(
     profileRepo as unknown as Repository<ConnectionProfile>,
     nodeRepo as unknown as Repository<Node>,
     inboundRepo as unknown as Repository<Inbound>,
     xuiService as unknown as XuiService,
+    tlsSiteProbe as unknown as TlsSiteProbeService,
   );
 
   beforeEach(() => {
@@ -183,5 +189,87 @@ describe('ConnectionProfilesService', () => {
         },
       }),
     ).rejects.toThrow(BadRequestException);
+  });
+
+  it('creates, previews with Nginx config, runs live TLS/cert check, and exports self-sni profile', async () => {
+    const created = await service.create({
+      name: 'Self SNI Portal',
+      kind: 'self-sni',
+      nodeId: 'node-1',
+      port: 443,
+      sni: 'portal.example.com',
+      spec: {
+        domain: 'portal.example.com',
+        webServer: 'nginx',
+        localHttpsPort: 8443,
+        fingerprint: 'chrome',
+        xver: 0,
+      },
+    });
+
+    expect(created.activeRevision).toBe(1);
+    expect(created.lastCheckStatus).toBe('passed');
+
+    tlsSiteProbe.probeDomainAndTls.mockResolvedValue({
+      domain: 'portal.example.com',
+      port: 443,
+      reachable: true,
+      dnsResolvedIps: ['203.0.113.55'],
+      dnsMatchesNodeIp: true,
+      tlsProtocol: 'TLSv1.3',
+      alpnProtocol: 'h2',
+      httpStatusCode: 200,
+      certificate: {
+        subjectCN: 'portal.example.com',
+        issuer: "Let's Encrypt",
+        daysRemaining: 75,
+        authorized: true,
+        hostnameMatches: true,
+      },
+      durationMs: 38,
+    });
+
+    nodeRepo.createQueryBuilder.mockReturnValue({
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockResolvedValue({
+        id: 'node-1',
+        name: 'EU-1',
+        ip: '203.0.113.55',
+        version: '3.8.5',
+        xrayVersion: '26.7.11',
+      }),
+    });
+    xuiService.checkNodeConnection.mockResolvedValue({
+      success: true,
+      version: '3.8.5',
+      xrayVersion: '26.7.11',
+      xrayState: 'running',
+    });
+    xuiService.listRoutingInbounds.mockResolvedValue([{ id: 9, port: 8080 }]);
+
+    const preview = await service.preview({
+      kind: 'self-sni',
+      name: 'Self SNI Portal',
+      nodeId: 'node-1',
+      port: 443,
+      settings: created.spec,
+      liveCheck: true,
+    });
+
+    expect(preview.compatibility.compatible).toBe(true);
+    expect(preview.webServerConfig?.engine).toBe('nginx');
+    expect(preview.webServerConfig?.config).toContain(
+      'listen 127.0.0.1:8443 ssl http2;',
+    );
+    expect(preview.clientPreview.vlessLink).toContain('flow=xtls-rprx-vision');
+    expect(JSON.stringify(preview.serverPreview)).toContain(
+      '<server-only:redacted>',
+    );
+    expect(preview.tlsProbe?.tlsProtocol).toBe('TLSv1.3');
+
+    const checked = await service.checkProfile(created.id);
+    expect(checked.status).toBe('passed');
+    expect(checked.tlsProbe?.certificate?.authorized).toBe(true);
   });
 });

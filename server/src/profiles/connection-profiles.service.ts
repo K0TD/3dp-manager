@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -17,21 +18,29 @@ import {
 } from './dto/connection-profile.dto';
 import {
   evaluateProfileCompatibility,
+  isValidHostname,
   normalizeManagedProfileSettings,
   PROFILE_CATALOG,
   validateManagedProfileSettings,
 } from './profile-compatibility';
 import {
+  buildSelfSniExportBundle,
+  buildSelfSniServerInbound,
   buildXhttpStableExportBundle,
   buildXhttpStableServerInbound,
   buildXrayClientJsonFromProfile,
   buildVlessUriFromClientProfile,
   sanitizeServerInboundPreview,
 } from './profile-config.builder';
+import { buildSelfSniWebServerBundle } from './web-server-config.builder';
+import { TlsSiteProbeService } from './tls-site-probe.service';
 import type {
+  ManagedProfileKind,
   ProfileCompatibilityReport,
   ProfileExportBundle,
   SeparatedClientProfile,
+  TlsSiteProbeResult,
+  WebServerConfigBundle,
 } from './connection-profile.types';
 
 const PREVIEW_UUID = '00000000-0000-4000-8000-000000000000';
@@ -40,6 +49,8 @@ const PREVIEW_SHORT_ID = 'a1b2c3d4';
 
 @Injectable()
 export class ConnectionProfilesService {
+  private readonly fallbackProbe = new TlsSiteProbeService();
+
   constructor(
     @InjectRepository(ConnectionProfile)
     private readonly profileRepo: Repository<ConnectionProfile>,
@@ -48,7 +59,13 @@ export class ConnectionProfilesService {
     @InjectRepository(Inbound)
     private readonly inboundRepo: Repository<Inbound>,
     private readonly xuiService: XuiService,
+    @Optional()
+    private readonly tlsSiteProbe?: TlsSiteProbeService,
   ) {}
+
+  private get probe(): TlsSiteProbeService {
+    return this.tlsSiteProbe ?? this.fallbackProbe;
+  }
 
   getCatalog() {
     return PROFILE_CATALOG;
@@ -190,27 +207,78 @@ export class ConnectionProfilesService {
     return { success: true, id };
   }
 
-  async preview(dto: PreviewConnectionProfileDto) {
-    const node = dto.nodeId ? await this.loadNodeMeta(dto.nodeId) : null;
+  async preview(dto: PreviewConnectionProfileDto): Promise<{
+    kind: ManagedProfileKind;
+    compatibility: ProfileCompatibilityReport;
+    serverPreview: Record<string, unknown>;
+    clientPreview: ProfileExportBundle;
+    webServerConfig?: WebServerConfigBundle;
+    tlsProbe?: TlsSiteProbeResult;
+  }> {
+    const node = dto.nodeId
+      ? dto.liveCheck
+        ? await this.loadNodeWithSecrets(dto.nodeId)
+        : await this.loadNodeMeta(dto.nodeId)
+      : null;
     const normalized = normalizeManagedProfileSettings(dto.kind, dto.settings);
-    const compatibility = evaluateProfileCompatibility({
-      kind: dto.kind,
-      port: dto.port ?? 'random',
-      sni: dto.sni,
-      settings: normalized,
-      node: this.toNodeCompatInput(node),
-    });
 
     const address = this.resolveNodeAddress(node) || 'node.example.com';
     const numericPort =
       dto.port && dto.port !== 'random' && /^\d+$/.test(String(dto.port))
         ? Number(dto.port)
         : 443;
+    const explicitDomain =
+      normalized.domain?.trim() ||
+      (dto.sni && dto.sni !== 'random' ? dto.sni.trim() : '');
     const effectiveSni =
-      dto.sni && dto.sni !== 'random'
-        ? dto.sni.trim()
-        : normalized.domain || 'www.microsoft.com';
+      explicitDomain ||
+      (dto.kind === 'xhttp-stable' ? 'www.microsoft.com' : 'example.com');
     const remark = dto.name?.trim() || dto.kind;
+
+    let occupiedPorts: number[] | undefined;
+    let nodeResources: { xrayState?: string } | undefined;
+    let dnsResolvedIps: string[] | undefined;
+    let dnsError: string | undefined;
+    let tlsProbe: TlsSiteProbeResult | undefined;
+
+    if (dto.liveCheck) {
+      if (node) {
+        const liveNode = await this.queryLiveNodeState(node);
+        occupiedPorts = liveNode.occupiedPorts;
+        nodeResources = liveNode.nodeResources;
+      }
+      if (explicitDomain && isValidHostname(explicitDomain)) {
+        const probePort =
+          dto.kind === 'self-sni'
+            ? normalized.webServer === 'none'
+              ? (normalized.destPort ?? numericPort)
+              : numericPort
+            : dto.kind === 'https-fallback'
+              ? (normalized.publicPort ?? numericPort)
+              : 443;
+        tlsProbe = await this.probe.probeDomainAndTls({
+          domain: explicitDomain,
+          port: probePort,
+          expectedHostIps: node?.ip ? [node.ip] : undefined,
+          checkHttpSite: dto.kind !== 'xhttp-stable',
+        });
+        dnsResolvedIps = tlsProbe.dnsResolvedIps;
+        dnsError = tlsProbe.dnsError;
+      }
+    }
+
+    const compatibility = evaluateProfileCompatibility({
+      kind: dto.kind,
+      port: dto.port ?? 'random',
+      sni: dto.sni,
+      settings: normalized,
+      node: this.toNodeCompatInput(node),
+      occupiedPorts,
+      dnsResolvedIps,
+      dnsError,
+      tlsProbe,
+      nodeResources,
+    });
 
     if (dto.kind === 'xhttp-stable') {
       const serverInbound = buildXhttpStableServerInbound({
@@ -239,46 +307,77 @@ export class ConnectionProfilesService {
         compatibility,
         serverPreview: sanitizeServerInboundPreview(serverInbound),
         clientPreview: exportBundle,
+        ...(tlsProbe ? { tlsProbe } : {}),
       };
     }
 
-    // Stages 2 & 3 preview skeleton (Self-SNI & HTTPS Fallback)
-    const clientConfig: SeparatedClientProfile =
-      dto.kind === 'self-sni'
-        ? {
-            kind: 'self-sni',
-            protocol: 'vless',
-            address,
-            port: numericPort,
-            uuid: PREVIEW_UUID,
-            remark,
-            flow: 'xtls-rprx-vision',
-            network: 'tcp',
-            security: 'reality',
-            sni: effectiveSni,
-            fingerprint: normalized.fingerprint || 'chrome',
-            publicKey: PREVIEW_PUBLIC_KEY,
-            shortId: PREVIEW_SHORT_ID,
-            spiderX: normalized.spiderX || '/',
-          }
-        : {
-            kind: 'https-fallback',
-            protocol: 'vless',
-            address: normalized.domain || address,
-            port: normalized.publicPort || numericPort,
-            uuid: PREVIEW_UUID,
-            remark,
-            network: 'xhttp',
-            security: 'tls',
-            sni: effectiveSni,
-            fingerprint: normalized.fingerprint || 'chrome',
-            alpn: ['h2', 'http/1.1'],
-            xhttp: {
-              path: normalized.path || '/api/v2/stream',
-              host: normalized.host || effectiveSni,
-              mode: normalized.mode || 'auto',
-            },
-          };
+    if (dto.kind === 'self-sni') {
+      const serverInbound = buildSelfSniServerInbound({
+        port: numericPort,
+        uuid: PREVIEW_UUID,
+        remark,
+        domain: effectiveSni,
+        privateKey: '<server-only:redacted>',
+        publicKey: PREVIEW_PUBLIC_KEY,
+        shortIds: [PREVIEW_SHORT_ID],
+        settings: normalized,
+      });
+      const exportBundle = buildSelfSniExportBundle({
+        address: explicitDomain || address,
+        port: numericPort,
+        uuid: PREVIEW_UUID,
+        remark,
+        domain: effectiveSni,
+        publicKey: PREVIEW_PUBLIC_KEY,
+        shortId: PREVIEW_SHORT_ID,
+        settings: normalized,
+      });
+      let webServerConfig: WebServerConfigBundle | undefined;
+      if (
+        (normalized.webServer === 'nginx' ||
+          normalized.webServer === 'caddy') &&
+        isValidHostname(effectiveSni)
+      ) {
+        webServerConfig = buildSelfSniWebServerBundle({
+          engine: normalized.webServer,
+          domain: effectiveSni,
+          localHttpsPort: normalized.localHttpsPort ?? 8443,
+          xver: normalized.xver ?? 0,
+          certificateFile:
+            normalized.certificateFile || node?.webCertificateFile,
+          keyFile: normalized.keyFile || node?.webKeyFile,
+        });
+      }
+
+      return {
+        kind: dto.kind,
+        compatibility,
+        serverPreview: sanitizeServerInboundPreview(serverInbound),
+        clientPreview: exportBundle,
+        ...(webServerConfig ? { webServerConfig } : {}),
+        ...(tlsProbe ? { tlsProbe } : {}),
+      };
+    }
+
+    // Stage 3 preview skeleton (HTTPS Fallback)
+    const clientConfig: SeparatedClientProfile = {
+      kind: 'https-fallback',
+      protocol: 'vless',
+      address: normalized.domain || address,
+      port: normalized.publicPort || numericPort,
+      uuid: PREVIEW_UUID,
+      remark,
+      network: 'xhttp',
+      security: 'tls',
+      sni: effectiveSni,
+      fingerprint: normalized.fingerprint || 'chrome',
+      alpn: ['h2', 'http/1.1'],
+      xhttp: {
+        path: normalized.path || '/api/v2/stream',
+        host: normalized.host || effectiveSni,
+        mode: normalized.mode || 'auto',
+      },
+    };
 
     const clientPreview: ProfileExportBundle = {
       kind: dto.kind,
@@ -296,11 +395,10 @@ export class ConnectionProfilesService {
         remark,
         profileKind: dto.kind,
         stageNote:
-          dto.kind === 'self-sni'
-            ? 'Полная генерация серверного Self-SNI и конфигов Nginx/Caddy будет активирована на Этапе 2'
-            : 'Полная генерация серверного HTTPS Fallback и reverse proxy будет активирована на Этапе 3',
+          'Полная генерация серверного HTTPS Fallback и reverse proxy будет активирована на Этапе 3',
       },
       clientPreview,
+      ...(tlsProbe ? { tlsProbe } : {}),
     };
   }
 
@@ -308,6 +406,7 @@ export class ConnectionProfilesService {
     id: string;
     status: ProfileCompatibilityReport['status'];
     report: ProfileCompatibilityReport;
+    tlsProbe?: TlsSiteProbeResult;
     checkedAt: string;
   }> {
     const profile = await this.findOne(id);
@@ -316,50 +415,44 @@ export class ConnectionProfilesService {
       : null;
 
     let occupiedPorts: number[] | undefined;
-    let nodeResources:
-      | {
-          xrayState?: string;
-        }
-      | undefined;
+    let nodeResources: { xrayState?: string } | undefined;
     if (node) {
-      try {
-        const panelInboundsPromise: Promise<Array<{ port?: number }>> =
-          this.xuiService
-            .listRoutingInbounds(node)
-            .then((rows: unknown) =>
-              Array.isArray(rows) ? (rows as Array<{ port?: number }>) : [],
-            )
-            .catch(() => []);
-        const [status, panelInbounds] = await Promise.all([
-          this.xuiService.checkNodeConnection(node),
-          panelInboundsPromise,
-        ]);
-        if (status.success) {
-          if (status.version) node.version = status.version;
-          if (status.xrayVersion) node.xrayVersion = status.xrayVersion;
-          nodeResources = { xrayState: status.xrayState };
-        }
-        occupiedPorts = panelInbounds
-          .map((item) => item.port)
-          .filter((port): port is number => Number.isInteger(port));
-      } catch {
-        // Keep cached node metadata if live query fails
-      }
+      const liveNode = await this.queryLiveNodeState(node);
+      occupiedPorts = liveNode.occupiedPorts;
+      nodeResources = liveNode.nodeResources;
     }
 
     let dnsResolvedIps: string[] | undefined;
     let dnsError: string | undefined;
+    let tlsProbe: TlsSiteProbeResult | undefined;
     const domainToResolve =
       profile.spec?.domain?.trim() ||
       (profile.sni && profile.sni !== 'random' ? profile.sni.trim() : '');
-    if (domainToResolve) {
-      try {
-        const resolved = await dns.lookup(domainToResolve, { all: true });
-        dnsResolvedIps = resolved.map((entry) => entry.address);
-      } catch (err) {
-        dnsError = `Не удалось разрешить домен «${domainToResolve}»: ${
-          err instanceof Error ? err.message : 'DNS lookup failed'
-        }`;
+    if (domainToResolve && isValidHostname(domainToResolve)) {
+      if (profile.kind === 'self-sni' || profile.kind === 'https-fallback') {
+        const probePort =
+          profile.kind === 'self-sni'
+            ? profile.spec?.webServer === 'none'
+              ? (profile.spec?.destPort ?? profile.port ?? 443)
+              : (profile.port ?? 443)
+            : (profile.spec?.publicPort ?? profile.port ?? 443);
+        tlsProbe = await this.probe.probeDomainAndTls({
+          domain: domainToResolve,
+          port: probePort,
+          expectedHostIps: node?.ip ? [node.ip] : undefined,
+          checkHttpSite: true,
+        });
+        dnsResolvedIps = tlsProbe.dnsResolvedIps;
+        dnsError = tlsProbe.dnsError;
+      } else {
+        try {
+          const resolved = await dns.lookup(domainToResolve, { all: true });
+          dnsResolvedIps = resolved.map((entry) => entry.address);
+        } catch (err) {
+          dnsError = `Не удалось разрешить домен «${domainToResolve}»: ${
+            err instanceof Error ? err.message : 'DNS lookup failed'
+          }`;
+        }
       }
     }
 
@@ -372,6 +465,7 @@ export class ConnectionProfilesService {
       occupiedPorts,
       dnsResolvedIps,
       dnsError,
+      tlsProbe,
       nodeResources,
     });
 
@@ -385,8 +479,40 @@ export class ConnectionProfilesService {
       id: profile.id,
       status: report.status,
       report,
+      ...(tlsProbe ? { tlsProbe } : {}),
       checkedAt: checkedAt.toISOString(),
     };
+  }
+
+  private async queryLiveNodeState(node: Node): Promise<{
+    occupiedPorts?: number[];
+    nodeResources?: { xrayState?: string };
+  }> {
+    try {
+      const panelInboundsPromise: Promise<Array<{ port?: number }>> =
+        this.xuiService
+          .listRoutingInbounds(node)
+          .then((rows: unknown) =>
+            Array.isArray(rows) ? (rows as Array<{ port?: number }>) : [],
+          )
+          .catch(() => []);
+      const [status, panelInbounds] = await Promise.all([
+        this.xuiService.checkNodeConnection(node),
+        panelInboundsPromise,
+      ]);
+      let nodeResources: { xrayState?: string } | undefined;
+      if (status.success) {
+        if (status.version) node.version = status.version;
+        if (status.xrayVersion) node.xrayVersion = status.xrayVersion;
+        nodeResources = { xrayState: status.xrayState };
+      }
+      const occupiedPorts = panelInbounds
+        .map((item) => item.port)
+        .filter((port): port is number => Number.isInteger(port));
+      return { occupiedPorts, nodeResources };
+    } catch {
+      return {};
+    }
   }
 
   async exportProfile(id: string): Promise<{

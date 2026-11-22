@@ -34,7 +34,10 @@ export const MANAGED_PROFILE_TYPES = new Set<string>([
 ]);
 
 // Managed profiles enabled for subscription deployment in the current stage.
-export const ACTIVE_MANAGED_PROFILE_TYPES = new Set<string>(['xhttp-stable']);
+export const ACTIVE_MANAGED_PROFILE_TYPES = new Set<string>([
+  'xhttp-stable',
+  'self-sni',
+]);
 
 // These clients import credentials once, rather than refreshing a subscription.
 export const PERSISTENT_INBOUND_TYPES = new Set<string>([

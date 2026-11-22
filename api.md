@@ -977,16 +977,18 @@ http://<host>:<port>/bus/<uuid>
 
 ## Управляемые профили подключений (`ConnectionProfile`)
 
-Единая модель профилей (`xhttp-stable`, `self-sni`, `https-fallback`) с разделением серверной конфигурации 3x-ui и клиентских параметров (VLESS URI + Xray JSON). На Этапе 1 для развёртывания активен `xhttp-stable` (`VLESS + XHTTP + REALITY`); схемы `self-sni` и `https-fallback` доступны в каталоге и предпросмотре для этапов 2–3.
+Единая модель профилей (`xhttp-stable`, `self-sni`, `https-fallback`) с разделением серверной конфигурации 3x-ui и клиентских параметров (VLESS URI + Xray JSON). Активны для развёртывания: `xhttp-stable` (`VLESS + XHTTP + REALITY`) и `self-sni` (`VLESS + RAW + REALITY + Vision`); схема `https-fallback` доступна в каталоге и предпросмотре для Этапа 3.
 
 - `GET /api/profiles/catalog` — каталог профилей, минимальных версий Xray и значений по умолчанию
 - `GET /api/profiles` / `GET /api/profiles/:id` — список и карточка профиля (без приватных ключей)
 - `POST /api/profiles` / `PUT /api/profiles/:id` / `DELETE /api/profiles/:id` — CRUD профиля с инкрементом ревизии и сохранением снимка предыдущей конфигурации (`previousSnapshot`)
-- `POST /api/profiles/preview` — предпросмотр серверного inbound (с скрытым `privateKey`), клиентской VLESS-ссылки, полного Xray JSON и отчёта совместимости
-- `POST /api/profiles/:id/check` — проверка совместимости Xray/3x-ui, занятости порта на ноде и DNS-записи домена
+- `POST /api/profiles/preview` — предпросмотр серверного inbound (с скрытым `privateKey`), клиентской VLESS-ссылки, полного Xray JSON, отчёта совместимости и готового конфига веб-сервера (`webServerConfig` для Nginx/Caddy на `self-sni` с командами бэкапа, `nginx -t`/`caddy validate`, reload и rollback). При `"liveCheck": true` дополнительно выполняет проверку DNS, TLS 1.3, ALPN, сертификата, локального HTTPS-сайта и занятых портов 3x-ui (`tlsProbe`)
+- `POST /api/profiles/:id/check` — live-проверка совместимости Xray/3x-ui, занятости порта на ноде, DNS, TLS 1.3, сертификата и доступности локального HTTPS-сайта
 - `GET /api/profiles/:id/export` — экспорт клиентской VLESS-ссылки и полного Xray JSON для активного inbound или предпросмотра
 
-В `inboundsConfig` подписки можно использовать `type: "xhttp-stable"` с опциональным объектом `profileSettings` (`mode: "auto" | "stream-one" | "packet-up"`, `path`, `host`, `fingerprint`, `spiderX`, `rotationPolicy: "fixed_domain" | "preserve_all" | "standard"`, клиентский `xmux`). При `rotationPolicy: "fixed_domain"` ротация сохраняет закреплённый домен/SNI.
+В `inboundsConfig` подписки поддерживаются:
+- `type: "xhttp-stable"` с `profileSettings` (`mode: "auto" | "stream-one" | "packet-up"`, `path`, `host`, `fingerprint`, `spiderX`, `rotationPolicy`, клиентский `xmux`).
+- `type: "self-sni"` с `profileSettings` (`domain` — обязательный собственный домен, `webServer: "nginx" | "caddy" | "none"`, `localHttpsPort`, `destPort`, `xver: 0 | 1 | 2`, `fingerprint`, `spiderX`, `rotationPolicy`, опциональные пути `certificateFile`/`keyFile` для шаблона веб-сервера). Ротация никогда не подменяет собственный домен случайным.
 
 ---
 

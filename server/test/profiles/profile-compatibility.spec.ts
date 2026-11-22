@@ -138,4 +138,104 @@ describe('profile-compatibility', () => {
       exitNodeId: 'eu-node',
     });
   });
+
+  it('validates Self-SNI port collisions, Caddy xver warning, and live TLS 1.3 + certificate probe results', () => {
+    const portCollisionErrors = validateManagedProfileSettings(
+      'self-sni',
+      {
+        domain: 'site.example.com',
+        webServer: 'nginx',
+        localHttpsPort: 443,
+      },
+      { port: 443 },
+    );
+    expect(portCollisionErrors).toEqual(
+      expect.arrayContaining([expect.stringContaining('не может совпадать')]),
+    );
+
+    const healthySelfSni = evaluateProfileCompatibility({
+      kind: 'self-sni',
+      port: 443,
+      settings: {
+        domain: 'site.example.com',
+        webServer: 'nginx',
+        localHttpsPort: 8443,
+        xver: 0,
+      },
+      node: { name: 'EU-Self', xrayVersion: '26.7.11' },
+      occupiedPorts: [8080],
+      tlsProbe: {
+        domain: 'site.example.com',
+        port: 443,
+        reachable: true,
+        dnsResolvedIps: ['203.0.113.20'],
+        dnsMatchesNodeIp: true,
+        tlsProtocol: 'TLSv1.3',
+        alpnProtocol: 'h2',
+        httpStatusCode: 200,
+        httpServerHeader: 'nginx',
+        certificate: {
+          subjectCN: 'site.example.com',
+          issuer: "Let's Encrypt",
+          daysRemaining: 62,
+          authorized: true,
+          hostnameMatches: true,
+        },
+        durationMs: 42,
+      },
+    });
+    expect(healthySelfSni.compatible).toBe(true);
+    expect(healthySelfSni.status).toBe('passed');
+    expect(healthySelfSni.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'TLS_PROTOCOL_OK', severity: 'ok' }),
+        expect.objectContaining({ code: 'TLS_CERT_OK', severity: 'ok' }),
+        expect.objectContaining({ code: 'HTTPS_SITE_OK', severity: 'ok' }),
+      ]),
+    );
+
+    const brokenTlsSelfSni = evaluateProfileCompatibility({
+      kind: 'self-sni',
+      port: 443,
+      settings: {
+        domain: 'site.example.com',
+        webServer: 'caddy',
+        localHttpsPort: 8443,
+        xver: 1,
+      },
+      node: { name: 'EU-Self', xrayVersion: '26.7.11' },
+      tlsProbe: {
+        domain: 'site.example.com',
+        port: 443,
+        reachable: true,
+        dnsResolvedIps: ['203.0.113.20'],
+        tlsProtocol: 'TLSv1.2',
+        alpnProtocol: 'http/1.1',
+        certificate: {
+          subjectCN: 'other.example.com',
+          daysRemaining: -2,
+          authorized: false,
+          hostnameMatches: false,
+        },
+        durationMs: 55,
+      },
+    });
+    expect(brokenTlsSelfSni.compatible).toBe(false);
+    expect(brokenTlsSelfSni.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'SELF_SNI_CADDY_XVER_WARN',
+          severity: 'warning',
+        }),
+        expect.objectContaining({
+          code: 'TLS_PROTOCOL_NOT_13',
+          severity: 'error',
+        }),
+        expect.objectContaining({
+          code: 'TLS_CERT_EXPIRED',
+          severity: 'error',
+        }),
+      ]),
+    );
+  });
 });

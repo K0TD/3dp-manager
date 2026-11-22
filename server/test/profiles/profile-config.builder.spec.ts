@@ -1,4 +1,6 @@
 import {
+  buildSelfSniExportBundle,
+  buildSelfSniServerInbound,
   buildXhttpStableExportBundle,
   buildXhttpStableServerInbound,
   buildXrayClientJsonFromSubscriptionInbounds,
@@ -202,5 +204,92 @@ describe('profile-config.builder (XHTTP Stable)', () => {
       }
     ).vnext[0];
     expect(secondVnext.address).toBe('relay.example.net');
+  });
+
+  it('builds Self-SNI server inbound (VLESS + RAW/TCP + REALITY + Vision) targeting local HTTPS server', () => {
+    const inbound = buildSelfSniServerInbound({
+      port: 443,
+      uuid: baseServerParams.uuid,
+      remark: 'SelfSNI-Main',
+      domain: 'portal.example.com',
+      privateKey: baseServerParams.privateKey,
+      publicKey: baseServerParams.publicKey,
+      shortIds: ['11223344'],
+      settings: {
+        domain: 'portal.example.com',
+        webServer: 'nginx',
+        localHttpsPort: 8443,
+        xver: 1,
+        fingerprint: 'firefox',
+        spiderX: '/health',
+      },
+    });
+
+    const settings = JSON.parse(inbound.settings) as {
+      clients: Array<{ id: string; flow: string }>;
+    };
+    const stream = JSON.parse(inbound.streamSettings) as {
+      network: string;
+      security: string;
+      realitySettings: {
+        target: string;
+        dest: string;
+        xver: number;
+        serverNames: string[];
+        settings: { fingerprint: string; spiderX: string; publicKey: string };
+      };
+    };
+
+    expect(settings.clients[0].flow).toBe('xtls-rprx-vision');
+    expect(stream.network).toBe('tcp');
+    expect(stream.security).toBe('reality');
+    expect(stream.realitySettings.target).toBe('127.0.0.1:8443');
+    expect(stream.realitySettings.dest).toBe('127.0.0.1:8443');
+    expect(stream.realitySettings.xver).toBe(1);
+    expect(stream.realitySettings.serverNames).toEqual(['portal.example.com']);
+    expect(stream.realitySettings.settings.fingerprint).toBe('firefox');
+
+    const preview = sanitizeServerInboundPreview(inbound);
+    expect(JSON.stringify(preview)).not.toContain(baseServerParams.privateKey);
+    expect(JSON.stringify(preview)).toContain('<server-only:redacted>');
+
+    const bundle = buildSelfSniExportBundle({
+      address: 'portal.example.com',
+      port: 443,
+      uuid: baseServerParams.uuid,
+      remark: 'SelfSNI-Main',
+      domain: 'portal.example.com',
+      publicKey: baseServerParams.publicKey,
+      shortId: '11223344',
+      settings: { fingerprint: 'firefox', spiderX: '/health' },
+    });
+    const parsedUrl = new URL(bundle.vlessLink);
+    expect(parsedUrl.searchParams.get('type')).toBe('tcp');
+    expect(parsedUrl.searchParams.get('security')).toBe('reality');
+    expect(parsedUrl.searchParams.get('flow')).toBe('xtls-rprx-vision');
+    expect(parsedUrl.searchParams.get('sni')).toBe('portal.example.com');
+    expect(parsedUrl.searchParams.get('fp')).toBe('firefox');
+    expect(JSON.stringify(bundle.xrayClientJson)).toContain('xtls-rprx-vision');
+    expect(JSON.stringify(bundle.xrayClientJson)).not.toContain(
+      baseServerParams.privateKey,
+    );
+  });
+
+  it('targets external <domain>:<destPort> for Self-SNI when webServer is none', () => {
+    const inbound = buildSelfSniServerInbound({
+      port: 443,
+      uuid: baseServerParams.uuid,
+      domain: 'ext.example.com',
+      privateKey: baseServerParams.privateKey,
+      publicKey: baseServerParams.publicKey,
+      settings: {
+        webServer: 'none',
+        destPort: 9443,
+      },
+    });
+    const stream = JSON.parse(inbound.streamSettings) as {
+      realitySettings: { target: string };
+    };
+    expect(stream.realitySettings.target).toBe('ext.example.com:9443');
   });
 });

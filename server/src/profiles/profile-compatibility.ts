@@ -9,6 +9,7 @@ import {
   type ManagedProfileSettings,
   type ProfileCompatibilityItem,
   type ProfileCompatibilityReport,
+  type TlsSiteProbeResult,
   type XhttpMode,
   type XhttpXmuxSettings,
 } from './connection-profile.types';
@@ -54,7 +55,7 @@ export const PROFILE_CATALOG: readonly ProfileCatalogEntry[] = [
   {
     kind: 'self-sni',
     stage: 2,
-    status: 'planned',
+    status: 'ready',
     title: 'Self-SNI',
     transportSummary: 'VLESS + RAW + REALITY + Vision',
     description:
@@ -105,6 +106,7 @@ export interface ProfileCompatibilityInput {
   occupiedPorts?: number[];
   dnsResolvedIps?: string[];
   dnsError?: string;
+  tlsProbe?: TlsSiteProbeResult;
   nodeResources?: {
     cpuPercent?: number;
     memPercent?: number;
@@ -257,7 +259,9 @@ export function normalizeManagedProfileSettings(
 
   if (kind === 'self-sni') {
     return {
-      ...(input.domain?.trim() ? { domain: input.domain.trim() } : {}),
+      ...(input.domain?.trim()
+        ? { domain: input.domain.trim().toLowerCase() }
+        : {}),
       destPort: input.destPort ?? 443,
       localHttpsPort: input.localHttpsPort ?? 8443,
       webServer:
@@ -265,6 +269,10 @@ export function normalizeManagedProfileSettings(
         (REVERSE_PROXY_ENGINES as readonly string[]).includes(input.webServer)
           ? input.webServer
           : 'nginx',
+      ...(input.certificateFile?.trim()
+        ? { certificateFile: input.certificateFile.trim() }
+        : {}),
+      ...(input.keyFile?.trim() ? { keyFile: input.keyFile.trim() } : {}),
       fingerprint,
       spiderX: input.spiderX?.trim() || '/',
       xver: input.xver ?? 0,
@@ -398,10 +406,14 @@ export function validateManagedProfileSettings(
   }
 
   if (kind === 'self-sni') {
-    const domain =
+    const rawDomain =
       input.domain?.trim() ||
-      (context?.sni !== 'random' ? context?.sni?.trim() : '');
-    if (domain && !isValidHostname(domain)) {
+      (context?.sni && context.sni !== 'random' ? context.sni.trim() : '');
+    if (!rawDomain) {
+      errors.push(
+        'Self-SNI требует указать собственный домен (случайный SNI не допускается)',
+      );
+    } else if (!isValidHostname(rawDomain)) {
       errors.push('Self-SNI требует валидный собственный домен');
     }
     if (
@@ -411,6 +423,51 @@ export function validateManagedProfileSettings(
         input.localHttpsPort > 65535)
     ) {
       errors.push('Self-SNI: локальный HTTPS-порт должен быть от 1 до 65535');
+    }
+    if (
+      input.destPort !== undefined &&
+      (!Number.isInteger(input.destPort) ||
+        input.destPort < 1 ||
+        input.destPort > 65535)
+    ) {
+      errors.push('Self-SNI: целевой HTTPS-порт должен быть от 1 до 65535');
+    }
+    if (input.xver !== undefined && ![0, 1, 2].includes(input.xver)) {
+      errors.push(
+        'Self-SNI: параметр xver (PROXY protocol) должен быть 0, 1 или 2',
+      );
+    }
+    const safePathRe = /^\/[A-Za-z0-9._/@+-]+$/;
+    if (
+      input.certificateFile?.trim() &&
+      (!safePathRe.test(input.certificateFile.trim()) ||
+        input.certificateFile.includes('..'))
+    ) {
+      errors.push(
+        'Self-SNI: путь сертификата должен быть безопасным абсолютным путём',
+      );
+    }
+    if (
+      input.keyFile?.trim() &&
+      (!safePathRe.test(input.keyFile.trim()) || input.keyFile.includes('..'))
+    ) {
+      errors.push(
+        'Self-SNI: путь приватного ключа должен быть безопасным абсолютным путём',
+      );
+    }
+    const effectiveWebServer = input.webServer ?? 'nginx';
+    const effectiveLocalPort = input.localHttpsPort ?? 8443;
+    if (
+      effectiveWebServer !== 'none' &&
+      context?.port !== undefined &&
+      context.port !== null &&
+      context.port !== '' &&
+      context.port !== 'random' &&
+      Number(context.port) === effectiveLocalPort
+    ) {
+      errors.push(
+        `Self-SNI: порт Xray (${String(context.port)}) не может совпадать с локальным HTTPS-портом веб-сервера (${effectiveLocalPort})`,
+      );
     }
   }
 
@@ -519,7 +576,7 @@ export function evaluateProfileCompatibility(
   } else if (input.kind === 'self-sni') {
     const domain =
       normalized.domain ||
-      (input.sni && input.sni !== 'random' ? input.sni : '');
+      (input.sni && input.sni !== 'random' ? input.sni.trim() : '');
     if (!domain) {
       checks.push({
         code: 'SELF_SNI_DOMAIN_REQUIRED',
@@ -528,26 +585,75 @@ export function evaluateProfileCompatibility(
         message:
           'Для Self-SNI необходимо указать собственный домен (случайный SNI не допускается).',
       });
+    } else if (isValidHostname(domain)) {
+      const targetDesc =
+        normalized.webServer === 'none'
+          ? `${domain}:${normalized.destPort ?? 443}`
+          : `127.0.0.1:${normalized.localHttpsPort ?? 8443} (${normalized.webServer})`;
+      checks.push({
+        code: 'SELF_SNI_DOMAIN_OK',
+        severity: 'ok',
+        title: 'Собственный домен настроен',
+        message: `Self-SNI использует домен «${domain}», целевой локальный HTTPS-сервер: ${targetDesc}.`,
+      });
     }
-    if (
-      input.node &&
-      xrayVersion &&
-      !isVersionAtLeast(xrayVersion, SELF_SNI_MIN_XRAY_VERSION)
-    ) {
+
+    if (!input.node) {
+      checks.push({
+        code: 'NODE_NOT_SELECTED',
+        severity: 'warning',
+        title: 'Нода не выбрана',
+        message:
+          'Выберите ноду для проверки версии Xray (требуется >= 1.8.0 для REALITY + Vision).',
+      });
+    } else if (!xrayVersion) {
+      checks.push({
+        code: 'XRAY_VERSION_UNKNOWN',
+        severity: 'warning',
+        title: 'Версия Xray не определена',
+        message: `Выполните проверку ноды «${input.node.name || 'node'}», чтобы подтвердить Xray >= 1.8.0.`,
+      });
+    } else if (!isVersionAtLeast(xrayVersion, SELF_SNI_MIN_XRAY_VERSION)) {
       checks.push({
         code: 'XRAY_VERSION_TOO_OLD',
         severity: 'error',
         title: 'Несовместимая версия Xray',
         message: `Xray ${xrayVersion} слишком стар для REALITY + Vision (требуется >= 1.8.0).`,
       });
+    } else {
+      checks.push({
+        code: 'XRAY_VERSION_OK',
+        severity: 'ok',
+        title: 'Версия Xray совместима',
+        message: `Xray ${xrayVersion} поддерживает VLESS + RAW + REALITY + Vision.`,
+      });
     }
-    checks.push({
-      code: 'STAGE_2_DEPLOYMENT',
-      severity: 'warning',
-      title: 'Профиль доступен в Этапе 2',
-      message:
-        'Модель и проверки Self-SNI готовы; генерация конфигов Nginx/Caddy и развёртывание локального HTTPS-сайта активируются на Этапе 2.',
-    });
+
+    if (normalized.webServer === 'caddy' && (normalized.xver ?? 0) > 0) {
+      checks.push({
+        code: 'SELF_SNI_CADDY_XVER_WARN',
+        severity: 'warning',
+        title: 'Caddy и PROXY protocol (xver)',
+        message:
+          'Стандартная сборка Caddy без плагина proxy_protocol не принимает xver > 0. Рекомендуется xver = 0 или Nginx.',
+      });
+    }
+
+    if (
+      input.port !== undefined &&
+      input.port !== null &&
+      input.port !== '' &&
+      input.port !== 'random' &&
+      Number(input.port) !== 443
+    ) {
+      checks.push({
+        code: 'SELF_SNI_NONSTANDARD_PORT',
+        severity: 'warning',
+        title: `Нестандартный порт Self-SNI (${String(input.port)})`,
+        message:
+          'Для максимальной похожести на обычный HTTPS-сайт Self-SNI обычно размещают на порту 443/tcp.',
+      });
+    }
   } else if (input.kind === 'https-fallback') {
     const domain =
       normalized.domain ||
@@ -632,6 +738,117 @@ export function evaluateProfileCompatibility(
       title: 'DNS-запись домена подтверждена',
       message: `Домен разрешается в: ${input.dnsResolvedIps.slice(0, 4).join(', ')}.`,
     });
+  }
+
+  // Live TLS / certificate / HTTPS decoy site checks (when performed)
+  if (input.tlsProbe) {
+    const probe = input.tlsProbe;
+    if (probe.dnsMatchesNodeIp === false) {
+      checks.push({
+        code: 'DNS_NODE_IP_MISMATCH',
+        severity: 'warning',
+        title: 'IP домена отличается от IP выбранной ноды',
+        message: `Домен «${probe.domain}» разрешается в ${probe.dnsResolvedIps.join(', ')}, что не совпадает с IP ноды. Проверьте A/AAAA-записи (или убедитесь, что используется нужный сервер).`,
+      });
+    }
+
+    if (!probe.reachable && !probe.dnsError) {
+      checks.push({
+        code: 'TLS_PROBE_FAILED',
+        severity: input.kind === 'xhttp-stable' ? 'warning' : 'error',
+        title: 'TLS-соединение с доменом не установлено',
+        message:
+          probe.error ||
+          `Не удалось выполнить TLS handshake с ${probe.domain}:${probe.port}.`,
+      });
+    } else if (probe.reachable) {
+      if (probe.tlsProtocol === 'TLSv1.3') {
+        checks.push({
+          code: 'TLS_PROTOCOL_OK',
+          severity: 'ok',
+          title: 'Подтверждён TLS 1.3',
+          message: `Сервер ${probe.domain}:${probe.port} отвечает по ${probe.tlsProtocol}${probe.alpnProtocol ? ` (ALPN: ${probe.alpnProtocol})` : ''}.`,
+        });
+      } else if (probe.tlsProtocol) {
+        checks.push({
+          code: 'TLS_PROTOCOL_NOT_13',
+          severity: input.kind === 'self-sni' ? 'error' : 'warning',
+          title: `Обнаружен ${probe.tlsProtocol} вместо TLS 1.3`,
+          message:
+            input.kind === 'self-sni'
+              ? 'Для REALITY Self-SNI локальный веб-сервер обязан поддерживать TLS 1.3.'
+              : 'Рекомендуется включить TLS 1.3 на веб-сервере/инбаунде.',
+        });
+      }
+
+      if (input.kind === 'self-sni' && probe.alpnProtocol !== 'h2') {
+        checks.push({
+          code: 'TLS_ALPN_H2_MISSING',
+          severity: 'warning',
+          title: 'HTTP/2 (ALPN h2) не согласован',
+          message: `Для Self-SNI рекомендуется включить HTTP/2 (ALPN h2) на локальном веб-сервере (текущий ALPN: ${probe.alpnProtocol || 'не определён'}).`,
+        });
+      }
+
+      const cert = probe.certificate;
+      if (cert) {
+        if (typeof cert.daysRemaining === 'number' && cert.daysRemaining <= 0) {
+          checks.push({
+            code: 'TLS_CERT_EXPIRED',
+            severity: 'error',
+            title: 'TLS-сертификат просрочен',
+            message: `Срок действия сертификата для ${probe.domain} истёк (${cert.validTo || 'неизвестно'}).`,
+          });
+        } else if (cert.hostnameMatches === false) {
+          checks.push({
+            code: 'TLS_CERT_HOST_MISMATCH',
+            severity: 'error',
+            title: 'Сертификат не соответствует домену',
+            message: `Сертификат выдан для «${cert.subjectCN || cert.subjectAltName || 'unknown'}», а не для «${probe.domain}».`,
+          });
+        } else if (!cert.authorized) {
+          checks.push({
+            code: 'TLS_CERT_UNTRUSTED',
+            severity: 'error',
+            title: 'Цепочка TLS-сертификата не доверена',
+            message: `Проверка доверия сертификата завершилась ошибкой: ${cert.authorizationError || 'untrusted certificate'}.`,
+          });
+        } else if (
+          typeof cert.daysRemaining === 'number' &&
+          cert.daysRemaining < 14
+        ) {
+          checks.push({
+            code: 'TLS_CERT_EXPIRING',
+            severity: 'warning',
+            title: 'Сертификат скоро истекает',
+            message: `До истечения сертификата ${probe.domain} осталось ${cert.daysRemaining} дн. (выдан: ${cert.issuer || 'CA'}).`,
+          });
+        } else {
+          checks.push({
+            code: 'TLS_CERT_OK',
+            severity: 'ok',
+            title: 'TLS-сертификат валиден',
+            message: `Действительный сертификат (${cert.issuer || 'доверенный CA'}), осталось ${cert.daysRemaining ?? '?'} дн.`,
+          });
+        }
+      }
+
+      if (typeof probe.httpStatusCode === 'number') {
+        checks.push({
+          code: 'HTTPS_SITE_OK',
+          severity: 'ok',
+          title: `Локальный HTTPS-сайт отвечает (HTTP ${probe.httpStatusCode})`,
+          message: `HTTPS-ресурс на ${probe.domain}:${probe.port} доступен${probe.httpServerHeader ? ` (Server: ${probe.httpServerHeader})` : ''}.`,
+        });
+      } else {
+        checks.push({
+          code: 'HTTPS_SITE_UNREACHABLE',
+          severity: 'warning',
+          title: 'HTTP-ответ сайта не получен',
+          message: `TLS handshake с ${probe.domain}:${probe.port} прошёл, но HTTP HEAD-запрос не вернул статус.`,
+        });
+      }
+    }
   }
 
   // Node resource checks (from /panel/api/server/status)

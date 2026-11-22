@@ -48,15 +48,18 @@ import type { NodeRecord } from '../types/node';
 import { InboundsEditor } from '../components/InboundsEditor';
 import { WorkspaceHeader } from '../components/WorkspaceHeader';
 import {
+  createDefaultSelfSniSettings,
   createDefaultXhttpStableSettings,
   hasSni,
   isInboundSupported,
   parseDefaultInboundsSetting,
   validateRoutingProfile,
+  validateSelfSniSettings,
   validateSubscriptionMetadata,
   validateXhttpStableSettings,
 } from '../utils/inboundUtils';
 import {
+  MANAGED_PROFILE_TYPES,
   PERSISTENT_INBOUND_TYPES,
   ROUTING_INBOUND_TYPES,
   type InboundConfigUI,
@@ -413,7 +416,15 @@ export default function SubscriptionsPage() {
           profileSettings:
             item.type === 'xhttp-stable'
               ? { ...createDefaultXhttpStableSettings(), ...item.profileSettings }
-              : item.profileSettings,
+              : item.type === 'self-sni'
+                ? {
+                    ...createDefaultSelfSniSettings(
+                      item.profileSettings?.domain ||
+                        (item.sni && item.sni !== 'random' ? item.sni : ''),
+                    ),
+                    ...item.profileSettings,
+                  }
+                : item.profileSettings,
         };
       }),
     );
@@ -560,6 +571,23 @@ export default function SubscriptionsPage() {
       });
       return;
     }
+    const invalidSelfSniProfile = inbounds.find(
+      (inbound) =>
+        inbound.type === 'self-sni' &&
+        validateSelfSniSettings(inbound.profileSettings, inbound.port),
+    );
+    if (invalidSelfSniProfile) {
+      setSnackbar({
+        open: true,
+        type: 'error',
+        message:
+          validateSelfSniSettings(
+            invalidSelfSniProfile.profileSettings,
+            invalidSelfSniProfile.port,
+          ) || 'Некорректные параметры Self-SNI',
+      });
+      return;
+    }
     const incompatibleInbound = inbounds.find(
       (inbound) => !isInboundSupported(inbound.type, inbound.nodeId, nodes),
     );
@@ -601,7 +629,12 @@ export default function SubscriptionsPage() {
             inbound.port === 'random'
               ? 'random'
               : parseInt(inbound.port, 10),
-          sni: hasSni(inbound.type) ? inbound.sni : undefined,
+          sni:
+            inbound.type === 'self-sni'
+              ? inbound.profileSettings?.domain?.trim() || undefined
+              : hasSni(inbound.type)
+                ? inbound.sni
+                : undefined,
           nodeId: inbound.nodeId || undefined,
           relayServerId: inbound.relayServerId
             ? parseInt(inbound.relayServerId, 10)
@@ -625,12 +658,15 @@ export default function SubscriptionsPage() {
             inbound.certificateMode === 'custom'
               ? inbound.keyFile?.trim() || undefined
               : undefined,
-          profileId:
-            inbound.type === 'xhttp-stable' ? inbound.profileId : undefined,
+          profileId: MANAGED_PROFILE_TYPES.has(inbound.type)
+            ? inbound.profileId
+            : undefined,
           profileSettings:
             inbound.type === 'xhttp-stable'
               ? inbound.profileSettings || createDefaultXhttpStableSettings()
-              : undefined,
+              : inbound.type === 'self-sni'
+                ? inbound.profileSettings || createDefaultSelfSniSettings()
+                : undefined,
         };
       }),
     };

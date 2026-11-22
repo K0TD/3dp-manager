@@ -60,6 +60,7 @@ export const hasSni = (type: string): boolean =>
     'socks',
     'custom',
     'vless-xhttp-get',
+    'self-sni',
   ].includes(type);
 
 export const isListedSni = (sni: string, domains: Domain[]): boolean => {
@@ -109,6 +110,54 @@ export const createDefaultXhttpStableSettings = (): ManagedProfileSettings => ({
   rotationPolicy: 'fixed_domain',
   xmux: { enabled: false },
 });
+
+export const createDefaultSelfSniSettings = (
+  domain?: string,
+): ManagedProfileSettings => ({
+  domain: domain?.trim() || '',
+  webServer: 'nginx',
+  localHttpsPort: 8443,
+  destPort: 443,
+  fingerprint: 'chrome',
+  spiderX: '/',
+  xver: 0,
+  rotationPolicy: 'fixed_domain',
+});
+
+const HOSTNAME_RE =
+  /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+
+export const validateSelfSniSettings = (
+  settings?: ManagedProfileSettings,
+  port?: string,
+): string | null => {
+  const domain = settings?.domain?.trim() || '';
+  if (!domain) {
+    return 'Self-SNI требует указать собственный домен (случайный SNI не допускается)';
+  }
+  if (!HOSTNAME_RE.test(domain)) {
+    return 'Self-SNI: укажите корректное доменное имя (например site.example.com)';
+  }
+  const webServer = settings?.webServer ?? 'nginx';
+  const localHttpsPort = settings?.localHttpsPort ?? 8443;
+  if (
+    !Number.isInteger(localHttpsPort) ||
+    localHttpsPort < 1 ||
+    localHttpsPort > 65535
+  ) {
+    return 'Self-SNI: локальный HTTPS-порт должен быть от 1 до 65535';
+  }
+  if (
+    webServer !== 'none' &&
+    port &&
+    port !== 'random' &&
+    /^\d+$/.test(port) &&
+    Number(port) === localHttpsPort
+  ) {
+    return `Порт Xray (${port}) не должен совпадать с локальным HTTPS-портом веб-сервера (${localHttpsPort})`;
+  }
+  return null;
+};
 
 const XMUX_RANGE_RE = /^(\d+)(?:-(\d+))?$/;
 
@@ -201,11 +250,25 @@ export const createInboundTemplate = (
     certificateFile:
       isCert && certMode === 'custom' ? partial?.certificateFile || '' : '',
     keyFile: isCert && certMode === 'custom' ? partial?.keyFile || '' : '',
-    profileId: type === 'xhttp-stable' ? partial?.profileId : undefined,
+    profileId:
+      type === 'xhttp-stable' || type === 'self-sni'
+        ? partial?.profileId
+        : undefined,
     profileSettings:
       type === 'xhttp-stable'
         ? { ...createDefaultXhttpStableSettings(), ...partial?.profileSettings }
-        : undefined,
+        : type === 'self-sni'
+          ? {
+              ...createDefaultSelfSniSettings(
+                partial?.profileSettings?.domain ||
+                  (partial?.sni && partial.sni !== 'random' ? partial.sni : '') ||
+                  (HOSTNAME_RE.test(getNodeAddress(nodeId, nodes))
+                    ? getNodeAddress(nodeId, nodes)
+                    : ''),
+              ),
+              ...partial?.profileSettings,
+            }
+          : undefined,
     enabled: partial?.enabled,
     disabledReason: partial?.disabledReason,
   };
@@ -268,7 +331,12 @@ export const sanitizeInboundForStorage = (
     flag: isCustom ? '' : inbound.flag || '',
     name: isCustom ? '' : inbound.name || '',
     port: isCustom ? '' : inbound.port || 'random',
-    sni: isCustom || !hasSni(inbound.type) ? '' : inbound.sni || 'random',
+    sni:
+      inbound.type === 'self-sni'
+        ? inbound.profileSettings?.domain?.trim() || ''
+        : isCustom || !hasSni(inbound.type)
+          ? ''
+          : inbound.sni || 'random',
     link: isCustom ? inbound.link || '' : '',
     certificateMode: isCert ? inbound.certificateMode || 'node' : undefined,
     tlsServerName: isCert ? inbound.tlsServerName || '' : undefined,
@@ -283,7 +351,9 @@ export const sanitizeInboundForStorage = (
     profileSettings:
       inbound.type === 'xhttp-stable'
         ? inbound.profileSettings || createDefaultXhttpStableSettings()
-        : undefined,
+        : inbound.type === 'self-sni'
+          ? inbound.profileSettings || createDefaultSelfSniSettings()
+          : undefined,
   };
 };
 

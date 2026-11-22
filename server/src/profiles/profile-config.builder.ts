@@ -37,6 +37,29 @@ export interface BuildXhttpStableClientParams {
   settings?: ManagedProfileSettings | null;
 }
 
+export interface BuildSelfSniServerParams {
+  port: number;
+  uuid: string;
+  email?: string;
+  remark?: string;
+  domain: string;
+  privateKey: string;
+  publicKey: string;
+  shortIds?: string[];
+  settings?: ManagedProfileSettings | null;
+}
+
+export interface BuildSelfSniClientParams {
+  address: string;
+  port: number;
+  uuid: string;
+  remark: string;
+  domain: string;
+  publicKey: string;
+  shortId: string;
+  settings?: ManagedProfileSettings | null;
+}
+
 /**
  * Minimal XHTTP Stable server inbound for 3x-ui (VLESS + XHTTP + REALITY).
  * Keeps server configuration strictly minimal: no client XMUX, no Vision flow,
@@ -408,6 +431,139 @@ export function buildXhttpStableExportBundle(
   const clientConfig = buildXhttpStableClientProfile(params);
   return {
     kind: 'xhttp-stable',
+    vlessLink: buildVlessUriFromClientProfile(
+      clientConfig,
+      params.flagEmoji ?? '',
+    ),
+    clientConfig,
+    xrayClientJson: buildXrayClientJsonFromProfile(clientConfig),
+  };
+}
+
+/**
+ * Self-SNI server inbound for 3x-ui (VLESS + RAW/TCP + REALITY + Vision).
+ * Targets the local HTTPS decoy website (127.0.0.1:<localHttpsPort>) when
+ * backed by Nginx/Caddy, or <domain>:<destPort> when managed externally.
+ */
+export function buildSelfSniServerInbound(
+  params: BuildSelfSniServerParams,
+): XuiInboundRaw {
+  const normalized = normalizeManagedProfileSettings(
+    'self-sni',
+    params.settings,
+  );
+  const domain = (params.domain || normalized.domain || '')
+    .trim()
+    .toLowerCase();
+  const webServer = normalized.webServer ?? 'nginx';
+  const target =
+    webServer === 'none'
+      ? `${domain}:${normalized.destPort ?? 443}`
+      : `127.0.0.1:${normalized.localHttpsPort ?? 8443}`;
+  const fingerprint: ClientFingerprint = normalized.fingerprint || 'chrome';
+  const spiderX = normalized.spiderX || '/';
+  const xver =
+    normalized.xver === 1 || normalized.xver === 2 ? normalized.xver : 0;
+  const shortIds =
+    params.shortIds && params.shortIds.length > 0
+      ? params.shortIds
+      : [
+          crypto.randomBytes(4).toString('hex'),
+          crypto.randomBytes(4).toString('hex'),
+        ];
+
+  return {
+    enable: true,
+    listen: '0.0.0.0',
+    port: params.port,
+    protocol: 'vless',
+    remark: params.remark?.trim() || 'self-sni',
+    settings: JSON.stringify({
+      clients: [
+        {
+          id: params.uuid,
+          flow: 'xtls-rprx-vision',
+          email: params.email ?? params.uuid,
+          enable: true,
+          limitIp: 0,
+          totalGB: 0,
+          expiryTime: 0,
+          subId: '',
+          reset: 0,
+        },
+      ],
+      decryption: 'none',
+      encryption: 'none',
+      fallbacks: [],
+    }),
+    streamSettings: JSON.stringify({
+      network: 'tcp',
+      security: 'reality',
+      externalProxy: [],
+      realitySettings: {
+        show: false,
+        xver,
+        target,
+        dest: target,
+        serverNames: [domain],
+        privateKey: params.privateKey,
+        shortIds,
+        settings: {
+          publicKey: params.publicKey,
+          fingerprint,
+          serverName: '',
+          spiderX,
+        },
+      },
+      tcpSettings: {
+        acceptProxyProtocol: false,
+        header: { type: 'none' },
+      },
+    }),
+    sniffing: JSON.stringify({
+      enabled: true,
+      destOverride: ['http', 'tls', 'quic'],
+      metadataOnly: false,
+      routeOnly: true,
+    }),
+  };
+}
+
+export function buildSelfSniClientProfile(
+  params: BuildSelfSniClientParams,
+): SeparatedClientProfile {
+  const normalized = normalizeManagedProfileSettings(
+    'self-sni',
+    params.settings,
+  );
+  const domain = (params.domain || normalized.domain || '')
+    .trim()
+    .toLowerCase();
+
+  return {
+    kind: 'self-sni',
+    protocol: 'vless',
+    address: params.address,
+    port: params.port,
+    uuid: params.uuid,
+    remark: params.remark,
+    flow: 'xtls-rprx-vision',
+    network: 'tcp',
+    security: 'reality',
+    sni: domain,
+    fingerprint: normalized.fingerprint || 'chrome',
+    publicKey: params.publicKey,
+    shortId: params.shortId,
+    spiderX: normalized.spiderX || '/',
+  };
+}
+
+export function buildSelfSniExportBundle(
+  params: BuildSelfSniClientParams & { flagEmoji?: string },
+): ProfileExportBundle {
+  const clientConfig = buildSelfSniClientProfile(params);
+  return {
+    kind: 'self-sni',
     vlessLink: buildVlessUriFromClientProfile(
       clientConfig,
       params.flagEmoji ?? '',

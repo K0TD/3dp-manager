@@ -168,6 +168,16 @@ export class ManagedProfileSettingsDto {
   @IsOptional()
   xver?: 0 | 1 | 2;
 
+  @IsString()
+  @IsOptional()
+  @MaxLength(512)
+  certificateFile?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(512)
+  keyFile?: string;
+
   @ValidateNested()
   @Type(() => ProfileMonitoringExtensionDto)
   @IsOptional()
@@ -299,4 +309,8 @@ export class PreviewConnectionProfileDto {
   @Type(() => ManagedProfileSettingsDto)
   @IsOptional()
   settings?: ManagedProfileSettingsDto;
+
+  @IsBoolean()
+  @IsOptional()
+  liveCheck?: boolean;
 }

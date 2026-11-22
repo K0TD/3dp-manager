@@ -785,7 +785,8 @@ export class RotationService implements OnModuleInit {
         }
         if (
           (config.type?.includes('reality') ||
-            config.type === 'xhttp-stable') &&
+            config.type === 'xhttp-stable' ||
+            config.type === 'self-sni') &&
           !realityKeys
         ) {
           this.logger.log(
@@ -1159,6 +1160,11 @@ export class RotationService implements OnModuleInit {
         );
         if (previousSni) return previousSni;
       }
+      if (config.type === 'self-sni') {
+        throw new Error(
+          'Профиль Self-SNI требует явного указания собственного домена и не может использовать случайный SNI',
+        );
+      }
       return this.pickDomain(domains);
     }
     const configuredSni = config.sni?.trim() || '';
@@ -1338,13 +1344,21 @@ export class RotationService implements OnModuleInit {
     }
     try {
       if (result.verificationError) throw new Error(result.verificationError);
-      if (config.type === 'xhttp-stable') {
-        const bundle = this.inboundBuilder.buildXhttpStableClientBundle(
-          saved,
-          targetAddress,
-          flag,
-          config.profileSettings,
-        );
+      if (config.type === 'xhttp-stable' || config.type === 'self-sni') {
+        const bundle =
+          config.type === 'xhttp-stable'
+            ? this.inboundBuilder.buildXhttpStableClientBundle(
+                saved,
+                targetAddress,
+                flag,
+                config.profileSettings,
+              )
+            : this.inboundBuilder.buildSelfSniClientBundle(
+                saved,
+                targetAddress,
+                flag,
+                config.profileSettings,
+              );
         if (!bundle) {
           throw new Error(
             `Не удалось сформировать клиентский профиль ${config.type}`,
@@ -1352,7 +1366,7 @@ export class RotationService implements OnModuleInit {
         }
         staged.link = bundle.vlessLink;
         staged.profileId = config.profileId ?? null;
-        staged.profileKind = 'xhttp-stable';
+        staged.profileKind = config.type;
         staged.clientProfileJson = JSON.stringify(bundle.clientConfig);
         return await this.inboundRepo.save(staged);
       }
@@ -1404,6 +1418,19 @@ export class RotationService implements OnModuleInit {
           ? this.inboundBuilder.buildXhttpStableInbound({
               ...realityParams,
               remark: config.name?.trim() || 'xhttp-stable',
+              settings: config.profileSettings,
+            })
+          : null,
+      'self-sni': () =>
+        realityParams
+          ? this.inboundBuilder.buildSelfSniInbound({
+              port,
+              uuid,
+              email,
+              domain: sni,
+              privateKey: realityParams.privateKey,
+              publicKey: realityParams.publicKey,
+              remark: config.name?.trim() || 'self-sni',
               settings: config.profileSettings,
             })
           : null,
