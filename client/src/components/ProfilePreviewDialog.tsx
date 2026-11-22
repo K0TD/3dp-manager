@@ -33,6 +33,7 @@ export interface ProfilePreviewDialogProps {
   port?: string;
   sni?: string;
   settings?: ManagedProfileSettings;
+  initialTab?: number;
 }
 
 export const ProfilePreviewDialog: React.FC<ProfilePreviewDialogProps> = ({
@@ -44,8 +45,9 @@ export const ProfilePreviewDialog: React.FC<ProfilePreviewDialogProps> = ({
   port,
   sni,
   settings,
+  initialTab = 0,
 }) => {
-  const [tab, setTab] = useState(0);
+  const [tab, setTab] = useState(initialTab);
   const [loading, setLoading] = useState(false);
   const [liveChecking, setLiveChecking] = useState(false);
   const [error, setError] = useState('');
@@ -88,9 +90,16 @@ export const ProfilePreviewDialog: React.FC<ProfilePreviewDialogProps> = ({
 
   useEffect(() => {
     if (!open) return;
-    setTab(0);
+    setTab(initialTab);
     void fetchPreview(false);
-  }, [open, fetchPreview]);
+  }, [open, initialTab, fetchPreview]);
+
+  useEffect(() => {
+    if (!preview) return;
+    if (tab === 3 && !preview.webServerConfig) {
+      setTab(0);
+    }
+  }, [preview, tab]);
 
   const handleCopy = async (text: string, label: string) => {
     await copyToClipboard(text);
@@ -229,13 +238,16 @@ export const ProfilePreviewDialog: React.FC<ProfilePreviewDialogProps> = ({
               </Alert>
             )}
 
-            <Tabs value={tab} onChange={(_, value: number) => setTab(value)}>
+            <Tabs
+              value={tab === 3 && !hasWebServerConfig ? 0 : tab}
+              onChange={(_, value: number) => setTab(value)}
+            >
               <Tab label="VLESS-ссылка" />
               <Tab label="Xray JSON (клиент)" />
               <Tab label="Серверный inbound (3x-ui)" />
               {hasWebServerConfig && (
                 <Tab
-                  label={`${preview.webServerConfig?.engine === 'caddy' ? 'Caddy' : 'Nginx'} конфиг`}
+                  label={`${preview.webServerConfig?.engine === 'caddy' ? 'Caddy' : 'Nginx'} шаблон и инструкция`}
                 />
               )}
             </Tabs>
@@ -351,111 +363,210 @@ export const ProfilePreviewDialog: React.FC<ProfilePreviewDialogProps> = ({
               </Stack>
             )}
 
-            {tab === 3 && preview.webServerConfig && (
-              <Stack spacing={1.5}>
-                <Alert severity="info" sx={{ py: 0.5 }}>
-                  Целевой файл на ноде:{' '}
-                  <code>{preview.webServerConfig.filename}</code>. Применяйте
-                  вручную с предварительным бэкапом и проверкой синтаксиса (без
-                  автоматических изменений production-узла).
-                </Alert>
+            {tab === 3 && preview.webServerConfig && (() => {
+              const ws = preview.webServerConfig;
+              const engineTitle = ws.engine === 'caddy' ? 'Caddy' : 'Nginx';
+              const writeConfigCommand = [
+                `sudo mkdir -p "$(dirname "${ws.filename}")"`,
+                `sudo tee "${ws.filename}" > /dev/null <<'EOF'`,
+                ws.config.trimEnd(),
+                'EOF',
+              ].join('\n');
+              const staticSiteCommand =
+                ws.staticSitePath && ws.staticSiteHtml
+                  ? [
+                      `sudo mkdir -p "$(dirname "${ws.staticSitePath}")"`,
+                      `sudo tee "${ws.staticSitePath}" > /dev/null <<'EOF'`,
+                      ws.staticSiteHtml.trimEnd(),
+                      'EOF',
+                    ].join('\n')
+                  : '';
+              const applyCommands = [
+                '# 1. Бэкап существующего конфига',
+                ws.backupCommand,
+                '# 2. Проверка синтаксиса',
+                ws.validateCommand,
+                '# 3. Применение (reload)',
+                ws.reloadCommand,
+                '# 4. Откат при проблеме',
+                ws.rollbackCommand,
+              ].join('\n');
 
-                <TextField
-                  multiline
-                  fullWidth
-                  minRows={12}
-                  label={`Конфигурация ${preview.webServerConfig.engine.toUpperCase()}`}
-                  value={preview.webServerConfig.config}
-                  slotProps={{
-                    input: {
-                      readOnly: true,
-                      sx: { fontFamily: 'monospace', fontSize: 12 },
-                    },
-                  }}
-                />
+              return (
+                <Stack spacing={1.5}>
+                  <Alert severity="info" sx={{ py: 0.5 }}>
+                    <strong>Пошаговая установка {engineTitle} на ноде:</strong>{' '}
+                    целевой файл <code>{ws.filename}</code>. Выполняйте команды
+                    на VPS самой ноды с предварительным бэкапом и проверкой
+                    синтаксиса (без автоматического SSH-вмешательства).
+                  </Alert>
 
-                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    startIcon={<ContentCopy />}
-                    onClick={() =>
-                      void handleCopy(
-                        preview.webServerConfig!.config,
-                        `Конфиг ${preview.webServerConfig!.engine.toUpperCase()}`,
-                      )
-                    }
-                  >
-                    Копировать конфиг
-                  </Button>
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    startIcon={<OpenInNew />}
-                    onClick={() =>
-                      handleDownloadText(
-                        preview.webServerConfig!.config,
-                        `${preview.webServerConfig!.purpose}-${preview.webServerConfig!.domain}.${preview.webServerConfig!.engine === 'caddy' ? 'caddy' : 'conf'}`,
-                      )
-                    }
-                  >
-                    Скачать конфиг
-                  </Button>
-                  {preview.webServerConfig.staticSiteHtml && (
+                  {ws.notes.length > 0 && (
+                    <Stack spacing={0.5}>
+                      {ws.notes.map((note, idx) => (
+                        <Alert key={idx} severity="warning" sx={{ py: 0.25 }}>
+                          {note}
+                        </Alert>
+                      ))}
+                    </Stack>
+                  )}
+
+                  {staticSiteCommand && (
+                    <Box>
+                      <Stack
+                        direction="row"
+                        justifyContent="space-between"
+                        alignItems="center"
+                        sx={{ mb: 0.5 }}
+                      >
+                        <Typography variant="subtitle2">
+                          Шаг 1. Создать статическую страницу сайта-маскировки (
+                          <code>{ws.staticSitePath}</code>)
+                        </Typography>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          startIcon={<ContentCopy />}
+                          onClick={() =>
+                            void handleCopy(
+                              staticSiteCommand,
+                              'Команда создания index.html',
+                            )
+                          }
+                        >
+                          Копировать команду
+                        </Button>
+                      </Stack>
+                      <TextField
+                        multiline
+                        fullWidth
+                        minRows={4}
+                        maxRows={8}
+                        value={staticSiteCommand}
+                        slotProps={{
+                          input: {
+                            readOnly: true,
+                            sx: { fontFamily: 'monospace', fontSize: 11.5 },
+                          },
+                        }}
+                      />
+                    </Box>
+                  )}
+
+                  <Box>
+                    <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+                      {staticSiteCommand ? 'Шаг 2.' : 'Шаг 1.'} Конфигурация{' '}
+                      {engineTitle} (<code>{ws.filename}</code>)
+                    </Typography>
+                    <TextField
+                      multiline
+                      fullWidth
+                      minRows={12}
+                      value={ws.config}
+                      slotProps={{
+                        input: {
+                          readOnly: true,
+                          sx: { fontFamily: 'monospace', fontSize: 12 },
+                        },
+                      }}
+                    />
+                  </Box>
+
+                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                    <Button
+                      size="small"
+                      variant="contained"
+                      startIcon={<ContentCopy />}
+                      onClick={() =>
+                        void handleCopy(
+                          writeConfigCommand,
+                          `Команда записи конфига ${engineTitle}`,
+                        )
+                      }
+                    >
+                      Копировать команду установки конфига
+                    </Button>
                     <Button
                       size="small"
                       variant="outlined"
                       startIcon={<ContentCopy />}
                       onClick={() =>
-                        void handleCopy(
-                          preview.webServerConfig!.staticSiteHtml!,
-                          'index.html локального сайта',
+                        void handleCopy(ws.config, `Конфиг ${engineTitle}`)
+                      }
+                    >
+                      Копировать конфиг
+                    </Button>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      startIcon={<OpenInNew />}
+                      onClick={() =>
+                        handleDownloadText(
+                          ws.config,
+                          `${ws.purpose}-${ws.domain}.${ws.engine === 'caddy' ? 'caddy' : 'conf'}`,
                         )
                       }
                     >
-                      Копировать index.html
+                      Скачать конфиг
                     </Button>
-                  )}
-                </Stack>
-
-                <Box>
-                  <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-                    Безопасное применение и откат на ноде
-                  </Typography>
-                  <TextField
-                    multiline
-                    fullWidth
-                    minRows={5}
-                    value={[
-                      `# 1. Бэкап существующего конфига`,
-                      preview.webServerConfig.backupCommand,
-                      `# 2. Проверка синтаксиса`,
-                      preview.webServerConfig.validateCommand,
-                      `# 3. Применение (reload)`,
-                      preview.webServerConfig.reloadCommand,
-                      `# 4. Откат при проблеме`,
-                      preview.webServerConfig.rollbackCommand,
-                    ].join('\n')}
-                    slotProps={{
-                      input: {
-                        readOnly: true,
-                        sx: { fontFamily: 'monospace', fontSize: 11.5 },
-                      },
-                    }}
-                  />
-                </Box>
-
-                {preview.webServerConfig.notes.length > 0 && (
-                  <Stack spacing={0.5}>
-                    {preview.webServerConfig.notes.map((note, idx) => (
-                      <Alert key={idx} severity="warning" sx={{ py: 0.25 }}>
-                        {note}
-                      </Alert>
-                    ))}
+                    {ws.staticSiteHtml && (
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        startIcon={<ContentCopy />}
+                        onClick={() =>
+                          void handleCopy(
+                            ws.staticSiteHtml!,
+                            'index.html локального сайта',
+                          )
+                        }
+                      >
+                        Копировать index.html
+                      </Button>
+                    )}
                   </Stack>
-                )}
-              </Stack>
-            )}
+
+                  <Box>
+                    <Stack
+                      direction="row"
+                      justifyContent="space-between"
+                      alignItems="center"
+                      sx={{ mb: 0.5 }}
+                    >
+                      <Typography variant="subtitle2">
+                        {staticSiteCommand ? 'Шаг 3.' : 'Шаг 2.'} Бэкап,
+                        проверка синтаксиса, reload и откат
+                      </Typography>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        startIcon={<ContentCopy />}
+                        onClick={() =>
+                          void handleCopy(
+                            applyCommands,
+                            'Команды применения и отката',
+                          )
+                        }
+                      >
+                        Копировать команды
+                      </Button>
+                    </Stack>
+                    <TextField
+                      multiline
+                      fullWidth
+                      minRows={6}
+                      value={applyCommands}
+                      slotProps={{
+                        input: {
+                          readOnly: true,
+                          sx: { fontFamily: 'monospace', fontSize: 11.5 },
+                        },
+                      }}
+                    />
+                  </Box>
+                </Stack>
+              );
+            })()}
           </Stack>
         )}
       </DialogContent>

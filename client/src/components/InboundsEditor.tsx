@@ -26,6 +26,7 @@ import {
   OpenInNew,
   Remove,
   Restore,
+  Terminal,
   Tune,
 } from '@mui/icons-material';
 import api from '../api';
@@ -105,7 +106,13 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
   const [previewTarget, setPreviewTarget] = useState<InboundConfigUI | null>(
     null,
   );
+  const [previewInitialTab, setPreviewInitialTab] = useState(0);
   const [applyingSniId, setApplyingSniId] = useState<string | null>(null);
+
+  const openInboundPreview = (inbound: InboundConfigUI, initialTab = 0) => {
+    setPreviewInitialTab(initialTab);
+    setPreviewTarget(inbound);
+  };
 
   const ownDomainOptions: string[] = Array.from(
     new Set([
@@ -1379,14 +1386,29 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                         <Typography variant="caption" color="text.secondary">
                           Self-SNI · VLESS + RAW + REALITY + Vision на собственном домене и локальном HTTPS-сайте
                         </Typography>
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          startIcon={<OpenInNew />}
-                          onClick={() => setPreviewTarget(inbound)}
-                        >
-                          Предпросмотр, Nginx/Caddy и проверка
-                        </Button>
+                        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                          {webServer !== 'none' && (
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              color="secondary"
+                              startIcon={<Terminal />}
+                              onClick={() => openInboundPreview(inbound, 3)}
+                            >
+                              {webServer === 'caddy'
+                                ? 'Caddy и инструкция'
+                                : 'Nginx и инструкция'}
+                            </Button>
+                          )}
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            startIcon={<OpenInNew />}
+                            onClick={() => openInboundPreview(inbound, 0)}
+                          >
+                            Предпросмотр, Nginx/Caddy и проверка
+                          </Button>
+                        </Stack>
                       </Stack>
 
                       {selfSniValidationError && (
@@ -1613,14 +1635,29 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                         <Typography variant="caption" color="text.secondary">
                           HTTPS Fallback · независимый VLESS + XHTTP + TLS с отдельным endpoint и поддержкой reverse proxy
                         </Typography>
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          startIcon={<OpenInNew />}
-                          onClick={() => setPreviewTarget(inbound)}
-                        >
-                          Предпросмотр, Proxy и проверка
-                        </Button>
+                        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                          {reverseProxy !== 'none' && (
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              color="secondary"
+                              startIcon={<Terminal />}
+                              onClick={() => openInboundPreview(inbound, 3)}
+                            >
+                              {reverseProxy === 'caddy'
+                                ? 'Caddy и инструкция'
+                                : 'Nginx и инструкция'}
+                            </Button>
+                          )}
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            startIcon={<OpenInNew />}
+                            onClick={() => openInboundPreview(inbound, 0)}
+                          >
+                            Предпросмотр, Proxy и проверка
+                          </Button>
+                        </Stack>
                       </Stack>
 
                       {fallbackValidationError && (
@@ -1818,6 +1855,7 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
           port={previewTarget.port}
           sni={previewTarget.sni}
           settings={previewTarget.profileSettings}
+          initialTab={previewInitialTab}
         />
       )}
 

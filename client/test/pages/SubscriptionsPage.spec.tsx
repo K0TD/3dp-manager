@@ -39,12 +39,14 @@ const setupMockGet = (overrides?: {
   tunnels?: unknown[]
   domains?: unknown[]
   nodes?: unknown[]
+  profiles?: unknown[]
 }) => {
   mockGet.mockImplementation((url: string) => {
     if (url === '/subscriptions') return Promise.resolve({ data: overrides?.subscriptions || [] })
     if (url === '/tunnels') return Promise.resolve({ data: overrides?.tunnels || [] })
     if (url === '/domains/all') return Promise.resolve({ data: overrides?.domains || [{ id: 1, name: 'example.com', isEnabled: true }] })
     if (url === '/nodes') return Promise.resolve({ data: overrides?.nodes || [{ id: 'node-1', name: 'Main', url: 'https://node.test', isMain: true }] })
+    if (url === '/profiles') return Promise.resolve({ data: overrides?.profiles || [] })
     return Promise.resolve({ data: {} })
   })
 }
@@ -1324,6 +1326,59 @@ describe('SubscriptionsPage', () => {
       expect(screen.getByDisplayValue('https://t.me/support')).toBeInTheDocument()
       expect(screen.getByDisplayValue('https://example.com')).toBeInTheDocument()
       expect(screen.getByDisplayValue('https://example.com/rules')).toBeInTheDocument()
+    })
+
+    it('массово добавляет несколько сохранённых управляемых профилей через кнопку «Из профилей»', async () => {
+      setupMockGet({
+        subscriptions: [
+          {
+            id: 'sub-bulk-1',
+            name: 'Bulk Sub',
+            uuid: 'bulk-uuid-1',
+            inbounds: [],
+            inboundsConfig: [],
+          },
+        ],
+        profiles: [
+          {
+            id: 'prof-a',
+            name: 'XHTTP One',
+            kind: 'xhttp-stable',
+            nodeId: 'node-1',
+            port: null,
+            sni: 'example.com',
+            rotationPolicy: 'fixed_domain',
+            spec: { mode: 'auto', path: '/', fingerprint: 'chrome' },
+          },
+          {
+            id: 'prof-b',
+            name: 'SelfSNI One',
+            kind: 'self-sni',
+            nodeId: 'node-1',
+            port: 24443,
+            sni: 'node.test',
+            rotationPolicy: 'fixed_domain',
+            spec: { domain: 'node.test', webServer: 'nginx', localHttpsPort: 8443 },
+          },
+        ],
+      })
+      renderSubscriptionsPage()
+
+      fireEvent.click(await screen.findByTestId('icon-MoreVert'))
+      fireEvent.click(await screen.findByText('Редактировать'))
+      expect(await screen.findByText('Инбаунды (0/20)')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: /Из профилей \(2\)/ }))
+      expect(
+        await screen.findByText('Добавить управляемые профили'),
+      ).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Выбрать все' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Добавить (2)' }))
+
+      expect(await screen.findByText('Инбаунды (2/20)')).toBeInTheDocument()
+      expect(screen.getByDisplayValue('XHTTP One')).toBeInTheDocument()
+      expect(screen.getByDisplayValue('SelfSNI One')).toBeInTheDocument()
     })
   })
 })

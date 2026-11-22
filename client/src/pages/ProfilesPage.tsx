@@ -4,6 +4,7 @@ import {
   Autocomplete,
   Box,
   Button,
+  Checkbox,
   Chip,
   CircularProgress,
   Dialog,
@@ -14,6 +15,10 @@ import {
   FormControlLabel,
   IconButton,
   InputLabel,
+  List,
+  ListItemButton,
+  ListItemIcon,
+  ListItemText,
   MenuItem,
   Paper,
   Select,
@@ -34,6 +39,7 @@ import {
   PlaylistAdd,
   Refresh,
   Restore,
+  Terminal,
   Tune,
 } from '@mui/icons-material';
 import api from '../api';
@@ -43,6 +49,7 @@ import { CLIENT_SNI_PROFILES_CATALOG } from '../utils/sniProfiles';
 import type { NodeRecord } from '../types/node';
 import {
   FINGERPRINT_OPTIONS,
+  ROUTING_INBOUND_TYPES,
   XHTTP_MODE_OPTIONS,
   type ClientFingerprint,
   type ManagedProfileKind,
@@ -286,11 +293,23 @@ export default function ProfilesPage() {
   const [probeResults, setProbeResults] = useState<
     Record<string, ClientProbeResponse>
   >({});
-  const [previewTarget, setPreviewTarget] =
-    useState<ConnectionProfileRecord | null>(null);
-  const [deployTarget, setDeployTarget] =
-    useState<ConnectionProfileRecord | null>(null);
-  const [targetSubId, setTargetSubId] = useState('');
+  const [previewTarget, setPreviewTarget] = useState<{
+    kind: ManagedProfileKind;
+    name?: string;
+    nodeId?: string;
+    port?: string;
+    sni?: string;
+    spec?: ManagedProfileSettings;
+    initialTab?: number;
+  } | null>(null);
+  const [selectedProfileIds, setSelectedProfileIds] = useState<string[]>([]);
+  const [deployTargets, setDeployTargets] = useState<ConnectionProfileRecord[]>(
+    [],
+  );
+  const [targetSubIds, setTargetSubIds] = useState<string[]>([]);
+  const [subSearch, setSubSearch] = useState('');
+  const [skipExistingInSub, setSkipExistingInSub] = useState(true);
+  const [useRandomPortOnMultiSub, setUseRandomPortOnMultiSub] = useState(false);
   const [rotateAfterAttach, setRotateAfterAttach] = useState(true);
   const [attaching, setAttaching] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -557,87 +576,247 @@ export default function ProfilesPage() {
     }
   };
 
-  const openAttachDialog = (profile: ConnectionProfileRecord) => {
-    setDeployTarget(profile);
-    setTargetSubId(subscriptions[0]?.id || '');
-    setRotateAfterAttach(true);
+  const getWebServerEngine = (
+    kind: ManagedProfileKind,
+    spec?: ManagedProfileSettings,
+  ): 'nginx' | 'caddy' | null => {
+    if (kind === 'self-sni') {
+      const ws = spec?.webServer ?? 'nginx';
+      return ws === 'nginx' || ws === 'caddy' ? ws : null;
+    }
+    if (kind === 'https-fallback') {
+      const rp = spec?.reverseProxy ?? 'none';
+      return rp === 'nginx' || rp === 'caddy' ? rp : null;
+    }
+    return null;
   };
 
-  const handleAttachToSubscription = async () => {
-    if (!deployTarget || !targetSubId) return;
-    const sub = subscriptions.find((item) => item.id === targetSubId);
-    if (!sub) return;
+  const openProfilePreview = (
+    profile: ConnectionProfileRecord,
+    initialTab = 0,
+  ) => {
+    setPreviewTarget({
+      kind: profile.kind,
+      name: profile.name,
+      nodeId: profile.nodeId || undefined,
+      port: profile.port ? String(profile.port) : 'random',
+      sni: profile.sni || undefined,
+      spec: profile.spec,
+      initialTab,
+    });
+  };
+
+  const openDraftWebServerPreview = () => {
+    setPreviewTarget({
+      kind: form.kind,
+      name: form.name || form.kind,
+      nodeId: form.nodeId || undefined,
+      port: form.port.trim() || 'random',
+      sni:
+        form.kind === 'self-sni' || form.kind === 'https-fallback'
+          ? form.spec.domain?.trim() || form.sni.trim() || undefined
+          : form.sni.trim() || undefined,
+      spec: { ...form.spec, rotationPolicy: form.rotationPolicy },
+      initialTab: 3,
+    });
+  };
+
+  const isProfileInSubscription = (
+    profile: ConnectionProfileRecord,
+    sub: SubscriptionBrief,
+  ): boolean => {
+    const configs = Array.isArray(sub.inboundsConfig) ? sub.inboundsConfig : [];
+    return configs.some((cfg) => {
+      if (cfg.profileId && String(cfg.profileId) === profile.id) return true;
+      return (
+        String(cfg.type || '') === profile.kind &&
+        String(cfg.name || '').trim() === profile.name.trim() &&
+        String(cfg.nodeId || '') === String(profile.nodeId || '')
+      );
+    });
+  };
+
+  const countProfileSubscriptions = (profile: ConnectionProfileRecord): number =>
+    subscriptions.filter((sub) => isProfileInSubscription(profile, sub)).length;
+
+  const buildInboundFromProfile = (
+    profile: ConnectionProfileRecord,
+    forceRandomPort: boolean,
+  ): Record<string, unknown> => {
+    const domain = profile.spec?.domain?.trim() || profile.sni?.trim() || '';
+    const isDirectFallback =
+      profile.kind === 'https-fallback' &&
+      (profile.spec?.reverseProxy ?? 'none') === 'none';
+    const newInbound: Record<string, unknown> = {
+      configId: crypto.randomUUID(),
+      type: profile.kind,
+      port: forceRandomPort ? 'random' : (profile.port ?? 'random'),
+      nodeId: profile.nodeId || undefined,
+      name: profile.name,
+      enabled: true,
+      profileId: profile.id,
+      profileSettings: {
+        ...profile.spec,
+        rotationPolicy: profile.rotationPolicy,
+      },
+    };
+    if (profile.kind === 'xhttp-stable') {
+      newInbound.sni = profile.sni || 'random';
+    } else if (profile.kind === 'self-sni') {
+      newInbound.sni = domain || undefined;
+    } else if (profile.kind === 'https-fallback') {
+      newInbound.tlsServerName = domain || undefined;
+      if (isDirectFallback) {
+        newInbound.certificateMode =
+          profile.spec?.certificateFile && profile.spec?.keyFile
+            ? 'custom'
+            : 'node';
+        if (newInbound.certificateMode === 'custom') {
+          newInbound.certificateFile = profile.spec.certificateFile;
+          newInbound.keyFile = profile.spec.keyFile;
+        }
+      }
+    }
+    return newInbound;
+  };
+
+  const toggleProfileSelection = (id: string) => {
+    setSelectedProfileIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id],
+    );
+  };
+
+  const openAttachDialog = (targets: ConnectionProfileRecord[]) => {
+    if (targets.length === 0) return;
+    setDeployTargets(targets);
+    setSubSearch('');
+    setSkipExistingInSub(true);
+    setUseRandomPortOnMultiSub(false);
+    setRotateAfterAttach(true);
+    const defaultSubs = subscriptions
+      .filter((sub) =>
+        targets.some((profile) => !isProfileInSubscription(profile, sub)),
+      )
+      .map((sub) => sub.id);
+    if (defaultSubs.length > 0) {
+      setTargetSubIds(
+        targets.length === 1 && subscriptions.length === 1
+          ? [defaultSubs[0]]
+          : defaultSubs.length === 1
+            ? [defaultSubs[0]]
+            : [defaultSubs[0]],
+      );
+    } else {
+      setTargetSubIds(subscriptions[0]?.id ? [subscriptions[0].id] : []);
+    }
+  };
+
+  const toggleTargetSub = (subId: string) => {
+    setTargetSubIds((prev) =>
+      prev.includes(subId)
+        ? prev.filter((id) => id !== subId)
+        : [...prev, subId],
+    );
+  };
+
+  const handleAttachToSubscriptions = async () => {
+    if (deployTargets.length === 0 || targetSubIds.length === 0) return;
+    const selectedSubs = subscriptions.filter((item) =>
+      targetSubIds.includes(item.id),
+    );
+    if (selectedSubs.length === 0) return;
 
     setAttaching(true);
     try {
-      const existingConfigs = Array.isArray(sub.inboundsConfig)
-        ? sub.inboundsConfig
-        : [];
-      const domain =
-        deployTarget.spec?.domain?.trim() || deployTarget.sni?.trim() || '';
-      const isDirectFallback =
-        deployTarget.kind === 'https-fallback' &&
-        (deployTarget.spec?.reverseProxy ?? 'none') === 'none';
-      const newInbound: Record<string, unknown> = {
-        configId: crypto.randomUUID(),
-        type: deployTarget.kind,
-        port: deployTarget.port ?? 'random',
-        nodeId: deployTarget.nodeId || undefined,
-        name: deployTarget.name,
-        enabled: true,
-        profileId: deployTarget.id,
-        profileSettings: {
-          ...deployTarget.spec,
-          rotationPolicy: deployTarget.rotationPolicy,
-        },
-      };
-      if (deployTarget.kind === 'xhttp-stable') {
-        newInbound.sni = deployTarget.sni || 'random';
-      } else if (deployTarget.kind === 'self-sni') {
-        newInbound.sni = domain || undefined;
-      } else if (deployTarget.kind === 'https-fallback') {
-        newInbound.tlsServerName = domain || undefined;
-        if (isDirectFallback) {
-          newInbound.certificateMode =
-            deployTarget.spec?.certificateFile && deployTarget.spec?.keyFile
-              ? 'custom'
-              : 'node';
-          if (newInbound.certificateMode === 'custom') {
-            newInbound.certificateFile = deployTarget.spec.certificateFile;
-            newInbound.keyFile = deployTarget.spec.keyFile;
+      const updatedSubIds: string[] = [];
+      let addedCount = 0;
+      let skippedDuplicates = 0;
+      let skippedLimit = 0;
+      const forceRandom =
+        selectedSubs.length > 1 && useRandomPortOnMultiSub;
+
+      for (const sub of selectedSubs) {
+        const existingConfigs = Array.isArray(sub.inboundsConfig)
+          ? sub.inboundsConfig
+          : [];
+        const currentConnectionCount = existingConfigs.filter(
+          (cfg) => !ROUTING_INBOUND_TYPES.has(String(cfg.type || '')),
+        ).length;
+
+        const toAdd: Array<Record<string, unknown>> = [];
+        for (const profile of deployTargets) {
+          if (skipExistingInSub && isProfileInSubscription(profile, sub)) {
+            skippedDuplicates += 1;
+            continue;
           }
+          if (currentConnectionCount + toAdd.length >= 20) {
+            skippedLimit += 1;
+            continue;
+          }
+          toAdd.push(buildInboundFromProfile(profile, forceRandom));
+        }
+
+        if (toAdd.length === 0) continue;
+
+        await api.put(`/subscriptions/${sub.id}`, {
+          name: sub.name,
+          note: sub.note || '',
+          supportUrl: sub.supportUrl || '',
+          websiteUrl: sub.websiteUrl || '',
+          isAutoRotationEnabled: sub.isAutoRotationEnabled ?? true,
+          nodeId: sub.nodeId || undefined,
+          relayServerId: sub.relayServerId || undefined,
+          inboundsConfig: [...existingConfigs, ...toAdd],
+        });
+        updatedSubIds.push(sub.id);
+        addedCount += toAdd.length;
+      }
+
+      if (rotateAfterAttach && updatedSubIds.length > 0) {
+        if (updatedSubIds.length === 1) {
+          await api.post(`/rotation/rotate-one/${updatedSubIds[0]}`);
+        } else {
+          await api.post('/rotation/operations', {
+            subscriptionIds: updatedSubIds,
+          });
         }
       }
 
-      await api.put(`/subscriptions/${sub.id}`, {
-        name: sub.name,
-        note: sub.note || '',
-        supportUrl: sub.supportUrl || '',
-        websiteUrl: sub.websiteUrl || '',
-        isAutoRotationEnabled: sub.isAutoRotationEnabled ?? true,
-        nodeId: sub.nodeId || undefined,
-        relayServerId: sub.relayServerId || undefined,
-        inboundsConfig: [...existingConfigs, newInbound],
-      });
+      setDeployTargets([]);
+      setSelectedProfileIds([]);
 
-      if (rotateAfterAttach) {
-        await api.post(`/rotation/rotate-one/${sub.id}`);
+      if (addedCount === 0) {
+        setSnackbar({
+          open: true,
+          severity: 'info',
+          message:
+            skippedLimit > 0
+              ? 'Достигнут лимит 20 подключений в выбранных подписках'
+              : 'Все выбранные профили уже добавлены в выбранные подписки',
+        });
+      } else {
+        const extraParts: string[] = [];
+        if (skippedDuplicates > 0) {
+          extraParts.push(`пропущено дублей: ${skippedDuplicates}`);
+        }
+        if (skippedLimit > 0) {
+          extraParts.push(`пропущено из-за лимита 20: ${skippedLimit}`);
+        }
+        const suffix = extraParts.length ? ` (${extraParts.join(', ')})` : '';
+        setSnackbar({
+          open: true,
+          severity: 'success',
+          message: rotateAfterAttach
+            ? `Добавлено подключений: ${addedCount} в подписок: ${updatedSubIds.length}${suffix} — запущена ротация`
+            : `Добавлено подключений: ${addedCount} в подписок: ${updatedSubIds.length}${suffix}`,
+        });
       }
-
-      setDeployTarget(null);
-      setSnackbar({
-        open: true,
-        severity: 'success',
-        message: rotateAfterAttach
-          ? `Профиль «${deployTarget.name}» добавлен в подписку «${sub.name}» и отправлен на развёртывание`
-          : `Профиль «${deployTarget.name}» добавлен в подписку «${sub.name}»`,
-      });
       await loadData();
     } catch (err: unknown) {
       const msg =
         (err as { response?: { data?: { message?: string | string[] } } })
           ?.response?.data?.message ||
-        'Не удалось добавить профиль в подписку';
+        'Не удалось добавить профили в подписки';
       setSnackbar({
         open: true,
         severity: 'error',
@@ -807,68 +986,195 @@ export default function ProfilesPage() {
         </Paper>
       ) : (
         <Stack spacing={2}>
+          <Paper
+            variant="outlined"
+            sx={{
+              px: 2,
+              py: 1.25,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: 1.5,
+            }}
+          >
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+              <FormControlLabel
+                sx={{ mr: 0.5 }}
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={
+                      profiles.length > 0 &&
+                      selectedProfileIds.length === profiles.length
+                    }
+                    indeterminate={
+                      selectedProfileIds.length > 0 &&
+                      selectedProfileIds.length < profiles.length
+                    }
+                    onChange={(e) =>
+                      setSelectedProfileIds(
+                        e.target.checked ? profiles.map((p) => p.id) : [],
+                      )
+                    }
+                  />
+                }
+                label={
+                  <Typography variant="body2">
+                    Выбрать все ({selectedProfileIds.length}/{profiles.length})
+                  </Typography>
+                }
+              />
+              {profiles.some((p) => !p.deployed) && (
+                <Button
+                  size="small"
+                  variant="text"
+                  onClick={() =>
+                    setSelectedProfileIds(
+                      profiles.filter((p) => !p.deployed).map((p) => p.id),
+                    )
+                  }
+                >
+                  Выбрать черновики
+                </Button>
+              )}
+            </Stack>
+            <Button
+              size="small"
+              variant="contained"
+              startIcon={<PlaylistAdd />}
+              disabled={
+                selectedProfileIds.length === 0 || subscriptions.length === 0
+              }
+              onClick={() =>
+                openAttachDialog(
+                  profiles.filter((p) => selectedProfileIds.includes(p.id)),
+                )
+              }
+            >
+              В подписки ({selectedProfileIds.length})
+            </Button>
+          </Paper>
+
           {profiles.map((profile) => {
             const isBusy = busyId === profile.id;
             const latestProbe = probeResults[profile.id];
+            const isSelected = selectedProfileIds.includes(profile.id);
+            const usedInSubsCount = countProfileSubscriptions(profile);
+            const webServerEngine = getWebServerEngine(
+              profile.kind,
+              profile.spec,
+            );
+            const webServerChipLabel =
+              webServerEngine && profile.kind === 'self-sni'
+                ? `${webServerEngine === 'caddy' ? 'Caddy' : 'Nginx'} · 127.0.0.1:${profile.spec?.localHttpsPort ?? 8443}`
+                : webServerEngine && profile.kind === 'https-fallback'
+                  ? `${webServerEngine === 'caddy' ? 'Caddy' : 'Nginx'} :${profile.spec?.publicPort ?? 443} → :${profile.port ?? 20443}`
+                  : null;
             return (
-              <Paper key={profile.id} variant="outlined" sx={{ p: 2.5 }}>
+              <Paper
+                key={profile.id}
+                variant="outlined"
+                sx={{
+                  p: 2.5,
+                  borderColor: isSelected ? 'primary.main' : undefined,
+                }}
+              >
                 <Stack
                   direction={{ xs: 'column', md: 'row' }}
                   justifyContent="space-between"
                   alignItems={{ xs: 'flex-start', md: 'center' }}
                   gap={1.5}
                 >
-                  <Stack spacing={0.5}>
-                    <Stack
-                      direction="row"
-                      spacing={1}
-                      alignItems="center"
-                      flexWrap="wrap"
-                      useFlexGap
-                    >
-                      <Typography variant="h6" fontWeight={700}>
-                        {profile.name}
+                  <Stack direction="row" spacing={1} alignItems="flex-start">
+                    <Checkbox
+                      size="small"
+                      checked={isSelected}
+                      onChange={() => toggleProfileSelection(profile.id)}
+                      inputProps={{
+                        'aria-label': `Выбрать профиль ${profile.name}`,
+                      }}
+                      sx={{ mt: -0.25, ml: -1 }}
+                    />
+                    <Stack spacing={0.5}>
+                      <Stack
+                        direction="row"
+                        spacing={1}
+                        alignItems="center"
+                        flexWrap="wrap"
+                        useFlexGap
+                      >
+                        <Typography variant="h6" fontWeight={700}>
+                          {profile.name}
+                        </Typography>
+                        <Chip size="small" label={profile.kind} />
+                        <Chip
+                          size="small"
+                          variant="outlined"
+                          label={`rev.${profile.activeRevision}`}
+                        />
+                        <Chip
+                          size="small"
+                          color={checkStatusColor(profile.lastCheckStatus)}
+                          label={checkStatusLabel(profile.lastCheckStatus)}
+                        />
+                        <Chip
+                          size="small"
+                          variant="outlined"
+                          color={profile.deployed ? 'success' : 'default'}
+                          label={
+                            profile.deployed
+                              ? `Развёрнут · порт ${profile.activeInbound?.port ?? profile.port ?? '?'}`
+                              : 'Черновик (не в подписке)'
+                          }
+                        />
+                        {usedInSubsCount > 0 && (
+                          <Chip
+                            size="small"
+                            color="info"
+                            variant="outlined"
+                            label={`Подписок: ${usedInSubsCount}`}
+                          />
+                        )}
+                        {webServerChipLabel && (
+                          <Chip
+                            size="small"
+                            color="secondary"
+                            variant="outlined"
+                            label={webServerChipLabel}
+                          />
+                        )}
+                      </Stack>
+                      <Typography variant="body2" color="text.secondary">
+                        Нода: {nodeNameById(profile.nodeId)} · Порт:{' '}
+                        {profile.port ?? 'random'} · Домен/SNI:{' '}
+                        {profile.spec?.domain || profile.sni || 'random'} ·
+                        Ротация: {profile.rotationPolicy}
                       </Typography>
-                      <Chip size="small" label={profile.kind} />
-                      <Chip
-                        size="small"
-                        variant="outlined"
-                        label={`rev.${profile.activeRevision}`}
-                      />
-                      <Chip
-                        size="small"
-                        color={checkStatusColor(profile.lastCheckStatus)}
-                        label={checkStatusLabel(profile.lastCheckStatus)}
-                      />
-                      <Chip
-                        size="small"
-                        variant="outlined"
-                        color={profile.deployed ? 'success' : 'default'}
-                        label={
-                          profile.deployed
-                            ? `Развёрнут · порт ${profile.activeInbound?.port ?? profile.port ?? '?'}`
-                            : 'Черновик (не в подписке)'
-                        }
-                      />
                     </Stack>
-                    <Typography variant="body2" color="text.secondary">
-                      Нода: {nodeNameById(profile.nodeId)} · Порт:{' '}
-                      {profile.port ?? 'random'} · Домен/SNI:{' '}
-                      {profile.spec?.domain || profile.sni || 'random'} ·
-                      Ротация: {profile.rotationPolicy}
-                    </Typography>
                   </Stack>
 
                   <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                    {!profile.deployed && (
+                    <Button
+                      size="small"
+                      variant={profile.deployed ? 'outlined' : 'contained'}
+                      startIcon={<PlaylistAdd />}
+                      disabled={isBusy || subscriptions.length === 0}
+                      onClick={() => openAttachDialog([profile])}
+                    >
+                      В подписки
+                    </Button>
+                    {webServerEngine && (
                       <Button
                         size="small"
-                        variant="contained"
-                        startIcon={<PlaylistAdd />}
-                        disabled={isBusy || subscriptions.length === 0}
-                        onClick={() => openAttachDialog(profile)}
+                        variant="outlined"
+                        color="secondary"
+                        startIcon={<Terminal />}
+                        onClick={() => openProfilePreview(profile, 3)}
                       >
-                        В подписку
+                        {webServerEngine === 'caddy'
+                          ? 'Caddy и инструкция'
+                          : 'Nginx и инструкция'}
                       </Button>
                     )}
                     <Button
@@ -903,7 +1209,7 @@ export default function ProfilesPage() {
                       size="small"
                       variant="outlined"
                       startIcon={<OpenInNew />}
-                      onClick={() => setPreviewTarget(profile)}
+                      onClick={() => openProfilePreview(profile, 0)}
                     >
                       Предпросмотр
                     </Button>
@@ -1577,6 +1883,31 @@ export default function ProfilesPage() {
                 ))}
               </Select>
             </FormControl>
+
+            {(() => {
+              const draftEngine = getWebServerEngine(form.kind, form.spec);
+              if (!draftEngine) return null;
+              const engineName = draftEngine === 'caddy' ? 'Caddy' : 'Nginx';
+              return (
+                <Alert
+                  severity="info"
+                  action={
+                    <Button
+                      size="small"
+                      color="inherit"
+                      startIcon={<Terminal />}
+                      disabled={!form.spec.domain?.trim()}
+                      onClick={openDraftWebServerPreview}
+                    >
+                      Шаблон {engineName}
+                    </Button>
+                  }
+                >
+                  Для этого профиля нужен {engineName} на ноде. Укажите домен и
+                  откройте готовый конфиг с пошаговыми командами установки.
+                </Alert>
+              );
+            })()}
           </Stack>
         </DialogContent>
         <DialogActions>
@@ -1591,59 +1922,207 @@ export default function ProfilesPage() {
         </DialogActions>
       </Dialog>
 
-      {deployTarget && (
-        <Dialog
-          open={Boolean(deployTarget)}
-          onClose={() => setDeployTarget(null)}
-          maxWidth="xs"
-          fullWidth
-        >
-          <DialogTitle>Добавить профиль в подписку</DialogTitle>
-          <DialogContent dividers>
-            <Stack spacing={2} sx={{ mt: 0.5 }}>
-              <Typography variant="body2" color="text.secondary">
-                Профиль <strong>{deployTarget.name}</strong> ({deployTarget.kind}
-                ) будет добавлен в выбранную подписку без удаления её текущих
-                подключений.
-              </Typography>
-              <FormControl size="small" fullWidth>
-                <InputLabel>Подписка</InputLabel>
-                <Select
-                  value={targetSubId}
-                  label="Подписка"
-                  onChange={(e) => setTargetSubId(e.target.value)}
-                >
-                  {subscriptions.map((sub) => (
-                    <MenuItem key={sub.id} value={sub.id}>
-                      {sub.name}
-                    </MenuItem>
+      {deployTargets.length > 0 && (() => {
+        const filteredSubs = subscriptions.filter((sub) =>
+          sub.name.toLowerCase().includes(subSearch.trim().toLowerCase()),
+        );
+        const fixedPortTargets = deployTargets.filter((p) => p.port != null);
+        const hasFixedPortMultiSubWarning =
+          targetSubIds.length > 1 && fixedPortTargets.length > 0;
+        const plannedAdditions = subscriptions
+          .filter((sub) => targetSubIds.includes(sub.id))
+          .reduce((acc, sub) => {
+            const count = deployTargets.filter(
+              (profile) =>
+                !skipExistingInSub || !isProfileInSubscription(profile, sub),
+            ).length;
+            return acc + count;
+          }, 0);
+
+        return (
+          <Dialog
+            open={deployTargets.length > 0}
+            onClose={() => !attaching && setDeployTargets([])}
+            maxWidth="sm"
+            fullWidth
+          >
+            <DialogTitle>
+              {deployTargets.length === 1
+                ? 'Добавить профиль в подписки'
+                : `Массовое добавление профилей (${deployTargets.length})`}
+            </DialogTitle>
+            <DialogContent dividers>
+              <Stack spacing={2} sx={{ mt: 0.5 }}>
+                <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                  {deployTargets.map((profile) => (
+                    <Chip
+                      key={profile.id}
+                      size="small"
+                      color="primary"
+                      variant="outlined"
+                      label={`${profile.name} (${profile.kind}${profile.port ? ` :${profile.port}` : ''})`}
+                    />
                   ))}
-                </Select>
-              </FormControl>
-              <FormControlLabel
-                control={
-                  <Switch
+                </Stack>
+
+                <Stack
+                  direction="row"
+                  justifyContent="space-between"
+                  alignItems="center"
+                  flexWrap="wrap"
+                  gap={1}
+                >
+                  <Typography variant="body2" color="text.secondary">
+                    Выберите подписки ({targetSubIds.length} из{' '}
+                    {subscriptions.length}):
+                  </Typography>
+                  <Stack direction="row" spacing={1}>
+                    <Button
+                      size="small"
+                      onClick={() =>
+                        setTargetSubIds(filteredSubs.map((s) => s.id))
+                      }
+                    >
+                      Выбрать все
+                    </Button>
+                    <Button
+                      size="small"
+                      color="inherit"
+                      onClick={() => setTargetSubIds([])}
+                    >
+                      Снять выбор
+                    </Button>
+                  </Stack>
+                </Stack>
+
+                {subscriptions.length > 5 && (
+                  <TextField
                     size="small"
-                    checked={rotateAfterAttach}
-                    onChange={(e) => setRotateAfterAttach(e.target.checked)}
+                    placeholder="Поиск подписки по названию…"
+                    value={subSearch}
+                    onChange={(e) => setSubSearch(e.target.value)}
+                    fullWidth
                   />
-                }
-                label="Сразу развернуть на ноде 3x-ui (запустить ротацию подписки)"
-              />
-            </Stack>
-          </DialogContent>
-          <DialogActions>
-            <Button onClick={() => setDeployTarget(null)}>Отмена</Button>
-            <Button
-              variant="contained"
-              disabled={attaching || !targetSubId}
-              onClick={() => void handleAttachToSubscription()}
-            >
-              {attaching ? 'Применение…' : 'Добавить'}
-            </Button>
-          </DialogActions>
-        </Dialog>
-      )}
+                )}
+
+                <Paper
+                  variant="outlined"
+                  sx={{ maxHeight: 260, overflowY: 'auto' }}
+                >
+                  <List dense disablePadding>
+                    {filteredSubs.map((sub) => {
+                      const checked = targetSubIds.includes(sub.id);
+                      const alreadyCount = deployTargets.filter((p) =>
+                        isProfileInSubscription(p, sub),
+                      ).length;
+                      const existingConns = (
+                        Array.isArray(sub.inboundsConfig)
+                          ? sub.inboundsConfig
+                          : []
+                      ).filter(
+                        (cfg) =>
+                          !ROUTING_INBOUND_TYPES.has(String(cfg.type || '')),
+                      ).length;
+                      return (
+                        <ListItemButton
+                          key={sub.id}
+                          onClick={() => toggleTargetSub(sub.id)}
+                          dense
+                        >
+                          <ListItemIcon sx={{ minWidth: 34 }}>
+                            <Checkbox
+                              edge="start"
+                              size="small"
+                              checked={checked}
+                              tabIndex={-1}
+                              disableRipple
+                            />
+                          </ListItemIcon>
+                          <ListItemText
+                            primary={sub.name}
+                            secondary={`Подключений: ${existingConns}/20${
+                              alreadyCount > 0
+                                ? ` · уже добавлено: ${alreadyCount}/${deployTargets.length}`
+                                : ''
+                            }`}
+                          />
+                        </ListItemButton>
+                      );
+                    })}
+                  </List>
+                </Paper>
+
+                {hasFixedPortMultiSubWarning && (
+                  <Alert severity="warning" sx={{ py: 0.5 }}>
+                    У{' '}
+                    {fixedPortTargets
+                      .map((p) => `«${p.name}» (:${p.port})`)
+                      .join(', ')}{' '}
+                    указан фиксированный порт. В 3x-ui несколько подписок на
+                    одной ноде не могут одновременно занять один порт — включите
+                    случайный порт ниже или добавляйте по одной подписке на
+                    ноду.
+                  </Alert>
+                )}
+
+                {hasFixedPortMultiSubWarning && (
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        size="small"
+                        checked={useRandomPortOnMultiSub}
+                        onChange={(e) =>
+                          setUseRandomPortOnMultiSub(e.target.checked)
+                        }
+                      />
+                    }
+                    label="Назначать случайный порт (random) при добавлении в несколько подписок"
+                  />
+                )}
+
+                <FormControlLabel
+                  control={
+                    <Switch
+                      size="small"
+                      checked={skipExistingInSub}
+                      onChange={(e) => setSkipExistingInSub(e.target.checked)}
+                    />
+                  }
+                  label="Пропускать уже добавленные в подписку профили (без дублей)"
+                />
+
+                <FormControlLabel
+                  control={
+                    <Switch
+                      size="small"
+                      checked={rotateAfterAttach}
+                      onChange={(e) => setRotateAfterAttach(e.target.checked)}
+                    />
+                  }
+                  label="Сразу развернуть на нодах 3x-ui (запустить ротацию выбранных подписок)"
+                />
+              </Stack>
+            </DialogContent>
+            <DialogActions>
+              <Button
+                onClick={() => setDeployTargets([])}
+                disabled={attaching}
+              >
+                Отмена
+              </Button>
+              <Button
+                variant="contained"
+                disabled={attaching || targetSubIds.length === 0}
+                onClick={() => void handleAttachToSubscriptions()}
+              >
+                {attaching
+                  ? 'Применение…'
+                  : `Добавить (${plannedAdditions})`}
+              </Button>
+            </DialogActions>
+          </Dialog>
+        );
+      })()}
 
       {previewTarget && (
         <ProfilePreviewDialog
@@ -1651,10 +2130,11 @@ export default function ProfilesPage() {
           onClose={() => setPreviewTarget(null)}
           kind={previewTarget.kind}
           name={previewTarget.name}
-          nodeId={previewTarget.nodeId || undefined}
-          port={previewTarget.port ? String(previewTarget.port) : 'random'}
-          sni={previewTarget.sni || undefined}
+          nodeId={previewTarget.nodeId}
+          port={previewTarget.port}
+          sni={previewTarget.sni}
           settings={previewTarget.spec}
+          initialTab={previewTarget.initialTab}
         />
       )}
 

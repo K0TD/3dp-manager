@@ -11,6 +11,8 @@ import {
   DialogTitle,
   Divider,
   IconButton,
+  List,
+  ListItemButton,
   ListItemIcon,
   ListItemText,
   Menu,
@@ -39,6 +41,7 @@ import {
   OpenInNew,
   PauseCircleFilled,
   PlayCircleFilled,
+  PlaylistAdd,
   Refresh,
 } from '@mui/icons-material';
 import api from '../api';
@@ -67,6 +70,9 @@ import {
   PERSISTENT_INBOUND_TYPES,
   ROUTING_INBOUND_TYPES,
   type InboundConfigUI,
+  type ManagedProfileKind,
+  type ManagedProfileSettings,
+  type ProfileRotationPolicy,
 } from '../types/inbound';
 
 interface Subscription {
@@ -116,6 +122,17 @@ interface CountryOption {
   emoji: string;
 }
 
+interface SavedProfileOption {
+  id: string;
+  name: string;
+  kind: ManagedProfileKind;
+  nodeId?: string | null;
+  port?: number | null;
+  sni?: string | null;
+  rotationPolicy?: ProfileRotationPolicy;
+  spec?: ManagedProfileSettings;
+}
+
 const getSubscriptionUrl = (uuid: string) => {
   const path = `/bus/${uuid}`;
   return typeof window !== 'undefined'
@@ -129,6 +146,9 @@ export default function SubscriptionsPage() {
   const [nodes, setNodes] = useState<NodeRecord[]>([]);
   const [domains, setDomains] = useState<Domain[]>([]);
   const [countries, setCountries] = useState<CountryOption[]>([]);
+  const [savedProfiles, setSavedProfiles] = useState<SavedProfileOption[]>([]);
+  const [profilePickerOpen, setProfilePickerOpen] = useState(false);
+  const [pickedProfileIds, setPickedProfileIds] = useState<string[]>([]);
   const [menuAnchorEl, setMenuAnchorEl] = useState<null | HTMLElement>(null);
   const [activeSub, setActiveSub] = useState<Subscription | null>(null);
   const [open, setOpen] = useState(false);
@@ -192,6 +212,7 @@ export default function SubscriptionsPage() {
         domainsRes,
         countriesRes,
         settingsRes,
+        profilesRes,
       ] = await Promise.all([
         api.get('/subscriptions'),
         api.get('/tunnels'),
@@ -199,6 +220,9 @@ export default function SubscriptionsPage() {
         api.get('/domains/all'),
         api.get<CountryOption[]>('/settings/countries'),
         api.get('/settings'),
+        api
+          .get<SavedProfileOption[]>('/profiles')
+          .catch(() => ({ data: [] as SavedProfileOption[] })),
       ]);
 
       setSubs(Array.isArray(subsRes.data) ? subsRes.data : []);
@@ -218,6 +242,7 @@ export default function SubscriptionsPage() {
       setCountries(Array.isArray(countriesRes.data) ? countriesRes.data : []);
       setRotationSettings((prev) => ({ ...prev, ...settingsRes.data }));
       setDefaultInboundsSetting(settingsRes.data?.default_inbounds);
+      setSavedProfiles(Array.isArray(profilesRes.data) ? profilesRes.data : []);
     } catch (error) {
       Logger.error('Failed to load subscriptions data', 'Subs', error);
       throw error;
@@ -1369,6 +1394,21 @@ export default function SubscriptionsPage() {
             countries={countries}
             portErrors={portErrors}
             onPortErrorsChange={setPortErrors}
+            extraActions={
+              savedProfiles.length > 0 ? (
+                <Button
+                  variant="outlined"
+                  size="small"
+                  startIcon={<PlaylistAdd />}
+                  onClick={() => {
+                    setPickedProfileIds([]);
+                    setProfilePickerOpen(true);
+                  }}
+                >
+                  Из профилей ({savedProfiles.length})
+                </Button>
+              ) : undefined
+            }
           />
         </DialogContent>
         <DialogActions>
@@ -1380,6 +1420,215 @@ export default function SubscriptionsPage() {
             color="primary"
           >
             {saving ? 'Сохранение…' : 'Сохранить'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={profilePickerOpen}
+        onClose={() => setProfilePickerOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Добавить управляемые профили</DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={1.5}>
+            <Stack
+              direction="row"
+              justifyContent="space-between"
+              alignItems="center"
+            >
+              <Typography variant="body2" color="text.secondary">
+                Отметьте профили для массового добавления в подписку (выбрано:{' '}
+                {pickedProfileIds.length})
+              </Typography>
+              <Stack direction="row" spacing={1}>
+                <Button
+                  size="small"
+                  onClick={() =>
+                    setPickedProfileIds(savedProfiles.map((p) => p.id))
+                  }
+                >
+                  Выбрать все
+                </Button>
+                <Button
+                  size="small"
+                  color="inherit"
+                  onClick={() => setPickedProfileIds([])}
+                >
+                  Снять
+                </Button>
+              </Stack>
+            </Stack>
+            <Paper variant="outlined" sx={{ maxHeight: 300, overflowY: 'auto' }}>
+              <List dense disablePadding>
+                {savedProfiles.map((profile) => {
+                  const checked = pickedProfileIds.includes(profile.id);
+                  const alreadyAdded = inbounds.some(
+                    (inb) =>
+                      inb.profileId === profile.id ||
+                      (inb.type === profile.kind &&
+                        (inb.name || '').trim() === profile.name.trim() &&
+                        (inb.nodeId || '') === (profile.nodeId || '')),
+                  );
+                  const nodeName =
+                    nodes.find((n) => n.id === profile.nodeId)?.name ||
+                    'Основная нода';
+                  return (
+                    <ListItemButton
+                      key={profile.id}
+                      dense
+                      onClick={() =>
+                        setPickedProfileIds((prev) =>
+                          prev.includes(profile.id)
+                            ? prev.filter((id) => id !== profile.id)
+                            : [...prev, profile.id],
+                        )
+                      }
+                    >
+                      <ListItemIcon sx={{ minWidth: 34 }}>
+                        <Checkbox
+                          edge="start"
+                          size="small"
+                          checked={checked}
+                          tabIndex={-1}
+                          disableRipple
+                        />
+                      </ListItemIcon>
+                      <ListItemText
+                        primary={`${profile.name} (${profile.kind})`}
+                        secondary={`${nodeName} · порт ${profile.port ?? 'random'} · ${profile.spec?.domain || profile.sni || 'random'}${alreadyAdded ? ' · уже в подписке' : ''}`}
+                      />
+                    </ListItemButton>
+                  );
+                })}
+              </List>
+            </Paper>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setProfilePickerOpen(false)}>Отмена</Button>
+          <Button
+            variant="contained"
+            disabled={pickedProfileIds.length === 0}
+            onClick={() => {
+              const chosen = savedProfiles.filter((p) =>
+                pickedProfileIds.includes(p.id),
+              );
+              const existingConnCount = inbounds.filter(
+                (i) => !ROUTING_INBOUND_TYPES.has(i.type),
+              ).length;
+              const appended: InboundConfigUI[] = [];
+              let skippedDup = 0;
+              for (const profile of chosen) {
+                const isDup = [...inbounds, ...appended].some(
+                  (inb) =>
+                    inb.profileId === profile.id ||
+                    (inb.type === profile.kind &&
+                      (inb.name || '').trim() === profile.name.trim() &&
+                      (inb.nodeId || '') === (profile.nodeId || '')),
+                );
+                if (isDup) {
+                  skippedDup += 1;
+                  continue;
+                }
+                if (existingConnCount + appended.length >= 20) break;
+                const configId = crypto.randomUUID();
+                const targetNodeId = profile.nodeId || getDefaultNodeId();
+                const nodeFlag =
+                  nodes.find((n) => n.id === targetNodeId)?.flag || '';
+                const domain =
+                  profile.spec?.domain?.trim() || profile.sni?.trim() || '';
+                const isDirectFallback =
+                  profile.kind === 'https-fallback' &&
+                  (profile.spec?.reverseProxy ?? 'none') === 'none';
+                const hasCustomCert = Boolean(
+                  profile.spec?.certificateFile && profile.spec?.keyFile,
+                );
+                appended.push({
+                  id: configId,
+                  configId,
+                  type: profile.kind,
+                  port: profile.port ? String(profile.port) : 'random',
+                  sni:
+                    profile.kind === 'xhttp-stable'
+                      ? profile.sni || 'random'
+                      : profile.kind === 'self-sni'
+                        ? domain
+                        : '',
+                  nodeId: targetNodeId,
+                  relayServerId: '',
+                  flag: nodeFlag,
+                  name: profile.name,
+                  enabled: true,
+                  profileId: profile.id,
+                  tlsServerName:
+                    profile.kind === 'https-fallback' ? domain : undefined,
+                  certificateMode: isDirectFallback
+                    ? hasCustomCert
+                      ? 'custom'
+                      : 'node'
+                    : undefined,
+                  certificateFile:
+                    isDirectFallback && hasCustomCert
+                      ? profile.spec?.certificateFile || ''
+                      : '',
+                  keyFile:
+                    isDirectFallback && hasCustomCert
+                      ? profile.spec?.keyFile || ''
+                      : '',
+                  profileSettings:
+                    profile.kind === 'xhttp-stable'
+                      ? {
+                          ...createDefaultXhttpStableSettings(),
+                          ...profile.spec,
+                          rotationPolicy:
+                            profile.rotationPolicy ||
+                            profile.spec?.rotationPolicy ||
+                            'fixed_domain',
+                        }
+                      : profile.kind === 'self-sni'
+                        ? {
+                            ...createDefaultSelfSniSettings(domain),
+                            ...profile.spec,
+                            domain,
+                            rotationPolicy:
+                              profile.rotationPolicy ||
+                              profile.spec?.rotationPolicy ||
+                              'fixed_domain',
+                          }
+                        : {
+                            ...createDefaultHttpsFallbackSettings(domain),
+                            ...profile.spec,
+                            domain,
+                            rotationPolicy:
+                              profile.rotationPolicy ||
+                              profile.spec?.rotationPolicy ||
+                              'fixed_domain',
+                          },
+                });
+              }
+              if (appended.length > 0) {
+                setInbounds((prev) => [...prev, ...appended]);
+                setSnackbar({
+                  open: true,
+                  type: 'success',
+                  message: `Добавлено профилей в форму: ${appended.length}${skippedDup > 0 ? ` (пропущено дублей: ${skippedDup})` : ''}`,
+                });
+              } else {
+                setSnackbar({
+                  open: true,
+                  type: 'error',
+                  message:
+                    skippedDup > 0
+                      ? 'Выбранные профили уже добавлены в подписку'
+                      : 'Достигнут лимит 20 подключений',
+                });
+              }
+              setProfilePickerOpen(false);
+            }}
+          >
+            Добавить ({pickedProfileIds.length})
           </Button>
         </DialogActions>
       </Dialog>

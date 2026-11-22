@@ -177,11 +177,13 @@ describe('ProfilePreviewDialog', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole('tab', { name: 'Nginx конфиг' }),
+        screen.getByRole('tab', { name: 'Nginx шаблон и инструкция' }),
       ).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Nginx конфиг' }));
+    fireEvent.click(
+      screen.getByRole('tab', { name: 'Nginx шаблон и инструкция' }),
+    );
     expect(
       screen.getByDisplayValue(/listen 127\.0\.0\.1:8443 ssl http2/),
     ).toBeInTheDocument();
