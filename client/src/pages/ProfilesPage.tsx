@@ -10,6 +10,7 @@ import {
   DialogContent,
   DialogTitle,
   FormControl,
+  FormControlLabel,
   IconButton,
   InputLabel,
   MenuItem,
@@ -17,6 +18,7 @@ import {
   Select,
   Snackbar,
   Stack,
+  Switch,
   TextField,
   Tooltip,
   Typography,
@@ -28,6 +30,7 @@ import {
   FactCheck,
   NetworkCheck,
   OpenInNew,
+  PlaylistAdd,
   Refresh,
   Restore,
 } from '@mui/icons-material';
@@ -86,11 +89,31 @@ interface ConnectionProfileRecord {
   activeRevision: number;
   previousSnapshot?: ConnectionProfileSnapshot | null;
   updatedAt?: string;
+  deployed?: boolean;
+  activeInbound?: {
+    id: number;
+    port: number;
+    remark?: string | null;
+    subscriptionId?: string | null;
+  } | null;
+}
+
+interface SubscriptionBrief {
+  id: string;
+  name: string;
+  note?: string;
+  supportUrl?: string;
+  websiteUrl?: string;
+  inboundsConfig?: Array<Record<string, unknown>>;
+  isAutoRotationEnabled?: boolean;
+  nodeId?: string;
+  relayServerId?: number;
 }
 
 interface ClientProbeResponse {
   id: string;
   source: 'active_inbound' | 'preview';
+  deployed?: boolean;
   checkedAt: string;
   probe: {
     success: boolean;
@@ -196,6 +219,7 @@ export default function ProfilesPage() {
   const [profiles, setProfiles] = useState<ConnectionProfileRecord[]>([]);
   const [catalog, setCatalog] = useState<ProfileCatalogEntry[]>([]);
   const [nodes, setNodes] = useState<NodeRecord[]>([]);
+  const [subscriptions, setSubscriptions] = useState<SubscriptionBrief[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [probeResults, setProbeResults] = useState<
@@ -203,6 +227,11 @@ export default function ProfilesPage() {
   >({});
   const [previewTarget, setPreviewTarget] =
     useState<ConnectionProfileRecord | null>(null);
+  const [deployTarget, setDeployTarget] =
+    useState<ConnectionProfileRecord | null>(null);
+  const [targetSubId, setTargetSubId] = useState('');
+  const [rotateAfterAttach, setRotateAfterAttach] = useState(true);
+  const [attaching, setAttaching] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<ProfileFormState>(DEFAULT_FORM);
@@ -216,14 +245,18 @@ export default function ProfilesPage() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [profilesRes, catalogRes, nodesRes] = await Promise.all([
+      const [profilesRes, catalogRes, nodesRes, subsRes] = await Promise.all([
         api.get<ConnectionProfileRecord[]>('/profiles'),
         api.get<ProfileCatalogEntry[]>('/profiles/catalog'),
         api.get<NodeRecord[]>('/nodes'),
+        api
+          .get<SubscriptionBrief[]>('/subscriptions')
+          .catch(() => ({ data: [] as SubscriptionBrief[] })),
       ]);
       setProfiles(Array.isArray(profilesRes.data) ? profilesRes.data : []);
       setCatalog(Array.isArray(catalogRes.data) ? catalogRes.data : []);
       setNodes(Array.isArray(nodesRes.data) ? nodesRes.data : []);
+      setSubscriptions(Array.isArray(subsRes.data) ? subsRes.data : []);
     } catch {
       setSnackbar({
         open: true,
@@ -350,10 +383,15 @@ export default function ProfilesPage() {
       setProbeResults((prev) => ({ ...prev, [profile.id]: res.data }));
       setSnackbar({
         open: true,
-        severity: res.data.probe.success ? 'success' : 'error',
+        severity: res.data.probe.success
+          ? 'success'
+          : res.data.deployed === false
+            ? 'warning'
+            : 'error',
         message: res.data.probe.success
           ? `Клиентская проба «${profile.name}» пройдена (${res.data.probe.engine}, ${res.data.probe.latencyMs} мс)`
-          : `Клиентская проба «${profile.name}» не пройдена: ${res.data.probe.error || 'ошибка'}`,
+          : res.data.probe.error ||
+            `Клиентская проба «${profile.name}» не пройдена`,
       });
       await loadData();
     } catch {
@@ -364,6 +402,97 @@ export default function ProfilesPage() {
       });
     } finally {
       setBusyId(null);
+    }
+  };
+
+  const openAttachDialog = (profile: ConnectionProfileRecord) => {
+    setDeployTarget(profile);
+    setTargetSubId(subscriptions[0]?.id || '');
+    setRotateAfterAttach(true);
+  };
+
+  const handleAttachToSubscription = async () => {
+    if (!deployTarget || !targetSubId) return;
+    const sub = subscriptions.find((item) => item.id === targetSubId);
+    if (!sub) return;
+
+    setAttaching(true);
+    try {
+      const existingConfigs = Array.isArray(sub.inboundsConfig)
+        ? sub.inboundsConfig
+        : [];
+      const domain =
+        deployTarget.spec?.domain?.trim() || deployTarget.sni?.trim() || '';
+      const isDirectFallback =
+        deployTarget.kind === 'https-fallback' &&
+        (deployTarget.spec?.reverseProxy ?? 'none') === 'none';
+      const newInbound: Record<string, unknown> = {
+        configId: crypto.randomUUID(),
+        type: deployTarget.kind,
+        port: deployTarget.port ?? 'random',
+        nodeId: deployTarget.nodeId || undefined,
+        name: deployTarget.name,
+        enabled: true,
+        profileId: deployTarget.id,
+        profileSettings: {
+          ...deployTarget.spec,
+          rotationPolicy: deployTarget.rotationPolicy,
+        },
+      };
+      if (deployTarget.kind === 'xhttp-stable') {
+        newInbound.sni = deployTarget.sni || 'random';
+      } else if (deployTarget.kind === 'self-sni') {
+        newInbound.sni = domain || undefined;
+      } else if (deployTarget.kind === 'https-fallback') {
+        newInbound.tlsServerName = domain || undefined;
+        if (isDirectFallback) {
+          newInbound.certificateMode =
+            deployTarget.spec?.certificateFile && deployTarget.spec?.keyFile
+              ? 'custom'
+              : 'node';
+          if (newInbound.certificateMode === 'custom') {
+            newInbound.certificateFile = deployTarget.spec.certificateFile;
+            newInbound.keyFile = deployTarget.spec.keyFile;
+          }
+        }
+      }
+
+      await api.put(`/subscriptions/${sub.id}`, {
+        name: sub.name,
+        note: sub.note || '',
+        supportUrl: sub.supportUrl || '',
+        websiteUrl: sub.websiteUrl || '',
+        isAutoRotationEnabled: sub.isAutoRotationEnabled ?? true,
+        nodeId: sub.nodeId || undefined,
+        relayServerId: sub.relayServerId || undefined,
+        inboundsConfig: [...existingConfigs, newInbound],
+      });
+
+      if (rotateAfterAttach) {
+        await api.post(`/rotation/rotate-one/${sub.id}`);
+      }
+
+      setDeployTarget(null);
+      setSnackbar({
+        open: true,
+        severity: 'success',
+        message: rotateAfterAttach
+          ? `Профиль «${deployTarget.name}» добавлен в подписку «${sub.name}» и отправлен на развёртывание`
+          : `Профиль «${deployTarget.name}» добавлен в подписку «${sub.name}»`,
+      });
+      await loadData();
+    } catch (err: unknown) {
+      const msg =
+        (err as { response?: { data?: { message?: string | string[] } } })
+          ?.response?.data?.message ||
+        'Не удалось добавить профиль в подписку';
+      setSnackbar({
+        open: true,
+        severity: 'error',
+        message: Array.isArray(msg) ? msg.join('; ') : String(msg),
+      });
+    } finally {
+      setAttaching(false);
     }
   };
 
@@ -544,6 +673,16 @@ export default function ProfilesPage() {
                         color={checkStatusColor(profile.lastCheckStatus)}
                         label={checkStatusLabel(profile.lastCheckStatus)}
                       />
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        color={profile.deployed ? 'success' : 'default'}
+                        label={
+                          profile.deployed
+                            ? `Развёрнут · порт ${profile.activeInbound?.port ?? profile.port ?? '?'}`
+                            : 'Черновик (не в подписке)'
+                        }
+                      />
                     </Stack>
                     <Typography variant="body2" color="text.secondary">
                       Нода: {nodeNameById(profile.nodeId)} · Порт:{' '}
@@ -554,6 +693,17 @@ export default function ProfilesPage() {
                   </Stack>
 
                   <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                    {!profile.deployed && (
+                      <Button
+                        size="small"
+                        variant="contained"
+                        startIcon={<PlaylistAdd />}
+                        disabled={isBusy || subscriptions.length === 0}
+                        onClick={() => openAttachDialog(profile)}
+                      >
+                        В подписку
+                      </Button>
+                    )}
                     <Button
                       size="small"
                       variant="outlined"
@@ -563,15 +713,25 @@ export default function ProfilesPage() {
                     >
                       Preflight
                     </Button>
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      startIcon={<NetworkCheck />}
-                      disabled={isBusy}
-                      onClick={() => void handleProbe(profile)}
+                    <Tooltip
+                      title={
+                        profile.deployed
+                          ? 'Запустить реальную клиентскую проверку через xray-core'
+                          : 'Сначала добавьте профиль в подписку и выполните ротацию, чтобы создать inbound в 3x-ui'
+                      }
                     >
-                      Клиентская проба
-                    </Button>
+                      <span>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          startIcon={<NetworkCheck />}
+                          disabled={isBusy}
+                          onClick={() => void handleProbe(profile)}
+                        >
+                          Клиентская проба
+                        </Button>
+                      </span>
+                    </Tooltip>
                     <Button
                       size="small"
                       variant="outlined"
@@ -622,7 +782,13 @@ export default function ProfilesPage() {
 
                 {latestProbe && (
                   <Alert
-                    severity={latestProbe.probe.success ? 'success' : 'error'}
+                    severity={
+                      latestProbe.probe.success
+                        ? 'success'
+                        : latestProbe.deployed === false
+                          ? 'warning'
+                          : 'error'
+                    }
                     sx={{ mt: 1.5, py: 0.25 }}
                   >
                     <strong>
@@ -939,6 +1105,60 @@ export default function ProfilesPage() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {deployTarget && (
+        <Dialog
+          open={Boolean(deployTarget)}
+          onClose={() => setDeployTarget(null)}
+          maxWidth="xs"
+          fullWidth
+        >
+          <DialogTitle>Добавить профиль в подписку</DialogTitle>
+          <DialogContent dividers>
+            <Stack spacing={2} sx={{ mt: 0.5 }}>
+              <Typography variant="body2" color="text.secondary">
+                Профиль <strong>{deployTarget.name}</strong> ({deployTarget.kind}
+                ) будет добавлен в выбранную подписку без удаления её текущих
+                подключений.
+              </Typography>
+              <FormControl size="small" fullWidth>
+                <InputLabel>Подписка</InputLabel>
+                <Select
+                  value={targetSubId}
+                  label="Подписка"
+                  onChange={(e) => setTargetSubId(e.target.value)}
+                >
+                  {subscriptions.map((sub) => (
+                    <MenuItem key={sub.id} value={sub.id}>
+                      {sub.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <FormControlLabel
+                control={
+                  <Switch
+                    size="small"
+                    checked={rotateAfterAttach}
+                    onChange={(e) => setRotateAfterAttach(e.target.checked)}
+                  />
+                }
+                label="Сразу развернуть на ноде 3x-ui (запустить ротацию подписки)"
+              />
+            </Stack>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setDeployTarget(null)}>Отмена</Button>
+            <Button
+              variant="contained"
+              disabled={attaching || !targetSubId}
+              onClick={() => void handleAttachToSubscription()}
+            >
+              {attaching ? 'Применение…' : 'Добавить'}
+            </Button>
+          </DialogActions>
+        </Dialog>
+      )}
 
       {previewTarget && (
         <ProfilePreviewDialog

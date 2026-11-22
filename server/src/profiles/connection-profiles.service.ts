@@ -85,9 +85,36 @@ export class ConnectionProfilesService {
     return PROFILE_CATALOG;
   }
 
-  findAll() {
-    return this.profileRepo.find({
+  async findAll() {
+    const profiles = await this.profileRepo.find({
       order: { updatedAt: 'DESC', createdAt: 'DESC' },
+    });
+    if (profiles.length === 0 || typeof this.inboundRepo.find !== 'function') {
+      return profiles.map((profile) => ({
+        ...profile,
+        deployed: false,
+        activeInbound: null,
+      }));
+    }
+
+    const activeInbounds = await this.inboundRepo.find({
+      where: { status: InboundStatus.Active },
+      order: { createdAt: 'DESC' },
+    });
+    return profiles.map((profile) => {
+      const matched = this.matchActiveInbound(profile, activeInbounds);
+      return {
+        ...profile,
+        deployed: Boolean(matched),
+        activeInbound: matched
+          ? {
+              id: matched.id,
+              port: matched.port,
+              remark: matched.remark ?? null,
+              subscriptionId: matched.subscriptionId ?? null,
+            }
+          : null,
+      };
     });
   }
 
@@ -280,7 +307,7 @@ export class ConnectionProfilesService {
         tlsProbe = await this.probe.probeDomainAndTls({
           domain: explicitDomain,
           port: probePort,
-          expectedHostIps: node?.ip ? [node.ip] : undefined,
+          expectedHostIps: this.resolveExpectedNodeIps(node, explicitDomain),
           checkHttpSite: dto.kind !== 'xhttp-stable',
         });
         dnsResolvedIps = tlsProbe.dnsResolvedIps;
@@ -476,7 +503,7 @@ export class ConnectionProfilesService {
         tlsProbe = await this.probe.probeDomainAndTls({
           domain: domainToResolve,
           port: probePort,
-          expectedHostIps: node?.ip ? [node.ip] : undefined,
+          expectedHostIps: this.resolveExpectedNodeIps(node, domainToResolve),
           checkHttpSite: true,
         });
         dnsResolvedIps = tlsProbe.dnsResolvedIps;
@@ -524,19 +551,63 @@ export class ConnectionProfilesService {
   async probeProfile(id: string): Promise<{
     id: string;
     source: 'active_inbound' | 'preview';
+    deployed: boolean;
     probe: ClientConnectionProbeResult;
     checkedAt: string;
   }> {
     const profile = await this.findOne(id);
     const exported = await this.exportProfile(id);
-    const probe = await this.clientVerifier.probeClientProfile(
-      exported.exportBundle.clientConfig,
-    );
     const checkedAt = new Date();
     const existingChecks = profile.lastCheckResult?.checks || [];
     const filtered = existingChecks.filter(
       (item) =>
-        item.code !== 'CLIENT_PROBE_OK' && item.code !== 'CLIENT_PROBE_FAILED',
+        item.code !== 'CLIENT_PROBE_OK' &&
+        item.code !== 'CLIENT_PROBE_FAILED' &&
+        item.code !== 'CLIENT_PROBE_NOT_DEPLOYED',
+    );
+
+    if (exported.source !== 'active_inbound') {
+      const probe: ClientConnectionProbeResult = {
+        success: false,
+        engine: 'xray-core',
+        targetAddress: exported.exportBundle.clientConfig.address,
+        targetPort: exported.exportBundle.clientConfig.port,
+        protocol: 'vless',
+        profileKind: profile.kind,
+        latencyMs: 0,
+        error:
+          'Профиль сохранён как черновик и ещё не развёрнут на ноде 3x-ui. Нажмите «В подписку» (или добавьте этот тип в подписку) и выполните ротацию, затем повторите клиентскую пробу.',
+      };
+      const nextChecks = [
+        ...filtered,
+        {
+          code: 'CLIENT_PROBE_NOT_DEPLOYED',
+          severity: 'warning' as const,
+          title: 'Профиль ещё не развёрнут на ноде',
+          message: probe.error,
+        },
+      ];
+      const hasError = nextChecks.some((c) => c.severity === 'error');
+      profile.lastCheckResult = {
+        compatible: !hasError,
+        status: hasError ? 'failed' : 'warning',
+        checks: nextChecks,
+      };
+      profile.lastCheckStatus = profile.lastCheckResult.status;
+      profile.lastCheckedAt = checkedAt;
+      await this.profileRepo.save(profile);
+
+      return {
+        id: profile.id,
+        source: 'preview',
+        deployed: false,
+        probe,
+        checkedAt: checkedAt.toISOString(),
+      };
+    }
+
+    const probe = await this.clientVerifier.probeClientProfile(
+      exported.exportBundle.clientConfig,
     );
     const nextChecks = [
       ...filtered,
@@ -569,6 +640,7 @@ export class ConnectionProfilesService {
     return {
       id: profile.id,
       source: exported.source,
+      deployed: true,
       probe,
       checkedAt: checkedAt.toISOString(),
     };
@@ -723,6 +795,40 @@ export class ConnectionProfilesService {
     };
   }
 
+  private matchActiveInbound(
+    profile: ConnectionProfile,
+    activeInbounds: Inbound[],
+  ): Inbound | null {
+    if (profile.configId) {
+      const byConfig = activeInbounds.find(
+        (item) => item.configId === profile.configId,
+      );
+      if (byConfig) return byConfig;
+    }
+    const byProfileId = activeInbounds.find(
+      (item) => item.profileId === profile.id,
+    );
+    if (byProfileId) return byProfileId;
+
+    if (profile.nodeId) {
+      if (profile.port) {
+        const byNodeKindPort = activeInbounds.find(
+          (item) =>
+            item.nodeId === profile.nodeId &&
+            item.profileKind === profile.kind &&
+            item.port === profile.port,
+        );
+        if (byNodeKindPort) return byNodeKindPort;
+      }
+      const byNodeKind = activeInbounds.find(
+        (item) =>
+          item.nodeId === profile.nodeId && item.profileKind === profile.kind,
+      );
+      if (byNodeKind) return byNodeKind;
+    }
+    return null;
+  }
+
   private async findActiveInboundForProfile(
     profile: ConnectionProfile,
   ): Promise<Inbound | null> {
@@ -733,10 +839,59 @@ export class ConnectionProfilesService {
       });
       if (byConfig) return byConfig;
     }
-    return this.inboundRepo.findOne({
+    const byProfileId = await this.inboundRepo.findOne({
       where: { profileId: profile.id, status: InboundStatus.Active },
       order: { createdAt: 'DESC' },
     });
+    if (byProfileId) return byProfileId;
+
+    if (profile.nodeId) {
+      if (profile.port) {
+        const byNodeKindPort = await this.inboundRepo.findOne({
+          where: {
+            nodeId: profile.nodeId,
+            profileKind: profile.kind,
+            port: profile.port,
+            status: InboundStatus.Active,
+          },
+          order: { createdAt: 'DESC' },
+        });
+        if (byNodeKindPort) return byNodeKindPort;
+      }
+      return this.inboundRepo.findOne({
+        where: {
+          nodeId: profile.nodeId,
+          profileKind: profile.kind,
+          status: InboundStatus.Active,
+        },
+        order: { createdAt: 'DESC' },
+      });
+    }
+    return null;
+  }
+
+  private resolveExpectedNodeIps(
+    node: Node | null,
+    domainToResolve: string,
+  ): string[] | undefined {
+    if (!node) return undefined;
+    const normalizedDomain = domainToResolve.trim().toLowerCase();
+    const nodeHosts = new Set<string>();
+    if (node.domain?.trim()) nodeHosts.add(node.domain.trim().toLowerCase());
+    if (node.host?.trim()) nodeHosts.add(node.host.trim().toLowerCase());
+    if (node.url) {
+      try {
+        nodeHosts.add(new URL(node.url).hostname.toLowerCase());
+      } catch {
+        // Ignore malformed URL
+      }
+    }
+    // If the checked domain IS the node's own panel hostname/domain,
+    // do not emit a false IP mismatch against a stale cached node.ip.
+    if (nodeHosts.has(normalizedDomain)) {
+      return undefined;
+    }
+    return node.ip ? [node.ip] : undefined;
   }
 
   private async loadNodeMeta(nodeId: string): Promise<Node | null> {

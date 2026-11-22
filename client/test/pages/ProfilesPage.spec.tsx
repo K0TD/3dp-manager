@@ -38,6 +38,11 @@ describe('ProfilesPage', () => {
           data: [{ id: 'node-1', name: 'EU-1', isMain: true }],
         });
       }
+      if (url === '/subscriptions') {
+        return Promise.resolve({
+          data: [{ id: 'sub-1', name: 'Main Sub', inboundsConfig: [] }],
+        });
+      }
       return Promise.resolve({
         data: [
           {
@@ -45,6 +50,8 @@ describe('ProfilesPage', () => {
             name: 'SelfSNI Main',
             kind: 'self-sni',
             enabled: true,
+            deployed: true,
+            activeInbound: { id: 10, port: 443, remark: 'SelfSNI Main' },
             nodeId: 'node-1',
             port: 443,
             sni: 'portal.example.com',

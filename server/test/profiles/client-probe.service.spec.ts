@@ -16,7 +16,7 @@ describe('ClientProbeService', () => {
     security: 'reality',
     sni: 'www.microsoft.com',
     fingerprint: 'chrome',
-    publicKey: 'PUB_KEY',
+    publicKey: 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG',
     shortId: 'a1b2c3d4',
     spiderX: '/',
     xhttp: {
@@ -84,5 +84,14 @@ describe('ClientProbeService', () => {
     });
     expect(res.success).toBe(false);
     expect(res.error).toContain('Некорректный адрес или порт');
+  });
+
+  it('rejects undeployed preview REALITY placeholder publicKey cleanly without spawning broken xray', async () => {
+    const res = await service.probeClientProfile({
+      ...sampleProfile,
+      publicKey: '<generated-reality-public-key>',
+    });
+    expect(res.success).toBe(false);
+    expect(res.error).toContain('не развёрнут на ноде');
   });
 });

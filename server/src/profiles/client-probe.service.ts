@@ -114,6 +114,26 @@ export class ClientProbeService {
       };
     }
 
+    if (
+      client.security === 'reality' &&
+      (!client.publicKey ||
+        client.publicKey.includes('<') ||
+        client.publicKey.includes('>') ||
+        client.publicKey.length < 32)
+    ) {
+      return {
+        success: false,
+        engine: 'xray-core',
+        targetAddress: client.address,
+        targetPort: client.port,
+        protocol: 'vless',
+        profileKind: client.kind,
+        latencyMs: Date.now() - startedAt,
+        error:
+          'Профиль не развёрнут на ноде: отсутствует реальный публичный ключ REALITY (используется preview-заглушка). Добавьте профиль в подписку и выполните ротацию.',
+      };
+    }
+
     const xrayBin = options?.forceFallback ? null : this.resolveXrayBinary();
     if (xrayBin) {
       return this.probeViaXrayCore(client, xrayBin, {
@@ -156,15 +176,22 @@ export class ClientProbeService {
         mode: 0o600,
       });
 
-      let stderrTail = '';
+      let outputTail = '';
       let exitedEarly = false;
       let exitCode: number | null = null;
+      let spawnError: string | null = null;
 
       child = spawn(xrayBin, ['run', '-c', tmpConfigPath], {
-        stdio: ['ignore', 'ignore', 'pipe'],
+        stdio: ['ignore', 'pipe', 'pipe'],
       });
-      child.stderr?.on('data', (chunk: Buffer) => {
-        stderrTail = `${stderrTail}${chunk.toString('utf8')}`.slice(-1024);
+      const appendOutput = (chunk: Buffer) => {
+        outputTail = `${outputTail}${chunk.toString('utf8')}`.slice(-1536);
+      };
+      child.stdout?.on('data', appendOutput);
+      child.stderr?.on('data', appendOutput);
+      child.once('error', (err: Error) => {
+        exitedEarly = true;
+        spawnError = err.message;
       });
       child.once('exit', (code) => {
         exitedEarly = true;
@@ -177,7 +204,7 @@ export class ClientProbeService {
         () => exitedEarly,
       );
       if (!listenReady) {
-        const sanitizedErr = this.sanitizeError(stderrTail);
+        const sanitizedErr = this.sanitizeError(spawnError || outputTail);
         return {
           success: false,
           engine: 'xray-core',

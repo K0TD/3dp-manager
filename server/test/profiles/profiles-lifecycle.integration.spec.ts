@@ -227,8 +227,41 @@ describe('ConnectionProfiles full lifecycle integration (create -> update -> che
       const check = await service.checkProfile(created.id);
       expect(check.report.compatible).toBe(true);
 
-      // 4. Real client connection probe
+      // 4a. Probe before deployment reports clear not-deployed warning without running xray on placeholders
+      const undeployedProbe = await service.probeProfile(created.id);
+      expect(undeployedProbe.deployed).toBe(false);
+      expect(undeployedProbe.probe.success).toBe(false);
+      expect(undeployedProbe.probe.error).toContain('ещё не развёрнут');
+      expect(clientProbe.probeClientProfile).not.toHaveBeenCalled();
+
+      // 4b. Probe after deployment runs real client connection probe against active inbound
+      inboundRepo.findOne.mockResolvedValueOnce({
+        id: 500,
+        profileId: created.id,
+        profileKind: kind,
+        port,
+        link: `vless://aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee@eu.example.com:${port}#deployed`,
+        clientProfileJson: JSON.stringify({
+          kind,
+          protocol: 'vless',
+          address: 'eu.example.com',
+          port,
+          uuid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+          remark: updatedName,
+          network: kind === 'self-sni' ? 'tcp' : 'xhttp',
+          security: kind === 'https-fallback' ? 'tls' : 'reality',
+          sni: 'portal.example.com',
+          fingerprint: 'chrome',
+          ...(kind !== 'https-fallback'
+            ? {
+                publicKey: 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG',
+                shortId: 'a1b2c3d4',
+              }
+            : {}),
+        }),
+      });
       const probed = await service.probeProfile(created.id);
+      expect(probed.deployed).toBe(true);
       expect(probed.probe.success).toBe(true);
       expect(probed.probe.engine).toBe('xray-core');
       expect(probed.probe.httpStatusCode).toBe(204);
