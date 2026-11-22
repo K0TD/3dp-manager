@@ -66,6 +66,8 @@ describe('RotationService resilient generations', () => {
     buildVlessRealityTcp: jest.fn(),
     buildVlessRealityXhttp: jest.fn(),
     buildVlessXhttpGet: jest.fn(),
+    buildXhttpStableInbound: jest.fn(),
+    buildXhttpStableClientBundle: jest.fn(),
     buildVlessRealityGrpc: jest.fn(),
     buildVlessWs: jest.fn(),
     buildVlessTlsTcp: jest.fn(),
@@ -1540,6 +1542,225 @@ describe('RotationService resilient generations', () => {
       );
       expect(deleteMock).toHaveBeenCalledWith(['old-op-1', 'old-op-2']);
       delete opRepoWithDelete.delete;
+    });
+  });
+
+  describe('xhttp-stable managed profile rotation', () => {
+    const node = {
+      id: 'xhttp-node',
+      name: 'EU-XHTTP',
+      domain: 'eu.example.com',
+      version: '3.8.5',
+      xrayVersion: '26.7.11',
+    } as Node;
+
+    it('creates minimal server inbound, saves separated clientProfileJson, and preserves fixed SNI on rotation', async () => {
+      const configId = '33333333-3333-4333-8333-333333333333';
+      const sub = {
+        id: 'sub-xhttp',
+        name: 'SubXhttp',
+        isEnabled: true,
+        isAutoRotationEnabled: true,
+        inboundsConfig: [
+          {
+            configId,
+            type: 'xhttp-stable',
+            port: 443,
+            sni: 'random',
+            nodeId: node.id,
+            name: 'Stable XHTTP',
+            profileSettings: {
+              mode: 'stream-one',
+              fingerprint: 'firefox',
+              rotationPolicy: 'fixed_domain',
+              xmux: { enabled: true, maxConcurrency: '16-32' },
+            },
+          },
+        ],
+        inbounds: [
+          {
+            id: 700,
+            xuiId: 70,
+            configId,
+            nodeId: node.id,
+            protocol: 'vless',
+            status: InboundStatus.Active,
+            link: 'vless://old@eu.example.com:443?type=xhttp&sni=pinned.example.com#old',
+            clientProfileJson: JSON.stringify({
+              kind: 'xhttp-stable',
+              sni: 'pinned.example.com',
+            }),
+          } as Inbound,
+        ],
+      } as Subscription;
+
+      const builtInbound = {
+        enable: true,
+        port: 443,
+        protocol: 'vless',
+        remark: 'Stable XHTTP',
+        settings: JSON.stringify({ clients: [{ id: 'u1', flow: '' }] }),
+        streamSettings: JSON.stringify({
+          network: 'xhttp',
+          security: 'reality',
+          realitySettings: {
+            serverNames: ['pinned.example.com'],
+            shortIds: ['deadbeef'],
+            settings: { publicKey: 'PUB_KEY', fingerprint: 'firefox' },
+          },
+          xhttpSettings: {
+            path: '/',
+            host: 'pinned.example.com',
+            mode: 'stream-one',
+          },
+        }),
+      };
+
+      xuiService.assertXrayHealthy.mockResolvedValue(undefined);
+      xuiService.getNewX25519Cert.mockResolvedValue({
+        privateKey: 'SECRET_PRIV_KEY',
+        publicKey: 'PUB_KEY',
+      });
+      inboundBuilder.buildXhttpStableInbound.mockReturnValue(builtInbound);
+      xuiService.addInbound.mockResolvedValue({
+        id: 71,
+        inbound: { ...builtInbound, id: 71 },
+      });
+      inboundBuilder.buildXhttpStableClientBundle.mockReturnValue({
+        kind: 'xhttp-stable',
+        vlessLink:
+          'vless://u1@eu.example.com:443?type=xhttp&security=reality&sni=pinned.example.com&mode=stream-one#Stable',
+        clientConfig: {
+          kind: 'xhttp-stable',
+          protocol: 'vless',
+          address: 'eu.example.com',
+          port: 443,
+          uuid: 'u1',
+          remark: 'Stable XHTTP',
+          network: 'xhttp',
+          security: 'reality',
+          sni: 'pinned.example.com',
+          fingerprint: 'firefox',
+          publicKey: 'PUB_KEY',
+          shortId: 'deadbeef',
+          xhttp: {
+            path: '/',
+            host: 'pinned.example.com',
+            mode: 'stream-one',
+            extra: { xmux: { maxConcurrency: '16-32' } },
+          },
+        },
+        xrayClientJson: {
+          log: { loglevel: 'warning' },
+          inbounds: [],
+          outbounds: [],
+          routing: {},
+        },
+      });
+
+      const result = await (
+        service as unknown as {
+          rotateNodeGroup: (
+            s: Subscription,
+            k: string,
+            g: {
+              node?: Node;
+              configs: Array<{ config: unknown; position: number }>;
+            },
+            d: Domain[],
+          ) => Promise<{
+            status: string;
+            created: number;
+            pendingCleanup: number;
+          }>;
+        }
+      ).rotateNodeGroup(
+        sub,
+        node.id,
+        { node, configs: [{ config: sub.inboundsConfig[0], position: 0 }] },
+        [{ id: 1, name: 'other-random.com', isEnabled: true } as Domain],
+      );
+
+      expect(result).toMatchObject({
+        status: 'succeeded',
+        created: 1,
+        pendingCleanup: 1,
+      });
+      // Fixed domain from active generation was preserved instead of picking other-random.com
+      expect(inboundBuilder.buildXhttpStableInbound).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sni: 'pinned.example.com',
+        }),
+      );
+      const lastSaved = inboundRepo.save.mock.calls.at(-1)?.[0] as {
+        profileKind?: string;
+        clientProfileJson?: string;
+      };
+      expect(lastSaved.profileKind).toBe('xhttp-stable');
+      expect(lastSaved.clientProfileJson).toContain('"maxConcurrency":"16-32"');
+      expect(lastSaved.clientProfileJson).not.toContain('SECRET_PRIV_KEY');
+    });
+
+    it('blocks xhttp-stable XMUX rotation on incompatible Xray version and preserves existing working inbound', async () => {
+      const oldNode = {
+        ...node,
+        id: 'old-node',
+        xrayVersion: '24.11.30',
+      } as Node;
+      const sub = {
+        id: 'sub-xhttp-old',
+        name: 'SubOld',
+        isEnabled: true,
+        inboundsConfig: [
+          {
+            configId: '44444444-4444-4444-8444-444444444444',
+            type: 'xhttp-stable',
+            port: 443,
+            sni: 'www.microsoft.com',
+            nodeId: oldNode.id,
+            profileSettings: {
+              mode: 'stream-one',
+              xmux: { enabled: true, maxConcurrency: '16-32' },
+            },
+          },
+        ],
+        inbounds: [
+          {
+            id: 800,
+            nodeId: oldNode.id,
+            protocol: 'vless',
+            status: InboundStatus.Active,
+          } as Inbound,
+        ],
+      } as Subscription;
+
+      const result = await (
+        service as unknown as {
+          rotateNodeGroup: (
+            s: Subscription,
+            k: string,
+            g: {
+              node?: Node;
+              configs: Array<{ config: unknown; position: number }>;
+            },
+            d: Domain[],
+          ) => Promise<{ status: string; created: number; message?: string }>;
+        }
+      ).rotateNodeGroup(
+        sub,
+        oldNode.id,
+        {
+          node: oldNode,
+          configs: [{ config: sub.inboundsConfig[0], position: 0 }],
+        },
+        [],
+      );
+
+      expect(result.status).toBe('preserved');
+      expect(result.created).toBe(0);
+      expect(result.message).toContain('25.1.30');
+      expect(xuiService.addInbound).not.toHaveBeenCalled();
+      expect(inboundRepo.manager.transaction).not.toHaveBeenCalled();
     });
   });
 });

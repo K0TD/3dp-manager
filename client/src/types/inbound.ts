@@ -1,3 +1,65 @@
+export type ManagedProfileKind = 'xhttp-stable' | 'self-sni' | 'https-fallback';
+export type XhttpMode = 'auto' | 'stream-one' | 'packet-up';
+export type ClientFingerprint =
+  | 'chrome'
+  | 'firefox'
+  | 'safari'
+  | 'ios'
+  | 'android'
+  | 'edge'
+  | '360'
+  | 'qq'
+  | 'random'
+  | 'randomized';
+export type ProfileRotationPolicy = 'fixed_domain' | 'preserve_all' | 'standard';
+
+export interface XhttpXmuxSettings {
+  enabled?: boolean;
+  maxConcurrency?: string;
+  maxConnections?: string;
+  cMaxReuseTimes?: string;
+  hMaxRequestTimes?: string;
+  hMaxReusableSecs?: string;
+  hKeepAlivePeriod?: number;
+}
+
+export interface ManagedProfileSettings {
+  mode?: XhttpMode;
+  path?: string;
+  host?: string;
+  domain?: string;
+  fingerprint?: ClientFingerprint;
+  spiderX?: string;
+  noGRPCHeader?: boolean;
+  xmux?: XhttpXmuxSettings;
+  rotationPolicy?: ProfileRotationPolicy;
+}
+
+export interface ProfileCompatibilityItem {
+  code: string;
+  severity: 'ok' | 'warning' | 'error';
+  title: string;
+  message: string;
+}
+
+export interface ProfileCompatibilityReport {
+  compatible: boolean;
+  status: 'passed' | 'warning' | 'failed';
+  checks: ProfileCompatibilityItem[];
+}
+
+export interface ProfilePreviewResponse {
+  kind: ManagedProfileKind;
+  compatibility: ProfileCompatibilityReport;
+  serverPreview: Record<string, unknown>;
+  clientPreview: {
+    kind: ManagedProfileKind;
+    vlessLink: string;
+    clientConfig: Record<string, unknown>;
+    xrayClientJson: Record<string, unknown>;
+  };
+}
+
 export interface InboundConfigUI {
   id: string;
   configId: string;
@@ -14,6 +76,8 @@ export interface InboundConfigUI {
   tlsServerName?: string;
   certificateFile?: string;
   keyFile?: string;
+  profileId?: string;
+  profileSettings?: ManagedProfileSettings;
   enabled?: boolean;
   disabledReason?: string;
   awgLocked?: boolean;
@@ -45,6 +109,9 @@ export const CONNECTION_OPTIONS = [
   'vless-tcp-reality',
   'vless-xhttp-reality',
   'vless-xhttp-get',
+  'xhttp-stable',
+  'self-sni',
+  'https-fallback',
   'vless-grpc-reality',
   'vless-ws',
   'vless-tcp-tls',
@@ -65,6 +132,14 @@ export const CONNECTION_OPTIONS = [
   'incy-routing',
 ] as const;
 
+export const MANAGED_PROFILE_TYPES = new Set<string>([
+  'xhttp-stable',
+  'self-sni',
+  'https-fallback',
+]);
+
+export const ACTIVE_MANAGED_PROFILE_TYPES = new Set<string>(['xhttp-stable']);
+
 export const ROUTING_INBOUND_TYPES = new Set<string>([
   'happ-routing',
   'incy-routing',
@@ -77,11 +152,29 @@ export const PERSISTENT_INBOUND_TYPES = new Set([
   'amneziawg', 'wireguard', 'mixed', 'http', 'socks',
 ]);
 
+export const XHTTP_MODE_OPTIONS: readonly XhttpMode[] = [
+  'auto',
+  'stream-one',
+  'packet-up',
+];
+
+export const FINGERPRINT_OPTIONS: readonly ClientFingerprint[] = [
+  'chrome',
+  'firefox',
+  'safari',
+  'ios',
+  'android',
+  'edge',
+  'random',
+  'randomized',
+];
+
 export const CERTIFICATE_TYPES = new Set([
   'hysteria2-udp',
   'vless-tcp-tls',
   'vless-ws-tls',
   'vless-xhttp-tls',
+  'https-fallback',
 ]);
 
 export const DEFAULT_INBOUND_TYPES = [

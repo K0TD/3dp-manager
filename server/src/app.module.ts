@@ -40,6 +40,9 @@ import { AddNodeCapabilities1800000000000 } from './migrations/1800000000000-add
 import { AddRoutingPresets1810000000000 } from './migrations/1810000000000-add-routing-presets';
 import { AddSubscriptionMetadata1820000000000 } from './migrations/1820000000000-add-subscription-metadata';
 import { AddOperationErrorDetails1830000000000 } from './migrations/1830000000000-add-operation-error-details';
+import { AddConnectionProfiles1840000000000 } from './migrations/1840000000000-add-connection-profiles';
+import { ConnectionProfile } from './profiles/entities/connection-profile.entity';
+import { ConnectionProfilesModule } from './profiles/connection-profiles.module';
 
 const dbPoolLogger = new Logger('DatabasePool');
 
@@ -69,6 +72,7 @@ const dbPoolLogger = new Logger('DatabasePool');
         Tunnel,
         Node,
         RotationOperation,
+        ConnectionProfile,
       ],
       migrations: [
         InitialSchema1700000000000,
@@ -81,6 +85,7 @@ const dbPoolLogger = new Logger('DatabasePool');
         AddRoutingPresets1810000000000,
         AddSubscriptionMetadata1820000000000,
         AddOperationErrorDetails1830000000000,
+        AddConnectionProfiles1840000000000,
       ],
       synchronize: process.env.DB_SYNCHRONIZE === 'true',
       migrationsRun: process.env.DB_MIGRATIONS_RUN !== 'false',
@@ -117,6 +122,7 @@ const dbPoolLogger = new Logger('DatabasePool');
     TunnelsModule,
     NodesModule,
     BackupModule,
+    ConnectionProfilesModule,
   ],
   controllers: [AppController],
   providers: [

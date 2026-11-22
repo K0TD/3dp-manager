@@ -44,6 +44,7 @@ import {
   proxyConnectionFromLink,
   wireguardConfigFromLink,
 } from '../inbounds/connection-profiles';
+import { buildXrayClientJsonFromSubscriptionInbounds } from '../profiles/profile-config.builder';
 
 @Controller()
 export class ClientController {
@@ -76,13 +77,17 @@ export class ClientController {
     res.setHeader('Cache-Control', 'no-store');
     this.setSubscriptionMetadata(sub, res);
 
+    const activeInbounds = sortInboundsByPosition(sub.inbounds || []).filter(
+      (inbound) => inbound.status === InboundStatus.Active,
+    );
+    if (req.query.format === 'xray-json') {
+      return this.sendXrayJsonConfig(activeInbounds, sub.name, res);
+    }
     const previewData = this.buildPreviewData(
-      sortInboundsByPosition(sub.inbounds || [])
-        .filter((inbound) => inbound.status === InboundStatus.Active)
-        .map((inbound) => ({
-          protocol: inbound.protocol,
-          link: inbound.link,
-        })),
+      activeInbounds.map((inbound) => ({
+        protocol: inbound.protocol,
+        link: inbound.link,
+      })),
       sub.name,
     );
     if (req.query.format === 'amneziawg') {
@@ -165,21 +170,30 @@ export class ClientController {
     res.setHeader('Cache-Control', 'no-store');
     this.setSubscriptionMetadata(sub, res);
 
+    const activeRelayInbounds = sortInboundsByPosition(
+      sub.inbounds || [],
+    ).filter(
+      (inbound) =>
+        inbound.status === InboundStatus.Active &&
+        inbound.link &&
+        inbound.link.length > 0,
+    );
+    if (req.query.format === 'xray-json') {
+      return this.sendXrayJsonConfig(
+        activeRelayInbounds,
+        sub.name,
+        res,
+        relayHost,
+      );
+    }
     const previewData = this.buildPreviewData(
-      sortInboundsByPosition(sub.inbounds || [])
-        .filter(
-          (inbound) =>
-            inbound.status === InboundStatus.Active &&
-            inbound.link &&
-            inbound.link.length > 0,
-        )
-        .map((inbound) => ({
-          protocol: inbound.protocol,
-          link:
-            inbound.protocol === 'custom'
-              ? inbound.link
-              : this.patchLink(inbound.link, relayHost),
-        })),
+      activeRelayInbounds.map((inbound) => ({
+        protocol: inbound.protocol,
+        link:
+          inbound.protocol === 'custom'
+            ? inbound.link
+            : this.patchLink(inbound.link, relayHost),
+      })),
       sub.name,
     );
     if (req.query.format === 'amneziawg') {
@@ -543,6 +557,33 @@ export class ClientController {
         new RegExp(`^${field}\\s*=\\s*\\d+$`, 'm').test(config),
       )
     );
+  }
+
+  private sendXrayJsonConfig(
+    inbounds: Array<{
+      remark?: string | null;
+      link?: string | null;
+      clientProfileJson?: string | null;
+    }>,
+    subscriptionName: string,
+    res: Response,
+    overrideHost?: string,
+  ) {
+    const config = buildXrayClientJsonFromSubscriptionInbounds(
+      inbounds,
+      overrideHost,
+    );
+    const safeName =
+      (subscriptionName || 'subscription')
+        .replace(/[^a-zA-Z0-9._-]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'subscription';
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      attachmentDisposition(`${safeName}-xray.json`, 'xray-profile.json'),
+    );
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    return res.send(JSON.stringify(config, null, 2));
   }
 
   private setAmneziaDownloadHeaders(res: Response, fileName: string) {

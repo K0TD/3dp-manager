@@ -375,6 +375,69 @@ describe('ClientController', () => {
       expect(mockResponse.send).toHaveBeenCalledWith(expect.any(String));
     });
 
+    it('экспортирует полный клиентский Xray JSON по ?format=xray-json без приватных ключей', async () => {
+      const req = {
+        ...mockRequest,
+        query: { format: 'xray-json' },
+      };
+      const res = {
+        setHeader: jest.fn(),
+        send: jest.fn(),
+        status: jest.fn().mockReturnThis(),
+      } as any;
+      mockSubRepo.findOne.mockResolvedValue({
+        ...mockSubscription,
+        inbounds: [
+          {
+            id: 1,
+            position: 0,
+            status: 'active',
+            protocol: 'vless',
+            remark: 'xhttp-stable',
+            link: 'vless://11111111-2222-4333-8444-555555555555@node.example.com:443?type=xhttp&security=reality&pbk=PUBKEY&fp=chrome&sni=www.microsoft.com&sid=abcd&mode=stream-one#xhttp',
+            clientProfileJson: JSON.stringify({
+              kind: 'xhttp-stable',
+              protocol: 'vless',
+              address: 'node.example.com',
+              port: 443,
+              uuid: '11111111-2222-4333-8444-555555555555',
+              remark: 'xhttp-stable',
+              network: 'xhttp',
+              security: 'reality',
+              sni: 'www.microsoft.com',
+              fingerprint: 'chrome',
+              publicKey: 'PUBKEY',
+              shortId: 'abcd',
+              spiderX: '/',
+              xhttp: {
+                path: '/',
+                host: 'www.microsoft.com',
+                mode: 'stream-one',
+                extra: { xmux: { maxConcurrency: '16-32' } },
+              },
+            }),
+          },
+        ],
+      });
+
+      await controller.getSubscription('test-uuid', req, res);
+
+      expect(res.setHeader).toHaveBeenCalledWith(
+        'Content-Type',
+        'application/json; charset=utf-8',
+      );
+      const sentBody = res.send.mock.calls[0][0] as string;
+      const parsed = JSON.parse(sentBody);
+      expect(parsed.outbounds[0].protocol).toBe('vless');
+      expect(parsed.outbounds[0].streamSettings.xhttpSettings.mode).toBe(
+        'stream-one',
+      );
+      expect(
+        parsed.outbounds[0].streamSettings.xhttpSettings.extra.xmux,
+      ).toEqual({ maxConcurrency: '16-32' });
+      expect(sentBody).not.toContain('privateKey');
+    });
+
     it('должен вернуть HTML с QR для браузера', async () => {
       mockRequest.headers['user-agent'] = 'Mozilla/5.0 Chrome/120.0';
       mockSubRepo.findOne.mockResolvedValue(mockSubscription);

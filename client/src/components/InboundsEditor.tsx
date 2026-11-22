@@ -1,15 +1,17 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Alert,
   Box,
   Button,
   Chip,
   FormControl,
+  FormControlLabel,
   IconButton,
   InputLabel,
   MenuItem,
   Select,
   Stack,
+  Switch,
   TextField,
   Tooltip,
   Typography,
@@ -19,6 +21,7 @@ import {
   ArrowDownward,
   ArrowUpward,
   Delete,
+  OpenInNew,
   Remove,
   Restore,
 } from '@mui/icons-material';
@@ -26,14 +29,23 @@ import type { NodeRecord } from '../types/node';
 import {
   CERTIFICATE_TYPES,
   CONNECTION_OPTIONS,
+  FINGERPRINT_OPTIONS,
+  MANAGED_PROFILE_TYPES,
   PERSISTENT_INBOUND_TYPES,
   ROUTING_INBOUND_TYPES,
+  XHTTP_MODE_OPTIONS,
+  type ClientFingerprint,
   type CountryOption,
   type Domain,
   type InboundConfigUI,
+  type ManagedProfileKind,
+  type ManagedProfileSettings,
+  type ProfileRotationPolicy,
   type Tunnel,
+  type XhttpMode,
 } from '../types/inbound';
 import {
+  createDefaultXhttpStableSettings,
   createInboundTemplate,
   getNodeAddress,
   getNodeFlag,
@@ -42,8 +54,10 @@ import {
   hasSni,
   isInboundSupported,
   isValidPort,
+  validateXhttpStableSettings,
 } from '../utils/inboundUtils';
 import { FlagOptionLabel } from '../utils/flags';
+import { ProfilePreviewDialog } from './ProfilePreviewDialog';
 
 export interface InboundsEditorProps {
   inbounds: InboundConfigUI[];
@@ -74,6 +88,28 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
   showDisabledAlert = false,
   extraActions,
 }) => {
+  const [previewTarget, setPreviewTarget] = useState<InboundConfigUI | null>(
+    null,
+  );
+
+  const handleProfileSettingsChange = (
+    id: string,
+    patch: Partial<ManagedProfileSettings>,
+  ) => {
+    const updated = inbounds.map((inbound) => {
+      if (inbound.id !== id) return inbound;
+      return {
+        ...inbound,
+        profileSettings: {
+          ...createDefaultXhttpStableSettings(),
+          ...inbound.profileSettings,
+          ...patch,
+        },
+      };
+    });
+    onChange(updated);
+  };
+
   const handleInboundChange = (
     id: string,
     field: keyof InboundConfigUI,
@@ -133,6 +169,23 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
         next.tlsServerName = undefined;
         next.certificateFile = '';
         next.keyFile = '';
+      }
+
+      if (field === 'type' && value === 'xhttp-stable') {
+        next.profileSettings = {
+          ...createDefaultXhttpStableSettings(),
+          ...next.profileSettings,
+        };
+        if (!next.sni) next.sni = 'random';
+        next.certificateMode = undefined;
+        next.tlsServerName = undefined;
+        next.certificateFile = '';
+        next.keyFile = '';
+      }
+
+      if (field === 'type' && value !== 'xhttp-stable' && !MANAGED_PROFILE_TYPES.has(value)) {
+        next.profileSettings = undefined;
+        next.profileId = undefined;
       }
 
       if (
@@ -365,11 +418,21 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                       ? 'Happ routing'
                       : option === 'incy-routing'
                         ? 'INCY routing'
-                        : option;
+                        : option === 'xhttp-stable'
+                          ? 'XHTTP Stable (VLESS + XHTTP + REALITY)'
+                          : option === 'self-sni'
+                            ? 'Self-SNI (Этап 2)'
+                            : option === 'https-fallback'
+                              ? 'HTTPS Fallback (Этап 3)'
+                              : option;
                   return (
                     <MenuItem key={option} value={option} disabled={!supported}>
                       {label}
-                      {supported ? '' : ' · несовместимо'}
+                      {supported ||
+                      option === 'self-sni' ||
+                      option === 'https-fallback'
+                        ? ''
+                        : ' · несовместимо'}
                     </MenuItem>
                   );
                 })}
@@ -694,11 +757,276 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                     </Select>
                   </FormControl>
                 )}
+
+                {inbound.type === 'xhttp-stable' && (() => {
+                  const profileSettings = {
+                    ...createDefaultXhttpStableSettings(),
+                    ...inbound.profileSettings,
+                  };
+                  const xmux = profileSettings.xmux || { enabled: false };
+                  const profileValidationError =
+                    validateXhttpStableSettings(profileSettings);
+                  return (
+                    <Box
+                      sx={{
+                        gridColumn: '1 / -1',
+                        display: 'grid',
+                        gap: 2,
+                        pt: 2,
+                        borderTop: 1,
+                        borderColor: 'divider',
+                        gridTemplateColumns: {
+                          xs: 'minmax(0, 1fr)',
+                          sm: 'repeat(2, minmax(0, 1fr))',
+                          lg: 'repeat(4, minmax(0, 1fr))',
+                        },
+                      }}
+                    >
+                      <Stack
+                        direction="row"
+                        alignItems="center"
+                        justifyContent="space-between"
+                        flexWrap="wrap"
+                        gap={1}
+                        sx={{ gridColumn: '1 / -1' }}
+                      >
+                        <Typography variant="caption" color="text.secondary">
+                          XHTTP Stable · минимальная серверная конфигурация + клиентские параметры
+                        </Typography>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          startIcon={<OpenInNew />}
+                          onClick={() => setPreviewTarget(inbound)}
+                        >
+                          Предпросмотр и проверка
+                        </Button>
+                      </Stack>
+
+                      {profileValidationError && (
+                        <Alert
+                          severity="error"
+                          sx={{ gridColumn: '1 / -1', py: 0.25 }}
+                        >
+                          {profileValidationError}
+                        </Alert>
+                      )}
+
+                      <FormControl size="small" sx={{ width: '100%', minWidth: 0 }}>
+                        <InputLabel>Режим XHTTP</InputLabel>
+                        <Select
+                          value={profileSettings.mode || 'auto'}
+                          label="Режим XHTTP"
+                          onChange={(e) =>
+                            handleProfileSettingsChange(inbound.id, {
+                              mode: e.target.value as XhttpMode,
+                            })
+                          }
+                        >
+                          {XHTTP_MODE_OPTIONS.map((mode) => (
+                            <MenuItem key={mode} value={mode}>
+                              {mode}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+
+                      <FormControl size="small" sx={{ width: '100%', minWidth: 0 }}>
+                        <InputLabel>Fingerprint</InputLabel>
+                        <Select
+                          value={profileSettings.fingerprint || 'chrome'}
+                          label="Fingerprint"
+                          onChange={(e) =>
+                            handleProfileSettingsChange(inbound.id, {
+                              fingerprint: e.target.value as ClientFingerprint,
+                            })
+                          }
+                        >
+                          {FINGERPRINT_OPTIONS.map((fp) => (
+                            <MenuItem key={fp} value={fp}>
+                              {fp}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+
+                      <TextField
+                        size="small"
+                        label="XHTTP Path"
+                        placeholder="/"
+                        value={profileSettings.path ?? '/'}
+                        onChange={(e) =>
+                          handleProfileSettingsChange(inbound.id, {
+                            path: e.target.value,
+                          })
+                        }
+                        sx={{ width: '100%', minWidth: 0 }}
+                      />
+
+                      <FormControl size="small" sx={{ width: '100%', minWidth: 0 }}>
+                        <InputLabel>Ротация домена</InputLabel>
+                        <Select
+                          value={profileSettings.rotationPolicy || 'fixed_domain'}
+                          label="Ротация домена"
+                          onChange={(e) =>
+                            handleProfileSettingsChange(inbound.id, {
+                              rotationPolicy: e.target
+                                .value as ProfileRotationPolicy,
+                            })
+                          }
+                        >
+                          <MenuItem value="fixed_domain">
+                            Сохранять домен (рекомендуется)
+                          </MenuItem>
+                          <MenuItem value="standard">
+                            Обычная ротация SNI
+                          </MenuItem>
+                        </Select>
+                      </FormControl>
+
+                      <TextField
+                        size="small"
+                        label="XHTTP Host (опционально)"
+                        placeholder="По умолчанию = SNI"
+                        value={profileSettings.host || ''}
+                        onChange={(e) =>
+                          handleProfileSettingsChange(inbound.id, {
+                            host: e.target.value,
+                          })
+                        }
+                        sx={{ width: '100%', minWidth: 0 }}
+                      />
+
+                      <TextField
+                        size="small"
+                        label="SpiderX"
+                        placeholder="/"
+                        value={profileSettings.spiderX || '/'}
+                        onChange={(e) =>
+                          handleProfileSettingsChange(inbound.id, {
+                            spiderX: e.target.value,
+                          })
+                        }
+                        sx={{ width: '100%', minWidth: 0 }}
+                      />
+
+                      <Box
+                        sx={{
+                          gridColumn: { xs: '1 / -1', lg: 'span 2' },
+                          display: 'flex',
+                          alignItems: 'center',
+                        }}
+                      >
+                        <FormControlLabel
+                          control={
+                            <Switch
+                              size="small"
+                              checked={Boolean(xmux.enabled)}
+                              onChange={(e) =>
+                                handleProfileSettingsChange(inbound.id, {
+                                  xmux: {
+                                    ...xmux,
+                                    enabled: e.target.checked,
+                                  },
+                                })
+                              }
+                            />
+                          }
+                          label="Клиентский XMUX (только на клиенте, по умолчанию выкл.)"
+                        />
+                      </Box>
+
+                      {xmux.enabled && (
+                        <>
+                          <TextField
+                            size="small"
+                            label="maxConcurrency"
+                            placeholder="например 16-32"
+                            value={xmux.maxConcurrency || ''}
+                            onChange={(e) =>
+                              handleProfileSettingsChange(inbound.id, {
+                                xmux: { ...xmux, maxConcurrency: e.target.value },
+                              })
+                            }
+                            sx={{ width: '100%', minWidth: 0 }}
+                          />
+                          <TextField
+                            size="small"
+                            label="maxConnections"
+                            placeholder="или 4-8"
+                            value={xmux.maxConnections || ''}
+                            onChange={(e) =>
+                              handleProfileSettingsChange(inbound.id, {
+                                xmux: { ...xmux, maxConnections: e.target.value },
+                              })
+                            }
+                            sx={{ width: '100%', minWidth: 0 }}
+                          />
+                          <TextField
+                            size="small"
+                            label="cMaxReuseTimes"
+                            placeholder="0 или 16-32"
+                            value={xmux.cMaxReuseTimes || ''}
+                            onChange={(e) =>
+                              handleProfileSettingsChange(inbound.id, {
+                                xmux: { ...xmux, cMaxReuseTimes: e.target.value },
+                              })
+                            }
+                            sx={{ width: '100%', minWidth: 0 }}
+                          />
+                          <TextField
+                            size="small"
+                            label="hMaxRequestTimes"
+                            placeholder="600-900"
+                            value={xmux.hMaxRequestTimes || ''}
+                            onChange={(e) =>
+                              handleProfileSettingsChange(inbound.id, {
+                                xmux: {
+                                  ...xmux,
+                                  hMaxRequestTimes: e.target.value,
+                                },
+                              })
+                            }
+                            sx={{ width: '100%', minWidth: 0 }}
+                          />
+                          <TextField
+                            size="small"
+                            label="hMaxReusableSecs"
+                            placeholder="1800-3000"
+                            value={xmux.hMaxReusableSecs || ''}
+                            onChange={(e) =>
+                              handleProfileSettingsChange(inbound.id, {
+                                xmux: {
+                                  ...xmux,
+                                  hMaxReusableSecs: e.target.value,
+                                },
+                              })
+                            }
+                            sx={{ width: '100%', minWidth: 0 }}
+                          />
+                        </>
+                      )}
+                    </Box>
+                  );
+                })()}
               </>
             )}
           </Box>
         ))}
       </Box>
+
+      {previewTarget && (
+        <ProfilePreviewDialog
+          open={Boolean(previewTarget)}
+          onClose={() => setPreviewTarget(null)}
+          kind={previewTarget.type as ManagedProfileKind}
+          name={previewTarget.name}
+          nodeId={previewTarget.nodeId}
+          port={previewTarget.port}
+          sni={previewTarget.sni}
+          settings={previewTarget.profileSettings}
+        />
+      )}
 
       <Stack
         direction="row"

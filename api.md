@@ -969,8 +969,24 @@ http://<host>:<port>/bus/<uuid>
 - **JWT-токен** передаётся в заголовке `Authorization: Bearer <token>`
 - **Публичные endpoints** (`/bus/*`) не требуют токена
 - **Base64-кодировка** используется для подписок (стандарт v2ray)
+- **Полный клиентский Xray JSON** доступен по `GET /bus/:uuid?format=xray-json` и `GET /bus/:uuid/:tunnelId?format=xray-json` (без приватных ключей сервера)
 - **Авто-ротация** выполняется по интервалу из настроек (`rotationIntervalMinutes`)
 - **Scanner** (RealiTLScanner) — Go-бинарник, встраивается в backend-контейнер
+
+---
+
+## Управляемые профили подключений (`ConnectionProfile`)
+
+Единая модель профилей (`xhttp-stable`, `self-sni`, `https-fallback`) с разделением серверной конфигурации 3x-ui и клиентских параметров (VLESS URI + Xray JSON). На Этапе 1 для развёртывания активен `xhttp-stable` (`VLESS + XHTTP + REALITY`); схемы `self-sni` и `https-fallback` доступны в каталоге и предпросмотре для этапов 2–3.
+
+- `GET /api/profiles/catalog` — каталог профилей, минимальных версий Xray и значений по умолчанию
+- `GET /api/profiles` / `GET /api/profiles/:id` — список и карточка профиля (без приватных ключей)
+- `POST /api/profiles` / `PUT /api/profiles/:id` / `DELETE /api/profiles/:id` — CRUD профиля с инкрементом ревизии и сохранением снимка предыдущей конфигурации (`previousSnapshot`)
+- `POST /api/profiles/preview` — предпросмотр серверного inbound (с скрытым `privateKey`), клиентской VLESS-ссылки, полного Xray JSON и отчёта совместимости
+- `POST /api/profiles/:id/check` — проверка совместимости Xray/3x-ui, занятости порта на ноде и DNS-записи домена
+- `GET /api/profiles/:id/export` — экспорт клиентской VLESS-ссылки и полного Xray JSON для активного inbound или предпросмотра
+
+В `inboundsConfig` подписки можно использовать `type: "xhttp-stable"` с опциональным объектом `profileSettings` (`mode: "auto" | "stream-one" | "packet-up"`, `path`, `host`, `fingerprint`, `spiderX`, `rotationPolicy: "fixed_domain" | "preserve_all" | "standard"`, клиентский `xmux`). При `rotationPolicy: "fixed_domain"` ротация сохраняет закреплённый домен/SNI.
 
 ---
 

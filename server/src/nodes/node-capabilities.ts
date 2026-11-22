@@ -22,6 +22,8 @@ const MTPROTO_MULTI_CLIENT_MIN_PANEL_VERSION = [3, 5, 0] as const;
 // VLESS outbounds without TLS/REALITY or VLESS encryption.
 const ENCRYPTED_VLESS_CLIENT_VERSION = [26, 9, 9] as const;
 const HYSTERIA2_MIN_XRAY_VERSION = [26, 3, 27] as const;
+const XHTTP_MIN_XRAY_VERSION = [24, 11, 30] as const;
+const SELF_SNI_MIN_XRAY_VERSION = [1, 8, 0] as const;
 const WIREGUARD_MULTI_CLIENT_MIN_PANEL_VERSION = [3, 5, 0] as const;
 
 export function buildNodeCapabilities(
@@ -88,6 +90,12 @@ export function supportsInboundType(
   }
   if (type === 'hysteria2-udp') {
     return versionAtLeast(input.xrayVersion, HYSTERIA2_MIN_XRAY_VERSION);
+  }
+  if (type === 'xhttp-stable' || type === 'https-fallback') {
+    return versionAtLeast(input.xrayVersion, XHTTP_MIN_XRAY_VERSION);
+  }
+  if (type === 'self-sni') {
+    return versionAtLeast(input.xrayVersion, SELF_SNI_MIN_XRAY_VERSION);
   }
   return true;
 }

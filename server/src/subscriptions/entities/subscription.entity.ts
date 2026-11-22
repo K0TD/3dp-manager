@@ -10,6 +10,7 @@ import {
 import { Inbound } from '../../inbounds/entities/inbound.entity';
 import { Node } from '../../nodes/entities/node.entity';
 import { Tunnel } from '../../tunnels/entities/tunnel.entity';
+import type { ManagedProfileSettings } from '../../profiles/connection-profile.types';
 
 @Entity()
 export class Subscription {
@@ -53,6 +54,8 @@ export class Subscription {
     name?: string;
     certificateFile?: string;
     keyFile?: string;
+    profileId?: string;
+    profileSettings?: ManagedProfileSettings;
     enabled?: boolean;
     disabledReason?: string;
   }>;

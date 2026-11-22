@@ -259,4 +259,63 @@ describe('InboundsEditor', () => {
     expect(screen.getByText('Инбаунды (2/20)')).toBeInTheDocument();
     expect(screen.getByText('Добавить инбаунд')).toBeEnabled();
   });
+
+  it('renders XHTTP Stable settings, validates conflicting XMUX ranges, and opens preview button', () => {
+    const { handleChange } = renderEditor({
+      nodes: [
+        {
+          ...mockNodes[0],
+          capabilities: {
+            ...mockNodes[0].capabilities!,
+            supportedInboundTypes: ['vless-tcp-reality', 'xhttp-stable'],
+          },
+        },
+      ],
+      inbounds: [
+        {
+          id: 'inb-xhttp',
+          configId: 'cfg-xhttp',
+          type: 'xhttp-stable',
+          port: '443',
+          sni: 'domain1.com',
+          nodeId: 'node-1',
+          flag: '🇩🇪',
+          name: 'Stable XHTTP',
+          profileSettings: {
+            mode: 'stream-one',
+            path: '/',
+            fingerprint: 'chrome',
+            rotationPolicy: 'fixed_domain',
+            xmux: {
+              enabled: true,
+              maxConcurrency: '16-32',
+              maxConnections: '4-8',
+            },
+          },
+        },
+      ],
+    });
+
+    expect(
+      screen.getByText(/XHTTP Stable · минимальная серверная конфигурация/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/maxConcurrency, либо maxConnections/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /Предпросмотр и проверка/ }),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('XHTTP Path'), {
+      target: { value: '/api/stream' },
+    });
+    expect(handleChange).toHaveBeenCalledWith([
+      expect.objectContaining({
+        id: 'inb-xhttp',
+        profileSettings: expect.objectContaining({
+          path: '/api/stream',
+        }),
+      }),
+    ]);
+  });
 });

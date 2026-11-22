@@ -772,14 +772,14 @@ log "Очистка кэша сборки..."
 docker image prune -f
 
 if LC_ALL=C ufw status 2>/dev/null | grep -q "Status: active"; then
-    echo "Найден активный UFW. Настраиваю правила..."
+    echo "Найден активный UFW. Настраиваю минимальные правила (без широких диапазонов портов)..."
 
+    ufw allow "${FINAL_PORT}/tcp"
     ufw allow 443/tcp
     ufw allow 443/udp
     ufw allow 8443/tcp
     ufw allow 8443/udp
-    ufw allow 10000:60000/tcp
-    ufw allow 10000:60000/udp
+    log "Открыты только порты панели и стандартные 443/8443. Дополнительные порты inbound открывайте точечно."
 fi
 
 echo ""

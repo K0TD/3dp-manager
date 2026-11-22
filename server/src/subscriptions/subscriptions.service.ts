@@ -11,6 +11,7 @@ import { Tunnel } from '../tunnels/entities/tunnel.entity';
 import { Inbound, InboundStatus } from '../inbounds/entities/inbound.entity';
 import { sortInboundsByPosition } from '../inbounds/inbound-order';
 import {
+  ACTIVE_MANAGED_PROFILE_TYPES,
   CERTIFICATE_INBOUND_TYPES,
   CertificateMode,
   INBOUND_TYPES,
@@ -20,6 +21,12 @@ import {
   panelInboundProtocol,
 } from './inbound-config.constants';
 import { supportsInboundType } from '../nodes/node-capabilities';
+import { isManagedProfileKind } from '../profiles/connection-profile.types';
+import {
+  evaluateProfileCompatibility,
+  normalizeManagedProfileSettings,
+  validateManagedProfileSettings,
+} from '../profiles/profile-compatibility';
 import {
   isValidFakeTlsDomain,
   normalizeFakeTlsDomain,
@@ -392,6 +399,7 @@ export class SubscriptionsService {
         continue;
       }
       this.validateTlsConfig(config);
+      this.validateManagedProfileConfig(config);
       await this.validateMtprotoConfig(config);
       if (config.type === 'custom') continue;
 
@@ -458,6 +466,12 @@ export class SubscriptionsService {
         certificateMode === 'custom'
           ? config.keyFile?.trim() || undefined
           : undefined,
+      profileId: isManagedProfileKind(config.type)
+        ? config.profileId || undefined
+        : undefined,
+      profileSettings: isManagedProfileKind(config.type)
+        ? normalizeManagedProfileSettings(config.type, config.profileSettings)
+        : undefined,
       enabled: config.enabled !== false,
       disabledReason:
         config.enabled === false ? config.disabledReason : undefined,
@@ -510,6 +524,23 @@ export class SubscriptionsService {
       throw new BadRequestException(
         'Custom TLS mode requires a valid TLS server name',
       );
+    }
+  }
+
+  private validateManagedProfileConfig(config: InboundConfig) {
+    if (!isManagedProfileKind(config.type)) return;
+    if (!ACTIVE_MANAGED_PROFILE_TYPES.has(config.type)) {
+      throw new BadRequestException(
+        `Профиль ${config.type} запланирован на следующие этапы внедрения; в Этапе 1 доступен xhttp-stable`,
+      );
+    }
+    const errors = validateManagedProfileSettings(
+      config.type,
+      config.profileSettings,
+      { sni: config.sni, port: config.port },
+    );
+    if (errors.length > 0) {
+      throw new BadRequestException(errors.join('; '));
     }
   }
 
@@ -568,6 +599,31 @@ export class SubscriptionsService {
         throw new BadRequestException(
           `Inbound ${config.type} is not supported by node ${node.name}`,
         );
+      }
+      if (isManagedProfileKind(config.type)) {
+        const compat = evaluateProfileCompatibility({
+          kind: config.type,
+          port: config.port,
+          sni: config.sni,
+          settings: config.profileSettings,
+          node: {
+            name: node.name,
+            version: node.version,
+            xrayVersion: node.xrayVersion,
+            autoTlsCertificate: Boolean(
+              node.webCertificateFile && node.webKeyFile,
+            ),
+          },
+        });
+        if (!compat.compatible) {
+          const errorMessages = compat.checks
+            .filter((item) => item.severity === 'error')
+            .map((item) => item.message);
+          throw new BadRequestException(
+            errorMessages.join('; ') ||
+              `Профиль ${config.type} несовместим с нодой ${node.name}`,
+          );
+        }
       }
     }
     if (!config.relayServerId) return;

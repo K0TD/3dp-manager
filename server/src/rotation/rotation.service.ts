@@ -55,6 +55,11 @@ import {
   classifyDatabaseError,
   databaseAvailability,
 } from '../database/database-availability';
+import {
+  isManagedProfileKind,
+  type SeparatedClientProfile,
+} from '../profiles/connection-profile.types';
+import { evaluateProfileCompatibility } from '../profiles/profile-compatibility';
 
 type InboundConfig = NonNullable<Subscription['inboundsConfig']>[number];
 
@@ -778,7 +783,11 @@ export class RotationService implements OnModuleInit {
           failedConfig = config;
           failedPort = undefined;
         }
-        if (config.type?.includes('reality') && !realityKeys) {
+        if (
+          (config.type?.includes('reality') ||
+            config.type === 'xhttp-stable') &&
+          !realityKeys
+        ) {
           this.logger.log(
             `[RotationService] Запрос ключей Reality для ноды «${group.node?.name || 'main'}»...`,
           );
@@ -1031,6 +1040,32 @@ export class RotationService implements OnModuleInit {
           `(3x-ui: ${node.version || 'не определена'}, Xray: ${node.xrayVersion || 'не определена'})`,
       );
     }
+    if (isManagedProfileKind(config.type)) {
+      const compat = evaluateProfileCompatibility({
+        kind: config.type,
+        port: config.port,
+        sni: config.sni,
+        settings: config.profileSettings,
+        node: {
+          name: node.name,
+          version: node.version,
+          xrayVersion: node.xrayVersion,
+          autoTlsCertificate: Boolean(
+            node.webCertificateFile && node.webKeyFile,
+          ),
+        },
+      });
+      if (!compat.compatible) {
+        const reasons = compat.checks
+          .filter((item) => item.severity === 'error')
+          .map((item) => item.message)
+          .join('; ');
+        throw new Error(
+          reasons ||
+            `Профиль ${config.type} несовместим с нодой «${node.name}»`,
+        );
+      }
+    }
   }
 
   private getCertificateMode(config: InboundConfig) {
@@ -1099,13 +1134,33 @@ export class RotationService implements OnModuleInit {
     );
   }
 
-  private resolveInboundSni(config: InboundConfig, domains: Domain[]) {
+  private resolveInboundSni(
+    config: InboundConfig,
+    domains: Domain[],
+    subscription?: Subscription,
+  ) {
     if (
       CERTIFICATE_INBOUND_TYPES.has(config.type as InboundType) ||
       PERSISTENT_INBOUND_TYPES.has(config.type) ||
       config.type === 'vless-xhttp-get'
     )
       return '';
+    if (isManagedProfileKind(config.type)) {
+      const explicitDomain =
+        config.profileSettings?.domain?.trim() ||
+        (config.sni && config.sni.trim() !== 'random' ? config.sni.trim() : '');
+      if (explicitDomain) return explicitDomain;
+      const rotationPolicy =
+        config.profileSettings?.rotationPolicy || 'fixed_domain';
+      if (rotationPolicy !== 'standard' && config.configId && subscription) {
+        const previousSni = this.findActiveProfileSni(
+          subscription,
+          config.configId,
+        );
+        if (previousSni) return previousSni;
+      }
+      return this.pickDomain(domains);
+    }
     const configuredSni = config.sni?.trim() || '';
     if (configuredSni === 'random') return this.pickDomain(domains);
     if (config.type !== 'mtproto-faketls') return configuredSni;
@@ -1114,6 +1169,37 @@ export class RotationService implements OnModuleInit {
       (domain) => normalizeFakeTlsDomain(domain.name) === normalizedSni,
     );
     return listedDomain?.name ?? this.pickDomain(domains);
+  }
+
+  private findActiveProfileSni(
+    subscription: Subscription,
+    configId: string,
+  ): string | undefined {
+    const active = (subscription.inbounds || []).find(
+      (inbound) =>
+        inbound.status === InboundStatus.Active &&
+        inbound.configId === configId,
+    );
+    if (!active) return undefined;
+    if (active.clientProfileJson) {
+      try {
+        const parsed = JSON.parse(
+          active.clientProfileJson,
+        ) as Partial<SeparatedClientProfile>;
+        if (parsed.sni && parsed.sni.trim()) return parsed.sni.trim();
+      } catch {
+        // Fallback to URL parsing
+      }
+    }
+    if (active.link) {
+      try {
+        const parsedSni = new URL(active.link).searchParams.get('sni')?.trim();
+        if (parsedSni) return parsedSni;
+      } catch {
+        // Ignore malformed links
+      }
+    }
+    return undefined;
   }
 
   private async createInbound(request: CreateInboundRequest) {
@@ -1174,7 +1260,7 @@ export class RotationService implements OnModuleInit {
     usedPorts.add(port);
     const uuid = uuidv4();
     const email = formatClientEmail(subscription.name, uuid);
-    const sni = this.resolveInboundSni(config, domains);
+    const sni = this.resolveInboundSni(config, domains, subscription);
 
     const built =
       config.type === 'hysteria2-udp'
@@ -1252,6 +1338,24 @@ export class RotationService implements OnModuleInit {
     }
     try {
       if (result.verificationError) throw new Error(result.verificationError);
+      if (config.type === 'xhttp-stable') {
+        const bundle = this.inboundBuilder.buildXhttpStableClientBundle(
+          saved,
+          targetAddress,
+          flag,
+          config.profileSettings,
+        );
+        if (!bundle) {
+          throw new Error(
+            `Не удалось сформировать клиентский профиль ${config.type}`,
+          );
+        }
+        staged.link = bundle.vlessLink;
+        staged.profileId = config.profileId ?? null;
+        staged.profileKind = 'xhttp-stable';
+        staged.clientProfileJson = JSON.stringify(bundle.clientConfig);
+        return await this.inboundRepo.save(staged);
+      }
       // The builder chooses the credential according to the protocol from the
       // panel's saved client, not from the originally requested UUID.
       const link = this.inboundBuilder.buildInboundLink(
@@ -1294,6 +1398,14 @@ export class RotationService implements OnModuleInit {
       'vless-xhttp-reality': () =>
         realityParams
           ? this.inboundBuilder.buildVlessRealityXhttp(realityParams)
+          : null,
+      'xhttp-stable': () =>
+        realityParams
+          ? this.inboundBuilder.buildXhttpStableInbound({
+              ...realityParams,
+              remark: config.name?.trim() || 'xhttp-stable',
+              settings: config.profileSettings,
+            })
           : null,
       'vless-grpc-reality': () =>
         realityParams

@@ -53,6 +53,15 @@ export class Inbound {
   @Column({ type: 'uuid', nullable: true })
   generationId?: string;
 
+  @Column({ type: 'uuid', nullable: true })
+  profileId?: string | null;
+
+  @Column({ type: 'varchar', length: 32, nullable: true })
+  profileKind?: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  clientProfileJson?: string | null;
+
   @Column({ type: 'int', default: 0 })
   cleanupAttempts: number;
 

@@ -20,6 +20,7 @@ import {
   ROUTING_INBOUND_TYPES,
 } from '../inbound-config.constants';
 import type { CertificateMode } from '../inbound-config.constants';
+import { ManagedProfileSettingsDto } from '../../profiles/dto/connection-profile.dto';
 
 const PORT_OR_RANDOM = 'portOrRandom';
 
@@ -133,6 +134,15 @@ export class InboundConfigDto {
   @IsString()
   @IsOptional()
   routingProfile?: string;
+
+  @IsUUID()
+  @IsOptional()
+  profileId?: string;
+
+  @ValidateNested()
+  @Type(() => ManagedProfileSettingsDto)
+  @IsOptional()
+  profileSettings?: ManagedProfileSettingsDto;
 
   @IsBoolean()
   @IsOptional()

@@ -48,15 +48,18 @@ import type { NodeRecord } from '../types/node';
 import { InboundsEditor } from '../components/InboundsEditor';
 import { WorkspaceHeader } from '../components/WorkspaceHeader';
 import {
+  createDefaultXhttpStableSettings,
   hasSni,
   isInboundSupported,
   parseDefaultInboundsSetting,
   validateRoutingProfile,
   validateSubscriptionMetadata,
+  validateXhttpStableSettings,
 } from '../utils/inboundUtils';
 import {
   PERSISTENT_INBOUND_TYPES,
   ROUTING_INBOUND_TYPES,
+  type InboundConfigUI,
 } from '../types/inbound';
 
 interface Subscription {
@@ -92,28 +95,6 @@ interface Tunnel {
   domain: string;
   isInstalled: boolean;
   nodeId?: string;
-}
-
-interface InboundConfigUI {
-  id: string;
-  configId: string;
-  type: string;
-  port: string;
-  sni: string;
-  link?: string;
-  routingProfile?: string;
-  nodeId?: string;
-  relayServerId?: string;
-  flag?: string;
-  name?: string;
-  certificateMode?: 'node' | 'custom';
-  tlsServerName?: string;
-  certificateFile?: string;
-  keyFile?: string;
-  enabled?: boolean;
-  disabledReason?: string;
-  awgLocked?: boolean;
-  persistentLocked?: boolean;
 }
 
 interface Domain {
@@ -165,6 +146,7 @@ export default function SubscriptionsPage() {
   const [inbounds, setInbounds] = useState<InboundConfigUI[]>([]);
   const [portErrors, setPortErrors] = useState<Record<string, string>>({});
   const [linksOpen, setLinksOpen] = useState(false);
+  const [linksSubUuid, setLinksSubUuid] = useState<string | null>(null);
   const [currentLinks, setCurrentLinks] = useState<string[]>([]);
   const [createdSubscriptionId, setCreatedSubscriptionId] = useState<
     string | null
@@ -427,6 +409,11 @@ export default function SubscriptionsPage() {
             CERTIFICATE_TYPES.has(item.type) && certificateMode === 'custom'
               ? item.keyFile || ''
               : '',
+          profileId: item.profileId,
+          profileSettings:
+            item.type === 'xhttp-stable'
+              ? { ...createDefaultXhttpStableSettings(), ...item.profileSettings }
+              : item.profileSettings,
         };
       }),
     );
@@ -558,6 +545,21 @@ export default function SubscriptionsPage() {
       });
       return;
     }
+    const invalidXhttpProfile = inbounds.find(
+      (inbound) =>
+        inbound.type === 'xhttp-stable' &&
+        validateXhttpStableSettings(inbound.profileSettings),
+    );
+    if (invalidXhttpProfile) {
+      setSnackbar({
+        open: true,
+        type: 'error',
+        message:
+          validateXhttpStableSettings(invalidXhttpProfile.profileSettings) ||
+          'Некорректные параметры XHTTP Stable',
+      });
+      return;
+    }
     const incompatibleInbound = inbounds.find(
       (inbound) => !isInboundSupported(inbound.type, inbound.nodeId, nodes),
     );
@@ -622,6 +624,12 @@ export default function SubscriptionsPage() {
             CERTIFICATE_TYPES.has(inbound.type) &&
             inbound.certificateMode === 'custom'
               ? inbound.keyFile?.trim() || undefined
+              : undefined,
+          profileId:
+            inbound.type === 'xhttp-stable' ? inbound.profileId : undefined,
+          profileSettings:
+            inbound.type === 'xhttp-stable'
+              ? inbound.profileSettings || createDefaultXhttpStableSettings()
               : undefined,
         };
       }),
@@ -863,6 +871,7 @@ export default function SubscriptionsPage() {
     setCurrentLinks(
       links.length ? links : ['Нет активных ссылок (ждите ротации)'],
     );
+    setLinksSubUuid(sub.uuid);
     setLinksOpen(true);
   };
 
@@ -1325,6 +1334,17 @@ export default function SubscriptionsPage() {
           />
         </DialogContent>
         <DialogActions>
+          {linksSubUuid && (
+            <Button
+              component="a"
+              href={`/bus/${linksSubUuid}?format=xray-json`}
+              target="_blank"
+              rel="noopener noreferrer"
+              startIcon={<OpenInNew />}
+            >
+              Скачать Xray JSON
+            </Button>
+          )}
           <Button onClick={() => copyToClipboard(currentLinks.join('\n'))}>
             Копировать все
           </Button>

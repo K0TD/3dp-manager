@@ -1,11 +1,14 @@
 import type { NodeRecord } from '../types/node';
 import {
+  ACTIVE_MANAGED_PROFILE_TYPES,
   CERTIFICATE_TYPES,
   DEFAULT_INBOUND_TYPES,
+  MANAGED_PROFILE_TYPES,
   ROUTING_INBOUND_TYPES,
   type CountryOption,
   type Domain,
   type InboundConfigUI,
+  type ManagedProfileSettings,
   type Tunnel,
 } from '../types/inbound';
 
@@ -91,8 +94,63 @@ export const isInboundSupported = (
   nodes: NodeRecord[],
 ): boolean => {
   if (type === 'custom' || ROUTING_INBOUND_TYPES.has(type)) return true;
+  if (MANAGED_PROFILE_TYPES.has(type) && !ACTIVE_MANAGED_PROFILE_TYPES.has(type)) {
+    return false;
+  }
   const capabilities = getSelectedNode(nodeId, nodes)?.capabilities;
   return !capabilities || capabilities.supportedInboundTypes.includes(type);
+};
+
+export const createDefaultXhttpStableSettings = (): ManagedProfileSettings => ({
+  mode: 'auto',
+  path: '/',
+  fingerprint: 'chrome',
+  spiderX: '/',
+  rotationPolicy: 'fixed_domain',
+  xmux: { enabled: false },
+});
+
+const XMUX_RANGE_RE = /^(\d+)(?:-(\d+))?$/;
+
+const isValidXmuxRange = (value?: string, allowZero = false): boolean => {
+  if (!value || !value.trim()) return true;
+  const match = XMUX_RANGE_RE.exec(value.trim());
+  if (!match) return false;
+  const min = Number(match[1]);
+  const max = match[2] !== undefined ? Number(match[2]) : min;
+  if (!allowZero && (min < 1 || max < 1)) return false;
+  return min <= max && max <= 1_000_000;
+};
+
+export const validateXhttpStableSettings = (
+  settings?: ManagedProfileSettings,
+): string | null => {
+  if (!settings) return null;
+  if (settings.path && /[\s?#]/.test(settings.path.trim())) {
+    return 'XHTTP path не должен содержать пробелы, ? или #';
+  }
+  if (settings.xmux?.enabled) {
+    const x = settings.xmux;
+    if (x.maxConcurrency?.trim() && x.maxConnections?.trim()) {
+      return 'XMUX: укажите либо maxConcurrency, либо maxConnections (в Xray они взаимоисключающие)';
+    }
+    if (!isValidXmuxRange(x.maxConcurrency, false)) {
+      return 'XMUX: некорректный диапазон maxConcurrency (например 16-32)';
+    }
+    if (!isValidXmuxRange(x.maxConnections, false)) {
+      return 'XMUX: некорректный диапазон maxConnections (например 4-8)';
+    }
+    if (!isValidXmuxRange(x.cMaxReuseTimes, true)) {
+      return 'XMUX: некорректный диапазон cMaxReuseTimes (например 0 или 16-32)';
+    }
+    if (!isValidXmuxRange(x.hMaxRequestTimes, false)) {
+      return 'XMUX: некорректный диапазон hMaxRequestTimes (например 600-900)';
+    }
+    if (!isValidXmuxRange(x.hMaxReusableSecs, false)) {
+      return 'XMUX: некорректный диапазон hMaxReusableSecs (например 1800-3000)';
+    }
+  }
+  return null;
 };
 
 export const isValidPort = (value: string): boolean =>
@@ -143,6 +201,11 @@ export const createInboundTemplate = (
     certificateFile:
       isCert && certMode === 'custom' ? partial?.certificateFile || '' : '',
     keyFile: isCert && certMode === 'custom' ? partial?.keyFile || '' : '',
+    profileId: type === 'xhttp-stable' ? partial?.profileId : undefined,
+    profileSettings:
+      type === 'xhttp-stable'
+        ? { ...createDefaultXhttpStableSettings(), ...partial?.profileSettings }
+        : undefined,
     enabled: partial?.enabled,
     disabledReason: partial?.disabledReason,
   };
@@ -216,6 +279,10 @@ export const sanitizeInboundForStorage = (
     keyFile:
       isCert && inbound.certificateMode === 'custom'
         ? inbound.keyFile || ''
+        : undefined,
+    profileSettings:
+      inbound.type === 'xhttp-stable'
+        ? inbound.profileSettings || createDefaultXhttpStableSettings()
         : undefined,
   };
 };

@@ -15,6 +15,14 @@ import { createAmneziaVpnLink } from './amnezia-vpn-link';
 import { resolveSniProfile } from './sni-profiles';
 import { buildProxyLink, buildWireguardLink } from './connection-profiles';
 import { panelInboundProtocol } from '../subscriptions/inbound-config.constants';
+import {
+  buildXhttpStableExportBundle,
+  buildXhttpStableServerInbound,
+} from '../profiles/profile-config.builder';
+import type {
+  ManagedProfileSettings,
+  ProfileExportBundle,
+} from '../profiles/connection-profile.types';
 
 interface VlessTlsParams {
   port: number;
@@ -462,6 +470,65 @@ export class InboundBuilderService {
         },
       }),
     };
+  }
+
+  buildXhttpStableInbound(params: {
+    port: number;
+    uuid: string;
+    email?: string;
+    remark?: string;
+    sni: string;
+    privateKey: string;
+    publicKey: string;
+    settings?: ManagedProfileSettings | null;
+  }) {
+    return buildXhttpStableServerInbound(params);
+  }
+
+  buildXhttpStableClientBundle(
+    inbound: XuiInboundRaw,
+    address: string,
+    flagEmoji: string,
+    profileSettings?: ManagedProfileSettings | null,
+  ): ProfileExportBundle | null {
+    try {
+      const stream = JSON.parse(inbound.streamSettings) as XuiStreamSettings;
+      const settings = JSON.parse(inbound.settings) as XuiInboundSettings;
+      const client = settings.clients?.[0];
+      const reality = stream.realitySettings;
+      if (!client?.id || !reality?.settings?.publicKey) return null;
+      const sni =
+        reality.serverNames?.[0] ||
+        stream.xhttpSettings?.host ||
+        profileSettings?.domain ||
+        '';
+      if (!sni) return null;
+      return buildXhttpStableExportBundle({
+        address,
+        port: inbound.port,
+        uuid: client.id,
+        remark: inbound.remark || 'xhttp-stable',
+        sni,
+        publicKey: reality.settings.publicKey,
+        shortId: reality.shortIds?.[0] || '',
+        flagEmoji,
+        settings: {
+          ...profileSettings,
+          path: stream.xhttpSettings?.path || profileSettings?.path,
+          host: stream.xhttpSettings?.host || profileSettings?.host,
+          mode:
+            (stream.xhttpSettings?.mode as ManagedProfileSettings['mode']) ||
+            profileSettings?.mode,
+          fingerprint:
+            (reality.settings
+              .fingerprint as ManagedProfileSettings['fingerprint']) ||
+            profileSettings?.fingerprint,
+          spiderX: reality.settings.spiderX || profileSettings?.spiderX,
+        },
+      });
+    } catch {
+      return null;
+    }
   }
 
   buildVlessRealityXhttp(params: {

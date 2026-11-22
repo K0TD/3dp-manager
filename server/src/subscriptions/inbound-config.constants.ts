@@ -2,6 +2,9 @@ export const INBOUND_TYPES = [
   'vless-tcp-reality',
   'vless-xhttp-reality',
   'vless-xhttp-get',
+  'xhttp-stable',
+  'self-sni',
+  'https-fallback',
   'vless-grpc-reality',
   'vless-ws',
   'vless-tcp-tls',
@@ -23,6 +26,15 @@ export const INBOUND_TYPES = [
 ] as const;
 
 export type InboundType = (typeof INBOUND_TYPES)[number];
+
+export const MANAGED_PROFILE_TYPES = new Set<string>([
+  'xhttp-stable',
+  'self-sni',
+  'https-fallback',
+]);
+
+// Managed profiles enabled for subscription deployment in the current stage.
+export const ACTIVE_MANAGED_PROFILE_TYPES = new Set<string>(['xhttp-stable']);
 
 // These clients import credentials once, rather than refreshing a subscription.
 export const PERSISTENT_INBOUND_TYPES = new Set<string>([
@@ -46,6 +58,7 @@ export const VLESS_TLS_TYPES = new Set<InboundType>([
 
 export const CERTIFICATE_INBOUND_TYPES = new Set<InboundType>([
   ...VLESS_TLS_TYPES,
+  'https-fallback',
   'hysteria2-udp',
 ]);
 

@@ -25,7 +25,10 @@ export function amneziaConfigFileName(
 
 export function attachmentDisposition(
   fileName: string,
-  fallbackName: 'amneziawg.conf' | 'wireguard.conf' = 'amneziawg.conf',
+  fallbackName:
+    | 'amneziawg.conf'
+    | 'wireguard.conf'
+    | 'xray-profile.json' = 'amneziawg.conf',
 ): string {
   const encodedFileName = encodeURIComponent(fileName).replace(
     /['()*]/g,
