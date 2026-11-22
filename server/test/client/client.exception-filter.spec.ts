@@ -5,7 +5,8 @@
 /* eslint-disable @typescript-eslint/no-unsafe-argument */
 
 import { HttpExceptionFilter } from 'src/client/client.exception-filter';
-import { HttpException, HttpStatus } from '@nestjs/common';
+import { HttpException, HttpStatus, Logger } from '@nestjs/common';
+import { databaseAvailability } from 'src/database/database-availability';
 
 describe('HttpExceptionFilter', () => {
   let filter: HttpExceptionFilter;
@@ -14,9 +15,11 @@ describe('HttpExceptionFilter', () => {
   let mockHost: any;
 
   beforeEach(() => {
+    databaseAvailability.reset();
     filter = new HttpExceptionFilter();
 
     mockResponse = {
+      headersSent: false,
       setHeader: jest.fn(),
       status: jest.fn().mockReturnThis(),
       json: jest.fn(),
@@ -193,6 +196,124 @@ describe('HttpExceptionFilter', () => {
         );
         jest.clearAllMocks();
       });
+    });
+
+    it('возвращает 503 и Retry-After для /bus/ при 57P03 (БД в recovery)', () => {
+      const errorSpy = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+      mockRequest.headers['user-agent'] = 'v2rayNG/1.8.0';
+      mockRequest.url = '/bus/faaf7896-91bb-43b7-9927-ada74b4bc7ca';
+
+      const pgErr = Object.assign(
+        new Error('the database system is not yet accepting connections'),
+        {
+          code: '57P03',
+          detail: 'Consistent recovery state has not been yet reached.',
+        },
+      );
+
+      filter.catch(pgErr, mockHost);
+
+      expect(mockResponse.setHeader).toHaveBeenCalledWith('Retry-After', '15');
+      expect(mockResponse.status).toHaveBeenCalledWith(
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+      expect(mockResponse.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          code: 'DATABASE_UNAVAILABLE',
+          statusCode: 503,
+        }),
+      );
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+
+      // Повторный запрос с той же ошибкой не должен спамить лог
+      filter.catch(pgErr, mockHost);
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      errorSpy.mockRestore();
+    });
+
+    it('возвращает 503 HTML и Retry-After: 30 для браузера на /bus/ при 53100 (нет места на диске)', () => {
+      const errorSpy = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+      mockRequest.headers['user-agent'] = 'Mozilla/5.0 Chrome/120.0';
+      mockRequest.url = '/bus/faaf7896-91bb-43b7-9927-ada74b4bc7ca';
+
+      const diskFullErr = Object.assign(
+        new Error('could not write init file: No space left on device'),
+        { code: '53100' },
+      );
+
+      filter.catch(diskFullErr, mockHost);
+
+      expect(mockResponse.setHeader).toHaveBeenCalledWith('Retry-After', '30');
+      expect(mockResponse.setHeader).toHaveBeenCalledWith(
+        'Content-Type',
+        'text/html; charset=utf-8',
+      );
+      expect(mockResponse.status).toHaveBeenCalledWith(
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+      expect(mockResponse.send).toHaveBeenCalledWith(
+        expect.stringContaining('Сервис временно недоступен'),
+      );
+      errorSpy.mockRestore();
+    });
+
+    it('возвращает 503 для /bus/ при разрыве сокета ECONNRESET', () => {
+      const errorSpy = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+      mockRequest.headers['user-agent'] = 'Happ/1.0';
+      mockRequest.url = '/bus/test-uuid';
+
+      const resetErr = Object.assign(new Error('read ECONNRESET'), {
+        code: 'ECONNRESET',
+      });
+
+      filter.catch(resetErr, mockHost);
+
+      expect(mockResponse.status).toHaveBeenCalledWith(
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+      errorSpy.mockRestore();
+    });
+
+    it('не принимает Axios ECONNREFUSED за падение БД и возвращает 500', () => {
+      const errorSpy = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+      mockRequest.headers['user-agent'] = 'axios/1.6.0';
+      mockRequest.url = '/api/nodes';
+
+      const axiosErr = Object.assign(new Error('connect ECONNREFUSED'), {
+        code: 'ECONNREFUSED',
+        isAxiosError: true,
+      });
+
+      filter.catch(axiosErr, mockHost);
+
+      expect(mockResponse.status).toHaveBeenCalledWith(
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+      expect(mockResponse.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          statusCode: 500,
+          message: 'Internal server error',
+        }),
+      );
+      expect(databaseAvailability.isDegraded()).toBe(false);
+      errorSpy.mockRestore();
+    });
+
+    it('ничего не отправляет, если заголовки ответа уже отправлены', () => {
+      mockResponse.headersSent = true;
+      filter.catch(
+        new HttpException('Not found', HttpStatus.NOT_FOUND),
+        mockHost,
+      );
+      expect(mockResponse.status).not.toHaveBeenCalled();
     });
   });
 });

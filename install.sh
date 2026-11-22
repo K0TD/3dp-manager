@@ -523,6 +523,7 @@ services:
     image: postgres:18-alpine
     container_name: 3dp-postgres
     restart: always
+    stop_grace_period: 30s
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: ${DB_PASS}
@@ -533,7 +534,13 @@ services:
       test: ["CMD-SHELL", "pg_isready -U admin -d 3dp_manager"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 12
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - app-network
 
@@ -557,6 +564,11 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASS}
       PORT: 3100
       APP_VERSION: stable
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - app-network
 
@@ -572,6 +584,11 @@ services:
       - ./client/nginx-client.conf:/etc/nginx/conf.d/default.conf:ro
       - ${CERT_PATH}:/etc/nginx/certs/fullchain.pem:ro
       - ${KEY_PATH}:/etc/nginx/certs/privkey.pem:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - app-network
 
@@ -637,6 +654,7 @@ services:
     image: postgres:18-alpine
     container_name: 3dp-postgres
     restart: always
+    stop_grace_period: 30s
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: ${DB_PASS}
@@ -647,7 +665,13 @@ services:
       test: ["CMD-SHELL", "pg_isready -U admin -d 3dp_manager"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 12
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - app-network
 
@@ -671,6 +695,11 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASS}
       PORT: 3100
       APP_VERSION: stable
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - app-network
 
@@ -684,6 +713,11 @@ services:
       - "${FINAL_PORT}:80"
     volumes:
       - ./client/nginx-client.conf:/etc/nginx/conf.d/default.conf:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - app-network
 

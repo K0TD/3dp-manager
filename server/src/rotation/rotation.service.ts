@@ -51,6 +51,10 @@ import {
   RotationOperationStatus,
   RotationInboundDiagnostic,
 } from './entities/rotation-operation.entity';
+import {
+  classifyDatabaseError,
+  databaseAvailability,
+} from '../database/database-availability';
 
 type InboundConfig = NonNullable<Subscription['inboundsConfig']>[number];
 
@@ -91,9 +95,18 @@ interface SaveStagedInboundRequest {
 
 @Injectable()
 export class RotationService implements OnModuleInit {
+  private static readonly MAX_STORED_OPERATIONS = 200;
+  private static readonly OPERATION_PRUNE_BATCH = 500;
+  private static readonly OPERATION_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+
   private readonly logger = new Logger(RotationService.name);
+  private readonly dbAvailability = databaseAvailability;
   private readonly maxCleanupAttempts = 5;
   private processingOperation = false;
+  private runningTicker = false;
+  private processingCleanup = false;
+  private unsavedFinishedOperation: RotationOperation | null = null;
+  private lastOperationPruneAt = 0;
 
   constructor(
     @InjectRepository(Subscription) private subRepo: Repository<Subscription>,
@@ -171,107 +184,176 @@ export class RotationService implements OnModuleInit {
 
   @Cron('*/5 * * * * *')
   async processQueuedOperation() {
-    if (this.processingOperation) return;
-    const operation = await this.operationRepo.findOne({
-      where: { status: RotationOperationStatus.Queued },
-      order: { createdAt: 'ASC' },
-    });
-    if (!operation) return;
+    if (this.processingOperation || this.dbAvailability.shouldSkip()) return;
 
     this.processingOperation = true;
-    operation.status = RotationOperationStatus.Running;
-    operation.startedAt = new Date();
-    operation.error = undefined;
-    operation.errorDetails = null;
-    await this.operationRepo.save(operation);
-
-    this.logger.log(
-      `[RotationService] Начало обработки операции ${operation.id} (подписки: ${operation.subscriptionIds?.join(', ') || 'все с авторотацией'})...`,
-    );
-
-    const startedAt = Date.now();
     try {
-      const result = await this.performRotation(operation.subscriptionIds);
-      operation.results = result.results.map((item) => ({
-        ...item,
-        ...(item.message
-          ? { message: redactOperationError(item.message, 16384) }
-          : {}),
-        ...(item.status !== 'succeeded' && item.message && !item.errorDetails
-          ? {
-              errorDetails: normalizeOperationError(item.message, {
-                node: item.nodeName,
-                stage: 'rotation',
-              }),
-            }
-          : {}),
-      }));
-      operation.status = result.success
-        ? RotationOperationStatus.Succeeded
-        : result.results.some((item) => item.status === 'succeeded')
-          ? RotationOperationStatus.Partial
-          : RotationOperationStatus.Failed;
-      operation.error = result.success
-        ? undefined
-        : redactOperationError(result.message, 16384);
-      operation.errorDetails = result.success
-        ? null
-        : operation.results.find(
-            (item) => item.status !== 'succeeded' && item.errorDetails,
-          )?.errorDetails ||
-          normalizeOperationError(result.message, { stage: 'rotation' });
+      if (this.unsavedFinishedOperation) {
+        await this.operationRepo.save(this.unsavedFinishedOperation);
+        this.unsavedFinishedOperation = null;
+        this.dbAvailability.recordSuccess(this.logger, 'RotationService');
+      }
 
-      const durationMs = Date.now() - startedAt;
-      if (result.success) {
-        this.logger.log(
-          `[RotationService] Операция ${operation.id} успешно завершена за ${durationMs}ms`,
+      const operation = await this.operationRepo.findOne({
+        where: { status: RotationOperationStatus.Queued },
+        order: { createdAt: 'ASC' },
+      });
+      this.dbAvailability.recordSuccess(this.logger, 'RotationService');
+      if (!operation) return;
+
+      operation.status = RotationOperationStatus.Running;
+      operation.startedAt = new Date();
+      operation.error = undefined;
+      operation.errorDetails = null;
+      await this.operationRepo.save(operation);
+
+      this.logger.log(
+        `[RotationService] Начало обработки операции ${operation.id} (подписки: ${operation.subscriptionIds?.join(', ') || 'все с авторотацией'})...`,
+      );
+
+      const startedAt = Date.now();
+      try {
+        const result = await this.performRotation(operation.subscriptionIds);
+        operation.results = result.results.map((item) => ({
+          ...item,
+          ...(item.message
+            ? { message: redactOperationError(item.message, 16384) }
+            : {}),
+          ...(item.status !== 'succeeded' && item.message && !item.errorDetails
+            ? {
+                errorDetails: normalizeOperationError(item.message, {
+                  node: item.nodeName,
+                  stage: 'rotation',
+                }),
+              }
+            : {}),
+        }));
+        operation.status = result.success
+          ? RotationOperationStatus.Succeeded
+          : result.results.some((item) => item.status === 'succeeded')
+            ? RotationOperationStatus.Partial
+            : RotationOperationStatus.Failed;
+        operation.error = result.success
+          ? undefined
+          : redactOperationError(result.message, 16384);
+        operation.errorDetails = result.success
+          ? null
+          : operation.results.find(
+              (item) => item.status !== 'succeeded' && item.errorDetails,
+            )?.errorDetails ||
+            normalizeOperationError(result.message, { stage: 'rotation' });
+
+        const durationMs = Date.now() - startedAt;
+        if (result.success) {
+          this.logger.log(
+            `[RotationService] Операция ${operation.id} успешно завершена за ${durationMs}ms`,
+          );
+        } else {
+          this.logger.warn(
+            `[RotationService] Операция ${operation.id} завершена со статусом ${operation.status} за ${durationMs}ms: ${operation.error}`,
+          );
+        }
+      } catch (error) {
+        operation.status = RotationOperationStatus.Failed;
+        operation.error = this.safeMessage(error);
+        operation.errorDetails = normalizeOperationError(error, {
+          stage: 'rotation',
+        });
+        const isStrictDbError = Boolean(
+          classifyDatabaseError(error, { strict: true }),
         );
-      } else {
-        this.logger.warn(
-          `[RotationService] Операция ${operation.id} завершена со статусом ${operation.status} за ${durationMs}ms: ${operation.error}`,
+        this.logger.error(
+          `[RotationService] Сбой обработки операции ${operation.id}: ${this.safeMessage(error)}`,
+          !isStrictDbError && error instanceof Error && error.stack
+            ? redactOperationError(error.stack, 16384)
+            : undefined,
         );
       }
-    } catch (error) {
-      operation.status = RotationOperationStatus.Failed;
-      operation.error = this.safeMessage(error);
-      operation.errorDetails = normalizeOperationError(error, {
-        stage: 'rotation',
-      });
-      this.logger.error(
-        `[RotationService] Сбой обработки операции ${operation.id}: ${this.safeMessage(error)}`,
-        error instanceof Error && error.stack
-          ? redactOperationError(error.stack, 16384)
-          : undefined,
-      );
-    } finally {
+
       operation.finishedAt = new Date();
-      await this.operationRepo.save(operation);
+      try {
+        await this.operationRepo.save(operation);
+        this.dbAvailability.recordSuccess(this.logger, 'RotationService');
+      } catch (saveError) {
+        this.unsavedFinishedOperation = operation;
+        if (
+          !this.dbAvailability.recordFailure(
+            saveError,
+            this.logger,
+            `RotationOperation ${operation.id}`,
+          )
+        ) {
+          this.logger.error(
+            `[RotationService] Не удалось сохранить итог операции ${operation.id}: ${this.safeMessage(saveError)}`,
+          );
+        }
+        return;
+      }
+
+      await this.pruneOldOperationsSafely();
+    } catch (error) {
+      if (
+        !this.dbAvailability.recordFailure(
+          error,
+          this.logger,
+          'processQueuedOperation',
+        )
+      ) {
+        this.logger.error(
+          `[RotationService] Сбой очереди ротаций: ${this.safeMessage(error)}`,
+          error instanceof Error && error.stack
+            ? redactOperationError(error.stack, 16384)
+            : undefined,
+        );
+      }
+    } finally {
       this.processingOperation = false;
     }
   }
 
   @Cron(CronExpression.EVERY_MINUTE)
   async handleTicker() {
-    const [intervalSetting, lastRunSetting, statusSetting] = await Promise.all([
-      this.settingRepo.findOne({ where: { key: 'rotation_interval' } }),
-      this.settingRepo.findOne({ where: { key: 'last_rotation_timestamp' } }),
-      this.settingRepo.findOne({ where: { key: 'rotation_status' } }),
-    ]);
-    const intervalMinutes = Number.parseInt(intervalSetting?.value || '30', 10);
-    const lastRun = Number.parseInt(lastRunSetting?.value || '0', 10);
-    if (statusSetting?.value === 'stopped') return;
-    if ((Date.now() - lastRun) / 60000 < intervalMinutes) return;
+    if (this.runningTicker || this.dbAvailability.shouldSkip()) return;
+    this.runningTicker = true;
+    try {
+      const [intervalSetting, lastRunSetting, statusSetting] =
+        await Promise.all([
+          this.settingRepo.findOne({ where: { key: 'rotation_interval' } }),
+          this.settingRepo.findOne({
+            where: { key: 'last_rotation_timestamp' },
+          }),
+          this.settingRepo.findOne({ where: { key: 'rotation_status' } }),
+        ]);
+      this.dbAvailability.recordSuccess(this.logger, 'RotationService');
+      const intervalMinutes = Number.parseInt(
+        intervalSetting?.value || '30',
+        10,
+      );
+      const lastRun = Number.parseInt(lastRunSetting?.value || '0', 10);
+      if (statusSetting?.value === 'stopped') return;
+      if ((Date.now() - lastRun) / 60000 < intervalMinutes) return;
 
-    const activeOperation = await this.operationRepo.findOne({
-      where: {
-        status: In([
-          RotationOperationStatus.Queued,
-          RotationOperationStatus.Running,
-        ]),
-      },
-    });
-    if (!activeOperation) await this.enqueueRotation();
-    await this.saveSetting('last_rotation_timestamp', Date.now().toString());
+      const activeOperation = await this.operationRepo.findOne({
+        where: {
+          status: In([
+            RotationOperationStatus.Queued,
+            RotationOperationStatus.Running,
+          ]),
+        },
+      });
+      if (!activeOperation) await this.enqueueRotation();
+      await this.saveSetting('last_rotation_timestamp', Date.now().toString());
+    } catch (error) {
+      if (
+        !this.dbAvailability.recordFailure(error, this.logger, 'handleTicker')
+      ) {
+        this.logger.error(
+          `[RotationService] Сбой планировщика авторотации: ${this.safeMessage(error)}`,
+        );
+      }
+    } finally {
+      this.runningTicker = false;
+    }
   }
 
   async performRotation(subscriptionIds?: string[]) {
@@ -1297,129 +1379,205 @@ export class RotationService implements OnModuleInit {
 
   @Cron(CronExpression.EVERY_MINUTE)
   async processCleanupQueue() {
-    const items = await this.inboundRepo
-      .createQueryBuilder('inbound')
-      .leftJoinAndSelect('inbound.node', 'node')
-      .where('inbound.status = :status', {
-        status: InboundStatus.PendingCleanup,
-      })
-      .andWhere(
-        '(inbound.nextCleanupAt IS NULL OR inbound.nextCleanupAt <= :now)',
-        {
-          now: new Date(),
-        },
-      )
-      .orderBy('inbound.createdAt', 'ASC')
-      .take(50)
-      .getMany();
+    if (this.processingCleanup || this.dbAvailability.shouldSkip()) return;
+    this.processingCleanup = true;
+    try {
+      const items = await this.inboundRepo
+        .createQueryBuilder('inbound')
+        .leftJoinAndSelect('inbound.node', 'node')
+        .where('inbound.status = :status', {
+          status: InboundStatus.PendingCleanup,
+        })
+        .andWhere(
+          '(inbound.nextCleanupAt IS NULL OR inbound.nextCleanupAt <= :now)',
+          {
+            now: new Date(),
+          },
+        )
+        .orderBy('inbound.createdAt', 'ASC')
+        .take(50)
+        .getMany();
+      this.dbAvailability.recordSuccess(this.logger, 'RotationService');
 
-    const failedNodeIdsInBatch = new Set<string>();
-    const successfulNodes = new Map<string, Node>();
+      const failedNodeIdsInBatch = new Set<string>();
+      const successfulNodes = new Map<string, Node>();
 
-    for (const inbound of items) {
-      const attempts = inbound.cleanupAttempts || 0;
+      for (const inbound of items) {
+        const attempts = inbound.cleanupAttempts || 0;
 
-      // 1. If max cleanup attempts exceeded, purge from DB
-      if (attempts >= this.maxCleanupAttempts) {
-        this.logger.warn(
-          `Превышен лимит попыток очистки (${this.maxCleanupAttempts}) для инбаунда ${inbound.id} (xuiId ${inbound.xuiId}). Запись удалена из локальной БД.`,
-        );
-        await this.inboundRepo.delete(inbound.id);
-        continue;
-      }
-
-      const node = await this.resolveInboundNode(inbound);
-
-      // 2. If inbound has nodeId but node does not exist, purge from DB
-      if (inbound.nodeId && !node) {
-        this.logger.warn(
-          `Инбаунд ${inbound.id} привязан к несуществующей ноде ${inbound.nodeId}. Удаление из локальной БД.`,
-        );
-        await this.inboundRepo.delete(inbound.id);
-        continue;
-      }
-
-      // 3. If node is marked deleted and unreachable/offline, purge immediately
-      if (node?.deletedAt) {
-        const isOffline =
-          [
-            NodeHealthStatus.Offline,
-            NodeHealthStatus.AuthError,
-            NodeHealthStatus.Degraded,
-          ].includes(node.healthStatus) ||
-          node.consecutiveFailures >= 1 ||
-          attempts >= 1;
-
-        if (isOffline) {
+        // 1. If max cleanup attempts exceeded, purge from DB
+        if (attempts >= this.maxCleanupAttempts) {
           this.logger.warn(
-            `Удаление инбаунда ${inbound.id} (xuiId ${inbound.xuiId}) из локальной БД: нода «${node.name}» удалена и недоступна.`,
+            `Превышен лимит попыток очистки (${this.maxCleanupAttempts}) для инбаунда ${inbound.id} (xuiId ${inbound.xuiId}). Запись удалена из локальной БД.`,
           );
           await this.inboundRepo.delete(inbound.id);
           continue;
         }
-      }
 
-      // 4. Batch Fail-Fast: if node failed earlier in this batch, postpone without network delay
-      if (node && failedNodeIdsInBatch.has(node.id)) {
-        inbound.cleanupAttempts = attempts + 1;
-        inbound.lastCleanupError = `Нода «${node.name}» не отвечает в текущей очереди`;
-        inbound.nextCleanupAt = new Date(
-          Date.now() + this.cleanupDelay(inbound.cleanupAttempts),
-        );
-        await this.inboundRepo.save(inbound);
-        continue;
-      }
+        const node = await this.resolveInboundNode(inbound);
 
-      // 5. If node is active but known to be offline or degraded, postpone without hanging on timeout
-      if (
-        node &&
-        ([
-          NodeHealthStatus.Offline,
-          NodeHealthStatus.AuthError,
-          NodeHealthStatus.Degraded,
-        ].includes(node.healthStatus) ||
-          node.consecutiveFailures > 0)
-      ) {
-        inbound.cleanupAttempts = attempts + 1;
-        inbound.lastCleanupError = `Нода «${node.name}» временно недоступна (${node.healthStatus})`;
-        inbound.nextCleanupAt = new Date(
-          Date.now() + this.cleanupDelay(inbound.cleanupAttempts),
-        );
-        await this.inboundRepo.save(inbound);
-        continue;
-      }
-
-      // 6. Normal deletion attempt via 3x-ui API
-      const deleted =
-        !inbound.xuiId || inbound.xuiId <= 0
-          ? true
-          : await this.xuiService.deleteInbound(inbound.xuiId, node);
-
-      if (deleted) {
-        if (node?.id) {
-          successfulNodes.set(node.id, node);
+        // 2. If inbound has nodeId but node does not exist, purge from DB
+        if (inbound.nodeId && !node) {
+          this.logger.warn(
+            `Инбаунд ${inbound.id} привязан к несуществующей ноде ${inbound.nodeId}. Удаление из локальной БД.`,
+          );
+          await this.inboundRepo.delete(inbound.id);
+          continue;
         }
-        await this.inboundRepo.delete(inbound.id);
-        continue;
+
+        // 3. If node is marked deleted and unreachable/offline, purge immediately
+        if (node?.deletedAt) {
+          const isOffline =
+            [
+              NodeHealthStatus.Offline,
+              NodeHealthStatus.AuthError,
+              NodeHealthStatus.Degraded,
+            ].includes(node.healthStatus) ||
+            node.consecutiveFailures >= 1 ||
+            attempts >= 1;
+
+          if (isOffline) {
+            this.logger.warn(
+              `Удаление инбаунда ${inbound.id} (xuiId ${inbound.xuiId}) из локальной БД: нода «${node.name}» удалена и недоступна.`,
+            );
+            await this.inboundRepo.delete(inbound.id);
+            continue;
+          }
+        }
+
+        // 4. Batch Fail-Fast: if node failed earlier in this batch, postpone without network delay
+        if (node && failedNodeIdsInBatch.has(node.id)) {
+          inbound.cleanupAttempts = attempts + 1;
+          inbound.lastCleanupError = `Нода «${node.name}» не отвечает в текущей очереди`;
+          inbound.nextCleanupAt = new Date(
+            Date.now() + this.cleanupDelay(inbound.cleanupAttempts),
+          );
+          await this.inboundRepo.save(inbound);
+          continue;
+        }
+
+        // 5. If node is active but known to be offline or degraded, postpone without hanging on timeout
+        if (
+          node &&
+          ([
+            NodeHealthStatus.Offline,
+            NodeHealthStatus.AuthError,
+            NodeHealthStatus.Degraded,
+          ].includes(node.healthStatus) ||
+            node.consecutiveFailures > 0)
+        ) {
+          inbound.cleanupAttempts = attempts + 1;
+          inbound.lastCleanupError = `Нода «${node.name}» временно недоступна (${node.healthStatus})`;
+          inbound.nextCleanupAt = new Date(
+            Date.now() + this.cleanupDelay(inbound.cleanupAttempts),
+          );
+          await this.inboundRepo.save(inbound);
+          continue;
+        }
+
+        // 6. Normal deletion attempt via 3x-ui API
+        const deleted =
+          !inbound.xuiId || inbound.xuiId <= 0
+            ? true
+            : await this.xuiService.deleteInbound(inbound.xuiId, node);
+
+        if (deleted) {
+          if (node?.id) {
+            successfulNodes.set(node.id, node);
+          }
+          await this.inboundRepo.delete(inbound.id);
+          continue;
+        }
+
+        if (node?.id) {
+          failedNodeIdsInBatch.add(node.id);
+        }
+
+        inbound.cleanupAttempts = attempts + 1;
+        inbound.lastCleanupError = 'Нода недоступна или отклонила удаление';
+        inbound.nextCleanupAt = new Date(
+          Date.now() + this.cleanupDelay(inbound.cleanupAttempts),
+        );
+        await this.inboundRepo.save(inbound);
       }
 
-      if (node?.id) {
-        failedNodeIdsInBatch.add(node.id);
+      for (const node of successfulNodes.values()) {
+        await this.cleanupZeroTrafficOrphans(node);
       }
 
-      inbound.cleanupAttempts = attempts + 1;
-      inbound.lastCleanupError = 'Нода недоступна или отклонила удаление';
-      inbound.nextCleanupAt = new Date(
-        Date.now() + this.cleanupDelay(inbound.cleanupAttempts),
-      );
-      await this.inboundRepo.save(inbound);
+      await this.finalizeDeletedNodes();
+      await this.pruneOldOperationsSafely();
+    } catch (error) {
+      if (
+        !this.dbAvailability.recordFailure(
+          error,
+          this.logger,
+          'processCleanupQueue',
+        )
+      ) {
+        this.logger.error(
+          `[RotationService] Сбой очереди очистки: ${this.safeMessage(error)}`,
+        );
+      }
+    } finally {
+      this.processingCleanup = false;
     }
+  }
 
-    for (const node of successfulNodes.values()) {
-      await this.cleanupZeroTrafficOrphans(node);
+  private async pruneOldOperationsSafely() {
+    if (
+      typeof this.operationRepo.find !== 'function' ||
+      typeof this.operationRepo.delete !== 'function'
+    ) {
+      return;
     }
-
-    await this.finalizeDeletedNodes();
+    const now = Date.now();
+    if (
+      this.lastOperationPruneAt > 0 &&
+      now - this.lastOperationPruneAt <
+        RotationService.OPERATION_PRUNE_INTERVAL_MS
+    ) {
+      return;
+    }
+    try {
+      const stale = await this.operationRepo.find({
+        where: {
+          status: In([
+            RotationOperationStatus.Succeeded,
+            RotationOperationStatus.Partial,
+            RotationOperationStatus.Failed,
+          ]),
+        },
+        select: ['id'],
+        order: { createdAt: 'DESC' },
+        skip: RotationService.MAX_STORED_OPERATIONS,
+        take: RotationService.OPERATION_PRUNE_BATCH,
+      });
+      if (Array.isArray(stale) && stale.length > 0) {
+        await this.operationRepo.delete(stale.map((item) => item.id));
+        this.logger.log(
+          `[RotationService] Очищено ${stale.length} устаревших записей истории ротаций`,
+        );
+      }
+      if (
+        !Array.isArray(stale) ||
+        stale.length < RotationService.OPERATION_PRUNE_BATCH
+      ) {
+        this.lastOperationPruneAt = now;
+      }
+    } catch (error) {
+      if (
+        !this.dbAvailability.recordFailure(
+          error,
+          this.logger,
+          'pruneOldOperations',
+        )
+      ) {
+        this.logger.warn(
+          `[RotationService] Не удалось очистить старые записи операций: ${this.safeMessage(error)}`,
+        );
+      }
+    }
   }
 
   async retryCleanup(id: number) {

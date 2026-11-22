@@ -2,6 +2,7 @@ services:
   postgres:
     image: postgres:18-alpine
     container_name: 3dp-postgres-local
+    stop_grace_period: 30s
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: admin
@@ -9,7 +10,18 @@ services:
     ports:
       - "15432:5432"
     volumes:
-      - postgres_local_data:/var/lib/postgresql/data
+      - postgres_local_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d 3dp_manager"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - 3dp-local-network
 
@@ -33,7 +45,13 @@ services:
     ports:
       - "3100:3100"
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - 3dp-local-network
 
@@ -46,6 +64,11 @@ services:
       - "8080:80"
     depends_on:
       - backend
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - 3dp-local-network
 

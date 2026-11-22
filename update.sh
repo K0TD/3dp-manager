@@ -307,6 +307,190 @@ ensure_safe_database_mode() {
   mv "$tmp_file" "$compose_file"
 }
 
+ensure_docker_logging() {
+  local compose_file="$1"
+  [[ -f "$compose_file" ]] || return 0
+
+  local tmp_file
+  tmp_file="$(mktemp)"
+
+  awk '
+    function flush_logging() {
+      if (in_services && current_service != "" && !has_logging) {
+        print "    logging:"
+        print "      driver: json-file"
+        print "      options:"
+        print "        max-size: \"10m\""
+        print "        max-file: \"3\""
+      }
+    }
+    function flush_blanks() {
+      for (i = 0; i < blank_count; i++) print blanks[i]
+      blank_count = 0
+    }
+    /^[^[:space:]#][^:]*:/ {
+      flush_logging()
+      flush_blanks()
+      current_service = ""
+      has_logging = 0
+      in_services = ($0 ~ /^services:[[:space:]]*$/) ? 1 : 0
+      print $0
+      next
+    }
+    in_services && /^  [a-zA-Z0-9_-]+:[[:space:]]*$/ {
+      flush_logging()
+      flush_blanks()
+      current_service = $1
+      sub(/:$/, "", current_service)
+      has_logging = 0
+      print $0
+      next
+    }
+    in_services && /^[[:space:]]*$/ {
+      blanks[blank_count++] = $0
+      next
+    }
+    {
+      flush_blanks()
+      if (in_services && current_service != "" && $0 ~ /^    logging:/) {
+        has_logging = 1
+      }
+      print $0
+    }
+    END {
+      flush_logging()
+      flush_blanks()
+    }
+  ' "$compose_file" > "$tmp_file"
+
+  mv "$tmp_file" "$compose_file"
+}
+
+ensure_postgres_resilience() {
+  local compose_file="$1"
+  [[ -f "$compose_file" ]] || return 0
+
+  local tmp_file
+  tmp_file="$(mktemp)"
+
+  awk '
+    function flush_postgres() {
+      if (in_services && in_postgres && !has_stop_grace) {
+        print "    stop_grace_period: 30s"
+      }
+    }
+    function flush_blanks() {
+      for (i = 0; i < blank_count; i++) print blanks[i]
+      blank_count = 0
+    }
+    /^[^[:space:]#][^:]*:/ {
+      flush_postgres()
+      flush_blanks()
+      in_postgres = 0
+      in_healthcheck = 0
+      has_stop_grace = 0
+      in_services = ($0 ~ /^services:[[:space:]]*$/) ? 1 : 0
+      print $0
+      next
+    }
+    in_services && /^  [a-zA-Z0-9_-]+:[[:space:]]*$/ {
+      flush_postgres()
+      flush_blanks()
+      in_postgres = ($1 == "postgres:") ? 1 : 0
+      in_healthcheck = 0
+      has_stop_grace = 0
+      print $0
+      next
+    }
+    in_services && in_postgres && /^[[:space:]]*$/ {
+      blanks[blank_count++] = $0
+      next
+    }
+    {
+      flush_blanks()
+      if (in_services && in_postgres) {
+        if ($0 ~ /^    stop_grace_period:/) {
+          has_stop_grace = 1
+        }
+        if ($0 ~ /^    healthcheck:[[:space:]]*$/) {
+          in_healthcheck = 1
+        } else if ($0 ~ /^    [a-zA-Z0-9_-]+:/) {
+          in_healthcheck = 0
+        }
+        if (in_healthcheck && $0 ~ /^      retries:[[:space:]]*5[[:space:]]*$/) {
+          print "      retries: 12"
+          next
+        }
+      }
+      print $0
+    }
+    END {
+      flush_postgres()
+      flush_blanks()
+    }
+  ' "$compose_file" > "$tmp_file"
+
+  mv "$tmp_file" "$compose_file"
+}
+
+check_disk_space() {
+  local min_required_mb=256
+  local warn_threshold_mb=1024
+  local paths=("$PROJECT_DIR")
+  if [[ -d /var/lib/docker ]]; then
+    paths+=("/var/lib/docker")
+  fi
+
+  local target avail_mb
+  for target in "${paths[@]}"; do
+    avail_mb=$(df -Pm "$target" 2>/dev/null | awk 'NR==2 {print $4}')
+    if [[ ! "$avail_mb" =~ ^[0-9]+$ ]]; then
+      continue
+    fi
+    if (( avail_mb < min_required_mb )); then
+      die "Недостаточно свободного места на диске для $target (доступно ${avail_mb}MB, требуется минимум ${min_required_mb}MB). Освободите место (например: docker system prune -f, проверьте размер логов в /var/lib/docker/containers и $PROJECT_DIR/backups) и повторите обновление."
+    fi
+    if (( avail_mb < warn_threshold_mb )); then
+      warn "Мало свободного места на диске для $target: ${avail_mb}MB (рекомендуется >= ${warn_threshold_mb}MB)"
+    fi
+  done
+}
+
+wait_for_postgres() {
+  local timeout=${1:-60}
+  local elapsed=0
+
+  log "Ожидание готовности PostgreSQL..."
+  while [ "$elapsed" -lt "$timeout" ]; do
+    if docker exec 3dp-postgres sh -c 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+
+  return 1
+}
+
+prune_old_backups() {
+  local backup_dir="$PROJECT_DIR/backups"
+  local keep="${1:-10}"
+  [[ -d "$backup_dir" ]] || return 0
+
+  local old_backups=()
+  mapfile -t old_backups < <(
+    find "$backup_dir" -maxdepth 1 -type f -name 'pre-update-*.sql.gz' -printf '%T@ %p\n' 2>/dev/null \
+      | sort -rn \
+      | tail -n +"$((keep + 1))" \
+      | cut -d' ' -f2- || true
+  )
+
+  if [[ ${#old_backups[@]} -gt 0 ]]; then
+    rm -f "${old_backups[@]}"
+    log "Удалено устаревших резервных копий: ${#old_backups[@]} (оставлены последние $keep)"
+  fi
+}
+
 switch_to_k0td_images() {
   local compose_file="$1"
   [[ -f "$compose_file" ]] || return 0
@@ -450,22 +634,31 @@ if [[ ! -f ".env" ]]; then
 fi
 
 #################################
+# CHECK DISK SPACE
+#################################
+check_disk_space
+
+#################################
 # FIX NGINX CONFIG
 #################################
 ensure_nginx_api_timeouts "$PROJECT_DIR/client/nginx-client.conf"
 ensure_bus_location "$PROJECT_DIR/client/nginx-client.conf"
 remove_hysteria_mount "$PROJECT_DIR/docker-compose.yml"
 ensure_safe_database_mode "$PROJECT_DIR/docker-compose.yml"
+ensure_docker_logging "$PROJECT_DIR/docker-compose.yml"
+ensure_postgres_resilience "$PROJECT_DIR/docker-compose.yml"
 switch_to_k0td_images "$PROJECT_DIR/docker-compose.yml"
 
 #################################
 # BACKUP DATABASE
 #################################
+wait_for_postgres 60 || die "PostgreSQL не принимает подключения (возможно, переполнен диск или идёт восстановление). Проверьте: docker logs 3dp-postgres && df -h"
 node_count_before="$(get_node_count)"
 [[ "$node_count_before" =~ ^[0-9]+$ ]] || die "Не удалось проверить количество нод перед обновлением"
 backup_database
 backup_file="$BACKUP_FILE"
 [[ -s "$backup_file" ]] || die "Не удалось создать резервную копию базы данных"
+prune_old_backups 10
 
 #################################
 # REBUILD BACKEND
@@ -486,6 +679,7 @@ if ! check_containers_running 60; then
     die "Обновление прервано из-за ошибки запуска контейнеров"
 fi
 
+wait_for_postgres 60 || die "PostgreSQL не готов после обновления. Резервная копия: $backup_file"
 node_count_after="$(get_node_count)"
 [[ "$node_count_after" =~ ^[0-9]+$ ]] || die "Не удалось проверить количество нод после обновления. Резервная копия: $backup_file"
 if (( node_count_after < node_count_before )); then

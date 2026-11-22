@@ -11,6 +11,8 @@ import { Tunnel } from 'src/tunnels/entities/tunnel.entity';
 import { RotationOperation } from 'src/rotation/entities/rotation-operation.entity';
 import { XuiService } from 'src/xui/xui.service';
 import { InboundBuilderService } from 'src/inbounds/inbound-builder.service';
+import { databaseAvailability } from 'src/database/database-availability';
+import { Logger } from '@nestjs/common';
 
 describe('RotationService resilient generations', () => {
   const manager: { update: jest.Mock; transaction: jest.Mock } = {
@@ -101,6 +103,7 @@ describe('RotationService resilient generations', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    databaseAvailability.reset();
     xuiService.waitForXray.mockResolvedValue(undefined);
     settingRepo.findOne.mockResolvedValue(null);
     inboundRepo.findOne.mockResolvedValue(null);
@@ -1409,6 +1412,134 @@ describe('RotationService resilient generations', () => {
 
       expect(cleaned).toBe(0);
       expect(xuiService.deleteInbound).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('database outage resilience and operation retention', () => {
+    let errorSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      databaseAvailability.reset();
+      errorSpy = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      errorSpy.mockRestore();
+      databaseAvailability.reset();
+    });
+
+    it('catches PostgreSQL 57P03 across all cron jobs and pauses DB polling during backoff', async () => {
+      const recoveryErr = Object.assign(
+        new Error('the database system is not yet accepting connections'),
+        {
+          code: '57P03',
+          detail: 'Consistent recovery state has not been yet reached.',
+        },
+      );
+      operationRepo.findOne.mockRejectedValueOnce(recoveryErr);
+
+      await expect(service.processQueuedOperation()).resolves.toBeUndefined();
+      expect(databaseAvailability.shouldSkip()).toBe(true);
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+
+      // Subsequent ticks of all 3 crons skip DB queries completely during backoff
+      await expect(service.processQueuedOperation()).resolves.toBeUndefined();
+      await expect(service.handleTicker()).resolves.toBeUndefined();
+      await expect(service.processCleanupQueue()).resolves.toBeUndefined();
+
+      expect(operationRepo.findOne).toHaveBeenCalledTimes(1);
+      expect(settingRepo.findOne).not.toHaveBeenCalled();
+      expect(inboundRepo.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    it('releases processingOperation lock and retries final save after a 53100 disk_full error', async () => {
+      const operation = {
+        id: 'op-disk-full',
+        status: 'queued',
+        results: [],
+      };
+      const diskFullErr = Object.assign(
+        new Error('could not write init file: No space left on device'),
+        { code: '53100' },
+      );
+
+      operationRepo.findOne.mockResolvedValueOnce(operation);
+      operationRepo.save
+        .mockResolvedValueOnce(operation) // save Running
+        .mockRejectedValueOnce(diskFullErr); // save finishedAt fails with 53100
+
+      jest.spyOn(service, 'performRotation').mockResolvedValue({
+        success: true,
+        message: 'Ротация успешно выполнена',
+        results: [],
+      });
+
+      await expect(service.processQueuedOperation()).resolves.toBeUndefined();
+      expect(databaseAvailability.isDegraded()).toBe(true);
+      expect(
+        (service as unknown as { processingOperation: boolean })
+          .processingOperation,
+      ).toBe(false);
+
+      // Once DB recovers, the next tick flushes the unsaved finished operation first
+      databaseAvailability.reset();
+      operationRepo.save.mockResolvedValueOnce(operation);
+      operationRepo.findOne.mockResolvedValueOnce(null);
+
+      await expect(service.processQueuedOperation()).resolves.toBeUndefined();
+      expect(operationRepo.save).toHaveBeenCalledTimes(3);
+      expect(operationRepo.save).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          id: 'op-disk-full',
+          status: 'succeeded',
+        }),
+      );
+      expect((operation as { finishedAt?: unknown }).finishedAt).toBeInstanceOf(
+        Date,
+      );
+    });
+
+    it('prunes terminal RotationOperation rows beyond the retention cap during cleanup', async () => {
+      const qb = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+      };
+      inboundRepo.createQueryBuilder.mockReturnValue(qb);
+      nodeRepo.createQueryBuilder.mockReturnValue({
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+      });
+
+      const deleteMock = jest.fn().mockResolvedValue({ affected: 2 });
+      const opRepoWithDelete = operationRepo as typeof operationRepo & {
+        delete?: jest.Mock;
+      };
+      opRepoWithDelete.delete = deleteMock;
+      operationRepo.find.mockResolvedValueOnce([
+        { id: 'old-op-1' },
+        { id: 'old-op-2' },
+      ]);
+      (
+        service as unknown as { lastOperationPruneAt: number }
+      ).lastOperationPruneAt = 0;
+
+      await service.processCleanupQueue();
+
+      expect(operationRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({
+          skip: 200,
+          take: 500,
+        }),
+      );
+      expect(deleteMock).toHaveBeenCalledWith(['old-op-1', 'old-op-2']);
+      delete opRepoWithDelete.delete;
     });
   });
 });

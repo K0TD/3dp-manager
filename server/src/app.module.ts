@@ -1,9 +1,13 @@
-import { Module } from '@nestjs/common';
+import { Logger, Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import {
+  databaseAvailability,
+  formatUnknownError,
+} from './database/database-availability';
 
 import { Setting } from './settings/entities/setting.entity';
 import { Domain } from './domains/entities/domain.entity';
@@ -36,6 +40,8 @@ import { AddNodeCapabilities1800000000000 } from './migrations/1800000000000-add
 import { AddRoutingPresets1810000000000 } from './migrations/1810000000000-add-routing-presets';
 import { AddSubscriptionMetadata1820000000000 } from './migrations/1820000000000-add-subscription-metadata';
 import { AddOperationErrorDetails1830000000000 } from './migrations/1830000000000-add-operation-error-details';
+
+const dbPoolLogger = new Logger('DatabasePool');
 
 @Module({
   imports: [
@@ -78,6 +84,26 @@ import { AddOperationErrorDetails1830000000000 } from './migrations/183000000000
       ],
       synchronize: process.env.DB_SYNCHRONIZE === 'true',
       migrationsRun: process.env.DB_MIGRATIONS_RUN !== 'false',
+      retryAttempts: 20,
+      retryDelay: 3000,
+      poolSize: 20,
+      connectTimeoutMS: 10000,
+      extra: {
+        idleTimeoutMillis: 30000,
+      },
+      poolErrorHandler: (error: unknown) => {
+        if (
+          !databaseAvailability.recordFailure(
+            error,
+            dbPoolLogger,
+            'PostgresPool',
+          )
+        ) {
+          dbPoolLogger.warn(
+            `Postgres pool error: ${formatUnknownError(error)}`,
+          );
+        }
+      },
     }),
     SessionModule,
     XuiModule,

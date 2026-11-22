@@ -13,6 +13,8 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { TYPEORM_MODULE_OPTIONS } from '@nestjs/typeorm/dist/typeorm.constants';
 import { AddSubscriptionMetadata1820000000000 } from 'src/migrations/1820000000000-add-subscription-metadata';
 import { AddOperationErrorDetails1830000000000 } from 'src/migrations/1830000000000-add-operation-error-details';
+import { databaseAvailability } from 'src/database/database-availability';
+import { Logger } from '@nestjs/common';
 
 type DynamicModuleLike = {
   module?: unknown;
@@ -43,6 +45,51 @@ describe('AppModule конфигурация', () => {
     )?.useValue as { migrations: unknown[] };
     expect(options.migrations).toContain(AddSubscriptionMetadata1820000000000);
     expect(options.migrations).toContain(AddOperationErrorDetails1830000000000);
+  });
+
+  it('configures PostgreSQL retry, timeouts, and pool error resilience', async () => {
+    databaseAvailability.reset();
+    const errorSpy = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+
+    const imports = (Reflect.getMetadata(MODULE_METADATA.IMPORTS, AppModule) ??
+      []) as AppImportEntry[];
+    const resolved = await Promise.all(
+      imports.map((entry) =>
+        entry instanceof Promise ? entry : Promise.resolve(entry),
+      ),
+    );
+    const db = resolved.find((entry) => entry.module === TypeOrmModule);
+    const options = db?.imports?.[0]?.providers?.find(
+      (provider) => provider.provide === TYPEORM_MODULE_OPTIONS,
+    )?.useValue as {
+      retryAttempts: number;
+      retryDelay: number;
+      poolSize: number;
+      connectTimeoutMS: number;
+      extra: { idleTimeoutMillis: number };
+      poolErrorHandler: (error: unknown) => void;
+    };
+
+    expect(options.retryAttempts).toBe(20);
+    expect(options.retryDelay).toBe(3000);
+    expect(options.poolSize).toBe(20);
+    expect(options.connectTimeoutMS).toBe(10000);
+    expect(options.extra).toEqual(
+      expect.objectContaining({ idleTimeoutMillis: 30000 }),
+    );
+    expect(typeof options.poolErrorHandler).toBe('function');
+
+    options.poolErrorHandler(
+      Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+    );
+    expect(databaseAvailability.isDegraded()).toBe(true);
+    expect(databaseAvailability.shouldSkip()).toBe(true);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+
+    errorSpy.mockRestore();
+    databaseAvailability.reset();
   });
 
   it('должен регистрировать ThrottlerModule с лимитом 1000/60000ms (лояльный API)', () => {

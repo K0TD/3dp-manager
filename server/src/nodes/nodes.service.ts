@@ -27,6 +27,7 @@ import { Setting } from '../settings/entities/setting.entity';
 import { SubscriptionLockService } from '../subscriptions/subscription-lock.service';
 import { NodeDeletionService } from './node-deletion.service';
 import { ROUTING_INBOUND_TYPES } from '../subscriptions/inbound-config.constants';
+import { databaseAvailability } from '../database/database-availability';
 
 type GeoResult = {
   ip: string;
@@ -41,6 +42,8 @@ const getDomainFromHost = (host?: string) =>
 @Injectable()
 export class NodesService {
   private readonly logger = new Logger(NodesService.name);
+  private readonly dbAvailability = databaseAvailability;
+  private refreshingHealth = false;
   constructor(
     @InjectRepository(Node)
     private readonly nodesRepo: Repository<Node>,
@@ -454,20 +457,52 @@ export class NodesService {
 
   @Cron(CronExpression.EVERY_MINUTE)
   async refreshHealth() {
-    const nodes = await this.nodesRepo
-      .createQueryBuilder('node')
-      .addSelect('node.password')
-      .addSelect('node.token')
-      .where('node.deletedAt IS NULL')
-      .getMany();
+    if (this.refreshingHealth || this.dbAvailability.shouldSkip()) return;
+    this.refreshingHealth = true;
+    try {
+      const nodes = await this.nodesRepo
+        .createQueryBuilder('node')
+        .addSelect('node.password')
+        .addSelect('node.token')
+        .where('node.deletedAt IS NULL')
+        .getMany();
+      this.dbAvailability.recordSuccess(this.logger, 'NodesService');
 
-    for (let offset = 0; offset < nodes.length; offset += 4) {
-      await Promise.allSettled(
-        nodes.slice(offset, offset + 4).map(async (node) => {
-          const status = await this.xuiService.checkNodeConnection(node);
-          await this.applyHealthResult(node, status);
-        }),
-      );
+      for (let offset = 0; offset < nodes.length; offset += 4) {
+        if (this.dbAvailability.shouldSkip()) break;
+        const settled = await Promise.allSettled(
+          nodes.slice(offset, offset + 4).map(async (node) => {
+            const status = await this.xuiService.checkNodeConnection(node);
+            await this.applyHealthResult(node, status);
+          }),
+        );
+        for (const result of settled) {
+          if (result.status !== 'rejected') continue;
+          if (
+            !this.dbAvailability.recordFailure(
+              result.reason,
+              this.logger,
+              'refreshHealth',
+              { strict: true },
+            )
+          ) {
+            const message =
+              result.reason instanceof Error
+                ? result.reason.message
+                : String(result.reason);
+            this.logger.warn(`Ошибка проверки состояния ноды: ${message}`);
+          }
+        }
+      }
+    } catch (error) {
+      if (
+        !this.dbAvailability.recordFailure(error, this.logger, 'refreshHealth')
+      ) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.error(`Сбой фоновой проверки состояния нод: ${message}`);
+      }
+    } finally {
+      this.refreshingHealth = false;
     }
   }
 

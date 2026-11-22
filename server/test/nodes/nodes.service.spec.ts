@@ -8,6 +8,8 @@ import { XuiService } from 'src/xui/xui.service';
 import { Setting } from 'src/settings/entities/setting.entity';
 import { SubscriptionLockService } from 'src/subscriptions/subscription-lock.service';
 import { NodeDeletionService } from 'src/nodes/node-deletion.service';
+import { databaseAvailability } from 'src/database/database-availability';
+import { Logger } from '@nestjs/common';
 
 describe('NodesService', () => {
   const createNodeRepo = (getOne: jest.Mock) => ({
@@ -496,5 +498,82 @@ describe('NodesService', () => {
     release();
     await expect(removal).rejects.toThrow();
     expect(nodeDeletion.isDeleting('gone')).toBe(false);
+  });
+
+  describe('refreshHealth database resilience', () => {
+    let errorSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      databaseAvailability.reset();
+      errorSpy = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      errorSpy.mockRestore();
+      databaseAvailability.reset();
+    });
+
+    it('catches PostgreSQL 57P03 without throwing and skips subsequent ticks during backoff', async () => {
+      const getMany = jest.fn().mockRejectedValue(
+        Object.assign(new Error('the database system is in recovery mode'), {
+          code: '57P03',
+        }),
+      );
+      const repo = createNodeRepo(jest.fn());
+      const qb = {
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getOne: jest.fn(),
+        getMany,
+      };
+      repo.createQueryBuilder.mockReturnValue(qb);
+      const { service } = createService(repo);
+
+      await expect(service.refreshHealth()).resolves.toBeUndefined();
+      expect(databaseAvailability.shouldSkip()).toBe(true);
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+
+      await expect(service.refreshHealth()).resolves.toBeUndefined();
+      expect(getMany).toHaveBeenCalledTimes(1);
+    });
+
+    it('stops remaining batches when nodesRepo.save fails with PostgreSQL 53100 disk_full', async () => {
+      const nodes = Array.from({ length: 6 }, (_, idx) => ({
+        id: `node-${idx + 1}`,
+        name: `Node ${idx + 1}`,
+      }));
+      const repo = createNodeRepo(jest.fn());
+      const qb = {
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getOne: jest.fn(),
+        getMany: jest.fn().mockResolvedValue(nodes),
+      };
+      repo.createQueryBuilder.mockReturnValue(qb);
+      repo.save.mockRejectedValue(
+        Object.assign(
+          new Error('could not write init file: No space left on device'),
+          { code: '53100' },
+        ),
+      );
+
+      const { service, xuiService } = createService(repo);
+      const checkNodeConnection = jest.fn().mockResolvedValue({
+        success: true,
+        responseTimeMs: 42,
+      });
+      Object.assign(xuiService, { checkNodeConnection });
+
+      await expect(service.refreshHealth()).resolves.toBeUndefined();
+
+      // Batch size is 4: batch 1 hits 53100 and triggers backoff, so batch 2 (nodes 5-6) is skipped
+      expect(checkNodeConnection).toHaveBeenCalledTimes(4);
+      expect(databaseAvailability.shouldSkip()).toBe(true);
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+    });
   });
 });
