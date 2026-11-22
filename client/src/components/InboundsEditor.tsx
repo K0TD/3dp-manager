@@ -46,6 +46,7 @@ import {
   type XhttpMode,
 } from '../types/inbound';
 import {
+  createDefaultHttpsFallbackSettings,
   createDefaultSelfSniSettings,
   createDefaultXhttpStableSettings,
   createInboundTemplate,
@@ -56,6 +57,8 @@ import {
   hasSni,
   isInboundSupported,
   isValidPort,
+  requiresPanelTlsCertificate,
+  validateHttpsFallbackSettings,
   validateSelfSniSettings,
   validateXhttpStableSettings,
 } from '../utils/inboundUtils';
@@ -104,7 +107,9 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
       const defaults =
         inbound.type === 'self-sni'
           ? createDefaultSelfSniSettings()
-          : createDefaultXhttpStableSettings();
+          : inbound.type === 'https-fallback'
+            ? createDefaultHttpsFallbackSettings()
+            : createDefaultXhttpStableSettings();
       const nextSettings: ManagedProfileSettings = {
         ...defaults,
         ...inbound.profileSettings,
@@ -114,6 +119,9 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
         ...inbound,
         ...(inbound.type === 'self-sni' && patch.domain !== undefined
           ? { sni: patch.domain.trim() }
+          : {}),
+        ...(inbound.type === 'https-fallback' && patch.domain !== undefined
+          ? { tlsServerName: patch.domain.trim() }
           : {}),
         profileSettings: nextSettings,
       };
@@ -213,6 +221,20 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
         next.tlsServerName = undefined;
         next.certificateFile = '';
         next.keyFile = '';
+      }
+
+      if (field === 'type' && value === 'https-fallback') {
+        const nodeAddr = getNodeAddress(next.nodeId, nodes);
+        const defaultDomain =
+          next.profileSettings?.domain?.trim() ||
+          next.tlsServerName?.trim() ||
+          (/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(nodeAddr) ? nodeAddr : '');
+        next.profileSettings = {
+          ...createDefaultHttpsFallbackSettings(defaultDomain),
+          ...next.profileSettings,
+          domain: defaultDomain,
+        };
+        next.tlsServerName = defaultDomain;
       }
 
       if (field === 'type' && !MANAGED_PROFILE_TYPES.has(value)) {
@@ -455,14 +477,12 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                           : option === 'self-sni'
                             ? 'Self-SNI (VLESS + RAW + REALITY + Vision)'
                             : option === 'https-fallback'
-                              ? 'HTTPS Fallback (Этап 3)'
+                              ? 'HTTPS Fallback (VLESS + XHTTP + TLS)'
                               : option;
                   return (
                     <MenuItem key={option} value={option} disabled={!supported}>
                       {label}
-                      {supported || option === 'https-fallback'
-                        ? ''
-                        : ' · несовместимо'}
+                      {supported ? '' : ' · несовместимо'}
                     </MenuItem>
                   );
                 })}
@@ -620,7 +640,7 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                   sx={{ width: '100%', minWidth: 0 }}
                 />
 
-                {CERTIFICATE_TYPES.has(inbound.type) && (
+                {requiresPanelTlsCertificate(inbound) && (
                   <Box
                     sx={{
                       gridColumn: '1 / -1',
@@ -1241,6 +1261,221 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                           <TextField
                             size="small"
                             label="Путь ключа (для шаблона, опц.)"
+                            placeholder="/etc/letsencrypt/live/.../privkey.pem"
+                            value={profileSettings.keyFile || ''}
+                            onChange={(e) =>
+                              handleProfileSettingsChange(inbound.id, {
+                                keyFile: e.target.value,
+                              })
+                            }
+                            sx={{ width: '100%', minWidth: 0 }}
+                          />
+                        </>
+                      )}
+                    </Box>
+                  );
+                })()}
+
+                {inbound.type === 'https-fallback' && (() => {
+                  const profileSettings = {
+                    ...createDefaultHttpsFallbackSettings(
+                      inbound.tlsServerName || '',
+                    ),
+                    ...inbound.profileSettings,
+                  };
+                  const reverseProxy = profileSettings.reverseProxy ?? 'none';
+                  const fallbackValidationError = validateHttpsFallbackSettings(
+                    profileSettings,
+                    inbound.port,
+                    inbound.tlsServerName,
+                  );
+                  return (
+                    <Box
+                      sx={{
+                        gridColumn: '1 / -1',
+                        display: 'grid',
+                        gap: 2,
+                        pt: 2,
+                        borderTop: 1,
+                        borderColor: 'divider',
+                        gridTemplateColumns: {
+                          xs: 'minmax(0, 1fr)',
+                          sm: 'repeat(2, minmax(0, 1fr))',
+                          lg: 'repeat(4, minmax(0, 1fr))',
+                        },
+                      }}
+                    >
+                      <Stack
+                        direction="row"
+                        alignItems="center"
+                        justifyContent="space-between"
+                        flexWrap="wrap"
+                        gap={1}
+                        sx={{ gridColumn: '1 / -1' }}
+                      >
+                        <Typography variant="caption" color="text.secondary">
+                          HTTPS Fallback · независимый VLESS + XHTTP + TLS с отдельным endpoint и поддержкой reverse proxy
+                        </Typography>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          startIcon={<OpenInNew />}
+                          onClick={() => setPreviewTarget(inbound)}
+                        >
+                          Предпросмотр, Proxy и проверка
+                        </Button>
+                      </Stack>
+
+                      {fallbackValidationError && (
+                        <Alert
+                          severity="error"
+                          sx={{ gridColumn: '1 / -1', py: 0.25 }}
+                        >
+                          {fallbackValidationError}
+                        </Alert>
+                      )}
+
+                      <TextField
+                        size="small"
+                        label="Домен сертификата (Fallback)"
+                        placeholder="fallback.example.com"
+                        value={
+                          profileSettings.domain || inbound.tlsServerName || ''
+                        }
+                        onChange={(e) =>
+                          handleProfileSettingsChange(inbound.id, {
+                            domain: e.target.value,
+                          })
+                        }
+                        sx={{ width: '100%', minWidth: 0 }}
+                      />
+
+                      <FormControl size="small" sx={{ width: '100%', minWidth: 0 }}>
+                        <InputLabel>Режим TLS / Reverse Proxy</InputLabel>
+                        <Select
+                          value={reverseProxy}
+                          label="Режим TLS / Reverse Proxy"
+                          onChange={(e) =>
+                            handleProfileSettingsChange(inbound.id, {
+                              reverseProxy: e.target
+                                .value as ReverseProxyEngine,
+                            })
+                          }
+                        >
+                          <MenuItem value="none">Прямой TLS в Xray</MenuItem>
+                          <MenuItem value="nginx">
+                            За Nginx reverse proxy (127.0.0.1)
+                          </MenuItem>
+                          <MenuItem value="caddy">
+                            За Caddy reverse proxy (127.0.0.1)
+                          </MenuItem>
+                        </Select>
+                      </FormControl>
+
+                      <TextField
+                        size="small"
+                        label="Endpoint Path (выделенный)"
+                        placeholder="/api/v2/stream"
+                        value={profileSettings.path ?? '/api/v2/stream'}
+                        onChange={(e) =>
+                          handleProfileSettingsChange(inbound.id, {
+                            path: e.target.value,
+                          })
+                        }
+                        sx={{ width: '100%', minWidth: 0 }}
+                      />
+
+                      <FormControl size="small" sx={{ width: '100%', minWidth: 0 }}>
+                        <InputLabel>Режим XHTTP</InputLabel>
+                        <Select
+                          value={profileSettings.mode || 'auto'}
+                          label="Режим XHTTP"
+                          onChange={(e) =>
+                            handleProfileSettingsChange(inbound.id, {
+                              mode: e.target.value as XhttpMode,
+                            })
+                          }
+                        >
+                          {XHTTP_MODE_OPTIONS.map((mode) => (
+                            <MenuItem key={mode} value={mode}>
+                              {mode}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+
+                      {reverseProxy !== 'none' && (
+                        <TextField
+                          size="small"
+                          type="number"
+                          label="Публичный HTTPS-порт proxy"
+                          value={profileSettings.publicPort ?? 443}
+                          onChange={(e) =>
+                            handleProfileSettingsChange(inbound.id, {
+                              publicPort: Number(e.target.value) || 443,
+                            })
+                          }
+                          sx={{ width: '100%', minWidth: 0 }}
+                        />
+                      )}
+
+                      <FormControl size="small" sx={{ width: '100%', minWidth: 0 }}>
+                        <InputLabel>Fingerprint</InputLabel>
+                        <Select
+                          value={profileSettings.fingerprint || 'chrome'}
+                          label="Fingerprint"
+                          onChange={(e) =>
+                            handleProfileSettingsChange(inbound.id, {
+                              fingerprint: e.target.value as ClientFingerprint,
+                            })
+                          }
+                        >
+                          {FINGERPRINT_OPTIONS.map((fp) => (
+                            <MenuItem key={fp} value={fp}>
+                              {fp}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+
+                      <FormControl size="small" sx={{ width: '100%', minWidth: 0 }}>
+                        <InputLabel>Политика ротации</InputLabel>
+                        <Select
+                          value={profileSettings.rotationPolicy || 'fixed_domain'}
+                          label="Политика ротации"
+                          onChange={(e) =>
+                            handleProfileSettingsChange(inbound.id, {
+                              rotationPolicy: e.target
+                                .value as ProfileRotationPolicy,
+                            })
+                          }
+                        >
+                          <MenuItem value="fixed_domain">
+                            Фиксированный домен и сертификат
+                          </MenuItem>
+                          <MenuItem value="preserve_all">
+                            Сохранять домен, путь и сертификат
+                          </MenuItem>
+                        </Select>
+                      </FormControl>
+
+                      {reverseProxy !== 'none' && (
+                        <>
+                          <TextField
+                            size="small"
+                            label="Путь сертификата (для шаблона proxy, опц.)"
+                            placeholder="/etc/letsencrypt/live/.../fullchain.pem"
+                            value={profileSettings.certificateFile || ''}
+                            onChange={(e) =>
+                              handleProfileSettingsChange(inbound.id, {
+                                certificateFile: e.target.value,
+                              })
+                            }
+                            sx={{ width: '100%', minWidth: 0 }}
+                          />
+                          <TextField
+                            size="small"
+                            label="Путь ключа (для шаблона proxy, опц.)"
                             placeholder="/etc/letsencrypt/live/.../privkey.pem"
                             value={profileSettings.keyFile || ''}
                             onChange={(e) =>

@@ -272,4 +272,44 @@ describe('ConnectionProfilesService', () => {
     expect(checked.status).toBe('passed');
     expect(checked.tlsProbe?.certificate?.authorized).toBe(true);
   });
+
+  it('creates, previews with Caddy reverse proxy, and exports https-fallback profile', async () => {
+    const created = await service.create({
+      name: 'HTTPS Fallback Proxy',
+      kind: 'https-fallback',
+      nodeId: 'node-1',
+      port: 20443,
+      spec: {
+        domain: 'fb.example.com',
+        path: '/api/v2/stream',
+        mode: 'auto',
+        reverseProxy: 'caddy',
+        publicPort: 443,
+      },
+    });
+
+    expect(created.activeRevision).toBe(1);
+    expect(created.lastCheckStatus).toBe('passed');
+
+    const preview = await service.preview({
+      kind: 'https-fallback',
+      name: 'HTTPS Fallback Proxy',
+      nodeId: 'node-1',
+      port: 20443,
+      settings: created.spec,
+    });
+
+    expect(preview.compatibility.compatible).toBe(true);
+    expect(preview.serverPreview.listen).toBe('127.0.0.1');
+    expect(preview.clientPreview.vlessLink).toContain(':443?');
+    expect(preview.clientPreview.vlessLink).toContain('security=tls');
+    expect(preview.clientPreview.vlessLink).toContain(
+      'path=%2Fapi%2Fv2%2Fstream',
+    );
+    expect(preview.webServerConfig?.engine).toBe('caddy');
+    expect(preview.webServerConfig?.config).toContain('flush_interval -1');
+    expect(preview.webServerConfig?.config).toContain(
+      'reverse_proxy 127.0.0.1:20443',
+    );
+  });
 });

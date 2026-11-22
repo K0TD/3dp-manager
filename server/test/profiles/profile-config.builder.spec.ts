@@ -1,4 +1,6 @@
 import {
+  buildHttpsFallbackExportBundle,
+  buildHttpsFallbackServerInbound,
   buildSelfSniExportBundle,
   buildSelfSniServerInbound,
   buildXhttpStableExportBundle,
@@ -291,5 +293,92 @@ describe('profile-config.builder (XHTTP Stable)', () => {
       realitySettings: { target: string };
     };
     expect(stream.realitySettings.target).toBe('ext.example.com:9443');
+  });
+
+  it('builds HTTPS Fallback in direct TLS mode and behind reverse proxy (server 127.0.0.1 none vs client TLS publicPort)', () => {
+    const directInbound = buildHttpsFallbackServerInbound({
+      port: 8443,
+      uuid: baseServerParams.uuid,
+      remark: 'FallbackDirect',
+      domain: 'fb.example.com',
+      certificateFile: '/etc/ssl/fb/fullchain.pem',
+      keyFile: '/etc/ssl/fb/privkey.pem',
+      settings: {
+        domain: 'fb.example.com',
+        path: '/api/v2/stream',
+        mode: 'auto',
+        reverseProxy: 'none',
+      },
+    });
+    expect(directInbound.listen).toBe('0.0.0.0');
+    const directStream = JSON.parse(directInbound.streamSettings) as {
+      network: string;
+      security: string;
+      tlsSettings: {
+        serverName: string;
+        certificates: Array<{ certificateFile: string; keyFile: string }>;
+      };
+      xhttpSettings: { path: string; host: string; mode: string };
+    };
+    expect(directStream.network).toBe('xhttp');
+    expect(directStream.security).toBe('tls');
+    expect(directStream.tlsSettings.serverName).toBe('fb.example.com');
+    expect(directStream.tlsSettings.certificates[0].certificateFile).toBe(
+      '/etc/ssl/fb/fullchain.pem',
+    );
+    expect(directStream.xhttpSettings.path).toBe('/api/v2/stream');
+
+    const proxyInbound = buildHttpsFallbackServerInbound({
+      port: 20443,
+      uuid: baseServerParams.uuid,
+      remark: 'FallbackProxy',
+      domain: 'fb.example.com',
+      settings: {
+        domain: 'fb.example.com',
+        path: '/api/v2/secret',
+        mode: 'packet-up',
+        reverseProxy: 'nginx',
+        publicPort: 443,
+      },
+    });
+    expect(proxyInbound.listen).toBe('127.0.0.1');
+    const proxyStream = JSON.parse(proxyInbound.streamSettings) as {
+      network: string;
+      security: string;
+      tlsSettings?: unknown;
+      xhttpSettings: { path: string; mode: string };
+    };
+    expect(proxyStream.network).toBe('xhttp');
+    expect(proxyStream.security).toBe('none');
+    expect(proxyStream.tlsSettings).toBeUndefined();
+    expect(proxyStream.xhttpSettings.path).toBe('/api/v2/secret');
+
+    const clientBundle = buildHttpsFallbackExportBundle({
+      address: 'fb.example.com',
+      port: 20443,
+      uuid: baseServerParams.uuid,
+      remark: 'FallbackProxy',
+      domain: 'fb.example.com',
+      settings: {
+        domain: 'fb.example.com',
+        path: '/api/v2/secret',
+        mode: 'packet-up',
+        reverseProxy: 'nginx',
+        publicPort: 443,
+        fingerprint: 'safari',
+      },
+    });
+    const parsedUrl = new URL(clientBundle.vlessLink);
+    expect(parsedUrl.port).toBe('443');
+    expect(parsedUrl.searchParams.get('security')).toBe('tls');
+    expect(parsedUrl.searchParams.get('type')).toBe('xhttp');
+    expect(parsedUrl.searchParams.get('path')).toBe('/api/v2/secret');
+    expect(parsedUrl.searchParams.get('mode')).toBe('packet-up');
+    expect(parsedUrl.searchParams.get('sni')).toBe('fb.example.com');
+    expect(parsedUrl.searchParams.get('alpn')).toBe('h2,http/1.1');
+    expect(parsedUrl.searchParams.get('flow')).toBeNull();
+    expect(JSON.stringify(clientBundle.xrayClientJson)).toContain(
+      '/api/v2/secret',
+    );
   });
 });

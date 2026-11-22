@@ -195,6 +195,7 @@ export const MANAGED_PROFILE_TYPES = new Set<string>([
 export const ACTIVE_MANAGED_PROFILE_TYPES = new Set<string>([
   'xhttp-stable',
   'self-sni',
+  'https-fallback',
 ]);
 
 export const ROUTING_INBOUND_TYPES = new Set<string>([

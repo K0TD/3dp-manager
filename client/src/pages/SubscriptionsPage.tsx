@@ -48,17 +48,21 @@ import type { NodeRecord } from '../types/node';
 import { InboundsEditor } from '../components/InboundsEditor';
 import { WorkspaceHeader } from '../components/WorkspaceHeader';
 import {
+  createDefaultHttpsFallbackSettings,
   createDefaultSelfSniSettings,
   createDefaultXhttpStableSettings,
   hasSni,
   isInboundSupported,
   parseDefaultInboundsSetting,
+  requiresPanelTlsCertificate,
+  validateHttpsFallbackSettings,
   validateRoutingProfile,
   validateSelfSniSettings,
   validateSubscriptionMetadata,
   validateXhttpStableSettings,
 } from '../utils/inboundUtils';
 import {
+  CERTIFICATE_TYPES,
   MANAGED_PROFILE_TYPES,
   PERSISTENT_INBOUND_TYPES,
   ROUTING_INBOUND_TYPES,
@@ -111,13 +115,6 @@ interface CountryOption {
   code: string;
   emoji: string;
 }
-
-const CERTIFICATE_TYPES = new Set([
-  'hysteria2-udp',
-  'vless-tcp-tls',
-  'vless-ws-tls',
-  'vless-xhttp-tls',
-]);
 
 const getSubscriptionUrl = (uuid: string) => {
   const path = `/bus/${uuid}`;
@@ -424,7 +421,16 @@ export default function SubscriptionsPage() {
                     ),
                     ...item.profileSettings,
                   }
-                : item.profileSettings,
+                : item.type === 'https-fallback'
+                  ? {
+                      ...createDefaultHttpsFallbackSettings(
+                        item.profileSettings?.domain ||
+                          item.tlsServerName ||
+                          '',
+                      ),
+                      ...item.profileSettings,
+                    }
+                  : item.profileSettings,
         };
       }),
     );
@@ -537,7 +543,7 @@ export default function SubscriptionsPage() {
     }
     const invalidTls = inbounds.find(
       (inbound) =>
-        CERTIFICATE_TYPES.has(inbound.type) &&
+        requiresPanelTlsCertificate(inbound) &&
         (inbound.certificateMode === 'custom'
           ? !inbound.tlsServerName?.trim() ||
             !inbound.certificateFile?.trim() ||
@@ -585,6 +591,28 @@ export default function SubscriptionsPage() {
             invalidSelfSniProfile.profileSettings,
             invalidSelfSniProfile.port,
           ) || 'Некорректные параметры Self-SNI',
+      });
+      return;
+    }
+    const invalidFallbackProfile = inbounds.find(
+      (inbound) =>
+        inbound.type === 'https-fallback' &&
+        validateHttpsFallbackSettings(
+          inbound.profileSettings,
+          inbound.port,
+          inbound.tlsServerName,
+        ),
+    );
+    if (invalidFallbackProfile) {
+      setSnackbar({
+        open: true,
+        type: 'error',
+        message:
+          validateHttpsFallbackSettings(
+            invalidFallbackProfile.profileSettings,
+            invalidFallbackProfile.port,
+            invalidFallbackProfile.tlsServerName,
+          ) || 'Некорректные параметры HTTPS Fallback',
       });
       return;
     }
@@ -642,19 +670,24 @@ export default function SubscriptionsPage() {
           flag: inbound.flag || getNodeFlag(inbound.nodeId) || undefined,
           name: inbound.name?.trim() || undefined,
           enabled: true,
-          certificateMode: CERTIFICATE_TYPES.has(inbound.type)
+          certificateMode: requiresPanelTlsCertificate(inbound)
             ? inbound.certificateMode || 'node'
             : undefined,
-          tlsServerName: CERTIFICATE_TYPES.has(inbound.type)
-            ? inbound.tlsServerName?.trim() || undefined
-            : undefined,
+          tlsServerName:
+            inbound.type === 'https-fallback'
+              ? inbound.profileSettings?.domain?.trim() ||
+                inbound.tlsServerName?.trim() ||
+                undefined
+              : CERTIFICATE_TYPES.has(inbound.type)
+                ? inbound.tlsServerName?.trim() || undefined
+                : undefined,
           certificateFile:
-            CERTIFICATE_TYPES.has(inbound.type) &&
+            requiresPanelTlsCertificate(inbound) &&
             inbound.certificateMode === 'custom'
               ? inbound.certificateFile?.trim() || undefined
               : undefined,
           keyFile:
-            CERTIFICATE_TYPES.has(inbound.type) &&
+            requiresPanelTlsCertificate(inbound) &&
             inbound.certificateMode === 'custom'
               ? inbound.keyFile?.trim() || undefined
               : undefined,
@@ -666,7 +699,10 @@ export default function SubscriptionsPage() {
               ? inbound.profileSettings || createDefaultXhttpStableSettings()
               : inbound.type === 'self-sni'
                 ? inbound.profileSettings || createDefaultSelfSniSettings()
-                : undefined,
+                : inbound.type === 'https-fallback'
+                  ? inbound.profileSettings ||
+                    createDefaultHttpsFallbackSettings()
+                  : undefined,
         };
       }),
     };

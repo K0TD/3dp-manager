@@ -377,4 +377,63 @@ describe('InboundsEditor', () => {
       }),
     ]);
   });
+
+  it('renders HTTPS Fallback settings, validates reverse proxy port conflict, and hides panel TLS block behind proxy', () => {
+    const { handleChange } = renderEditor({
+      nodes: [
+        {
+          ...mockNodes[0],
+          capabilities: {
+            ...mockNodes[0].capabilities!,
+            supportedInboundTypes: ['vless-tcp-reality', 'https-fallback'],
+          },
+        },
+      ],
+      inbounds: [
+        {
+          id: 'inb-fallback',
+          configId: 'cfg-fallback',
+          type: 'https-fallback',
+          port: '443',
+          sni: '',
+          nodeId: 'node-1',
+          flag: '🇩🇪',
+          name: 'Fallback Proxy',
+          tlsServerName: 'fb.example.com',
+          profileSettings: {
+            domain: 'fb.example.com',
+            path: '/api/v2/stream',
+            mode: 'auto',
+            reverseProxy: 'nginx',
+            publicPort: 443,
+            fingerprint: 'chrome',
+            rotationPolicy: 'fixed_domain',
+          },
+        },
+      ],
+    });
+
+    expect(
+      screen.getByText(/HTTPS Fallback · независимый VLESS \+ XHTTP \+ TLS/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Внутренний порт Xray \(443\) не должен совпадать/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('TLS панели ноды')).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /Предпросмотр, Proxy и проверка/ }),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Endpoint Path (выделенный)'), {
+      target: { value: '/api/v3/tunnel' },
+    });
+    expect(handleChange).toHaveBeenCalledWith([
+      expect.objectContaining({
+        id: 'inb-fallback',
+        profileSettings: expect.objectContaining({
+          path: '/api/v3/tunnel',
+        }),
+      }),
+    ]);
+  });
 });

@@ -30,6 +30,7 @@ import {
   PERSISTENT_INBOUND_TYPES,
   ROUTING_INBOUND_TYPES,
   panelInboundProtocol,
+  requiresPanelTlsCertificate,
 } from '../subscriptions/inbound-config.constants';
 import {
   isPortConflict,
@@ -995,7 +996,7 @@ export class RotationService implements OnModuleInit {
 
     const needsNodeCertificate = configs.some(
       (config) =>
-        CERTIFICATE_INBOUND_TYPES.has(config.type as InboundType) &&
+        requiresPanelTlsCertificate(config) &&
         this.getCertificateMode(config) === 'node',
     );
     let certificate: XuiCertificateFiles | undefined;
@@ -1010,7 +1011,7 @@ export class RotationService implements OnModuleInit {
       }
     }
     for (const config of configs) {
-      if (!CERTIFICATE_INBOUND_TYPES.has(config.type as InboundType)) continue;
+      if (!requiresPanelTlsCertificate(config)) continue;
       if (!node) throw new Error('Для TLS-конфигурации не назначена нода');
       try {
         this.resolveTlsConfig(config, node, certificate);
@@ -1045,7 +1046,7 @@ export class RotationService implements OnModuleInit {
       const compat = evaluateProfileCompatibility({
         kind: config.type,
         port: config.port,
-        sni: config.sni,
+        sni: config.tlsServerName || config.sni,
         settings: config.profileSettings,
         node: {
           name: node.name,
@@ -1099,10 +1100,14 @@ export class RotationService implements OnModuleInit {
     config: InboundConfig,
     node: Node,
   ): ResolvedTlsConfig {
-    const certificateFile = config.certificateFile?.trim();
-    const keyFile = config.keyFile?.trim();
+    const certificateFile =
+      config.certificateFile?.trim() ||
+      config.profileSettings?.certificateFile?.trim();
+    const keyFile =
+      config.keyFile?.trim() || config.profileSettings?.keyFile?.trim();
     const serverName =
       config.tlsServerName?.trim() ||
+      config.profileSettings?.domain?.trim() ||
       (config.sni !== 'random' ? config.sni?.trim() : undefined) ||
       (config.certificateMode ? undefined : this.getNodeTlsServerName(node));
     if (
@@ -1141,7 +1146,8 @@ export class RotationService implements OnModuleInit {
     subscription?: Subscription,
   ) {
     if (
-      CERTIFICATE_INBOUND_TYPES.has(config.type as InboundType) ||
+      (CERTIFICATE_INBOUND_TYPES.has(config.type as InboundType) &&
+        config.type !== 'https-fallback') ||
       PERSISTENT_INBOUND_TYPES.has(config.type) ||
       config.type === 'vless-xhttp-get'
     )
@@ -1149,6 +1155,7 @@ export class RotationService implements OnModuleInit {
     if (isManagedProfileKind(config.type)) {
       const explicitDomain =
         config.profileSettings?.domain?.trim() ||
+        config.tlsServerName?.trim() ||
         (config.sni && config.sni.trim() !== 'random' ? config.sni.trim() : '');
       if (explicitDomain) return explicitDomain;
       const rotationPolicy =
@@ -1164,6 +1171,9 @@ export class RotationService implements OnModuleInit {
         throw new Error(
           'Профиль Self-SNI требует явного указания собственного домена и не может использовать случайный SNI',
         );
+      }
+      if (config.type === 'https-fallback') {
+        return '';
       }
       return this.pickDomain(domains);
     }
@@ -1268,13 +1278,16 @@ export class RotationService implements OnModuleInit {
     const email = formatClientEmail(subscription.name, uuid);
     const sni = this.resolveInboundSni(config, domains, subscription);
 
+    const resolvedTls = requiresPanelTlsCertificate(config)
+      ? this.resolveTlsConfig(config, node, nodeCertificate)
+      : undefined;
     const built =
       config.type === 'hysteria2-udp'
         ? this.inboundBuilder.buildHysteria2Inbound({
             port,
             uuid,
             email,
-            ...this.resolveTlsConfig(config, node, nodeCertificate),
+            ...resolvedTls!,
           })
         : config.type === 'amneziawg'
           ? this.inboundBuilder.buildAmneziaWgInbound({ port, uuid, email })
@@ -1285,9 +1298,7 @@ export class RotationService implements OnModuleInit {
               email,
               sni,
               realityKeys,
-              tls: CERTIFICATE_INBOUND_TYPES.has(config.type as InboundType)
-                ? this.resolveTlsConfig(config, node, nodeCertificate)
-                : undefined,
+              tls: resolvedTls,
             });
     if (!built) throw new Error(`Неизвестный тип inbound: ${config.type}`);
     if (config.name?.trim()) built.remark = config.name.trim();
@@ -1344,7 +1355,11 @@ export class RotationService implements OnModuleInit {
     }
     try {
       if (result.verificationError) throw new Error(result.verificationError);
-      if (config.type === 'xhttp-stable' || config.type === 'self-sni') {
+      if (
+        config.type === 'xhttp-stable' ||
+        config.type === 'self-sni' ||
+        config.type === 'https-fallback'
+      ) {
         const bundle =
           config.type === 'xhttp-stable'
             ? this.inboundBuilder.buildXhttpStableClientBundle(
@@ -1353,12 +1368,24 @@ export class RotationService implements OnModuleInit {
                 flag,
                 config.profileSettings,
               )
-            : this.inboundBuilder.buildSelfSniClientBundle(
-                saved,
-                targetAddress,
-                flag,
-                config.profileSettings,
-              );
+            : config.type === 'self-sni'
+              ? this.inboundBuilder.buildSelfSniClientBundle(
+                  saved,
+                  targetAddress,
+                  flag,
+                  config.profileSettings,
+                )
+              : this.inboundBuilder.buildHttpsFallbackClientBundle(
+                  saved,
+                  relayServer?.domain ||
+                    relayServer?.ip ||
+                    sni ||
+                    resolvedTls?.serverName ||
+                    targetAddress,
+                  flag,
+                  config.profileSettings,
+                  sni || resolvedTls?.serverName,
+                );
         if (!bundle) {
           throw new Error(
             `Не удалось сформировать клиентский профиль ${config.type}`,
@@ -1434,6 +1461,24 @@ export class RotationService implements OnModuleInit {
               settings: config.profileSettings,
             })
           : null,
+      'https-fallback': () => {
+        const fallbackDomain =
+          sni ||
+          tls?.serverName ||
+          config.profileSettings?.domain?.trim() ||
+          '';
+        if (!fallbackDomain) return null;
+        return this.inboundBuilder.buildHttpsFallbackInbound({
+          port,
+          uuid,
+          email,
+          domain: fallbackDomain,
+          certificateFile: tls?.certificateFile,
+          keyFile: tls?.keyFile,
+          remark: config.name?.trim() || 'https-fallback',
+          settings: config.profileSettings,
+        });
+      },
       'vless-grpc-reality': () =>
         realityParams
           ? this.inboundBuilder.buildVlessRealityGrpc(realityParams)

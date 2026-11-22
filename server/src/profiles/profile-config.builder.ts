@@ -60,6 +60,26 @@ export interface BuildSelfSniClientParams {
   settings?: ManagedProfileSettings | null;
 }
 
+export interface BuildHttpsFallbackServerParams {
+  port: number;
+  uuid: string;
+  email?: string;
+  remark?: string;
+  domain: string;
+  certificateFile?: string;
+  keyFile?: string;
+  settings?: ManagedProfileSettings | null;
+}
+
+export interface BuildHttpsFallbackClientParams {
+  address: string;
+  port: number;
+  uuid: string;
+  remark: string;
+  domain: string;
+  settings?: ManagedProfileSettings | null;
+}
+
 /**
  * Minimal XHTTP Stable server inbound for 3x-ui (VLESS + XHTTP + REALITY).
  * Keeps server configuration strictly minimal: no client XMUX, no Vision flow,
@@ -564,6 +584,164 @@ export function buildSelfSniExportBundle(
   const clientConfig = buildSelfSniClientProfile(params);
   return {
     kind: 'self-sni',
+    vlessLink: buildVlessUriFromClientProfile(
+      clientConfig,
+      params.flagEmoji ?? '',
+    ),
+    clientConfig,
+    xrayClientJson: buildXrayClientJsonFromProfile(clientConfig),
+  };
+}
+
+/**
+ * Independent HTTPS Fallback server inbound for 3x-ui (VLESS + XHTTP + TLS).
+ * - Direct TLS mode (reverseProxy = 'none'): listens on 0.0.0.0:<port> with TLS certificate.
+ * - Reverse-proxy mode (nginx / caddy): listens strictly on 127.0.0.1:<port> with security = 'none',
+ *   while Nginx/Caddy terminates public HTTPS TLS on publicPort (e.g., 443) and proxies the endpoint path.
+ */
+export function buildHttpsFallbackServerInbound(
+  params: BuildHttpsFallbackServerParams,
+): XuiInboundRaw {
+  const normalized = normalizeManagedProfileSettings(
+    'https-fallback',
+    params.settings,
+  );
+  const domain = (params.domain || normalized.domain || '')
+    .trim()
+    .toLowerCase();
+  const path = normalizeXhttpPath(normalized.path || '/api/v2/stream');
+  const host = normalized.host?.trim() || domain;
+  const mode: XhttpMode = normalized.mode || 'auto';
+  const reverseProxy = normalized.reverseProxy ?? 'none';
+  const isBehindProxy = reverseProxy === 'nginx' || reverseProxy === 'caddy';
+
+  const xhttpSettings: Record<string, unknown> = {
+    path,
+    host,
+    mode,
+  };
+  if (normalized.noGRPCHeader === true) {
+    xhttpSettings.noGRPCHeader = true;
+  }
+
+  const streamSettings: Record<string, unknown> = {
+    network: 'xhttp',
+    security: isBehindProxy ? 'none' : 'tls',
+    externalProxy: [],
+    xhttpSettings,
+  };
+
+  if (!isBehindProxy) {
+    streamSettings.tlsSettings = {
+      serverName: domain,
+      alpn: ['h2', 'http/1.1'],
+      certificates: [
+        {
+          buildChain: false,
+          certificateFile:
+            params.certificateFile ||
+            normalized.certificateFile ||
+            `/etc/letsencrypt/live/${domain}/fullchain.pem`,
+          keyFile:
+            params.keyFile ||
+            normalized.keyFile ||
+            `/etc/letsencrypt/live/${domain}/privkey.pem`,
+          oneTimeLoading: false,
+          usage: 'encipherment',
+        },
+      ],
+      cipherSuites: '',
+      disableSystemRoot: false,
+      echForceQuery: 'none',
+      echServerKeys: '',
+      enableSessionResumption: false,
+      maxVersion: '1.3',
+      minVersion: '1.2',
+      rejectUnknownSni: false,
+    };
+  }
+
+  return {
+    enable: true,
+    listen: isBehindProxy ? '127.0.0.1' : '0.0.0.0',
+    port: params.port,
+    protocol: 'vless',
+    remark: params.remark?.trim() || 'https-fallback',
+    settings: JSON.stringify({
+      clients: [
+        {
+          id: params.uuid,
+          flow: '',
+          email: params.email ?? params.uuid,
+          enable: true,
+          limitIp: 0,
+          totalGB: 0,
+          expiryTime: 0,
+          subId: '',
+          reset: 0,
+        },
+      ],
+      decryption: 'none',
+      encryption: 'none',
+      fallbacks: [],
+    }),
+    streamSettings: JSON.stringify(streamSettings),
+    sniffing: JSON.stringify({
+      enabled: true,
+      destOverride: ['http', 'tls', 'quic'],
+      metadataOnly: false,
+      routeOnly: true,
+    }),
+  };
+}
+
+export function buildHttpsFallbackClientProfile(
+  params: BuildHttpsFallbackClientParams,
+): SeparatedClientProfile {
+  const normalized = normalizeManagedProfileSettings(
+    'https-fallback',
+    params.settings,
+  );
+  const domain = (params.domain || normalized.domain || '')
+    .trim()
+    .toLowerCase();
+  const path = normalizeXhttpPath(normalized.path || '/api/v2/stream');
+  const host = normalized.host?.trim() || domain;
+  const mode: XhttpMode = normalized.mode || 'auto';
+  const reverseProxy = normalized.reverseProxy ?? 'none';
+  const isBehindProxy = reverseProxy === 'nginx' || reverseProxy === 'caddy';
+  const clientPort = isBehindProxy
+    ? (normalized.publicPort ?? 443)
+    : params.port;
+  const extra = buildXhttpClientExtra(normalized);
+
+  return {
+    kind: 'https-fallback',
+    protocol: 'vless',
+    address: params.address || domain,
+    port: clientPort,
+    uuid: params.uuid,
+    remark: params.remark,
+    network: 'xhttp',
+    security: 'tls',
+    sni: domain,
+    fingerprint: normalized.fingerprint || 'chrome',
+    alpn: ['h2', 'http/1.1'],
+    xhttp: {
+      path,
+      host,
+      mode,
+      ...(extra ? { extra } : {}),
+    },
+  };
+}
+
+export function buildHttpsFallbackExportBundle(
+  params: BuildHttpsFallbackClientParams & { flagEmoji?: string },
+): ProfileExportBundle {
+  const clientConfig = buildHttpsFallbackClientProfile(params);
+  return {
+    kind: 'https-fallback',
     vlessLink: buildVlessUriFromClientProfile(
       clientConfig,
       params.flagEmoji ?? '',

@@ -202,6 +202,69 @@ export const validateXhttpStableSettings = (
   return null;
 };
 
+export const requiresPanelTlsCertificate = (inbound: {
+  type: string;
+  profileSettings?: ManagedProfileSettings;
+}): boolean => {
+  if (!CERTIFICATE_TYPES.has(inbound.type)) return false;
+  if (
+    inbound.type === 'https-fallback' &&
+    (inbound.profileSettings?.reverseProxy === 'nginx' ||
+      inbound.profileSettings?.reverseProxy === 'caddy')
+  ) {
+    return false;
+  }
+  return true;
+};
+
+export const createDefaultHttpsFallbackSettings = (
+  domain?: string,
+): ManagedProfileSettings => ({
+  domain: domain?.trim() || '',
+  mode: 'auto',
+  path: '/api/v2/stream',
+  fingerprint: 'chrome',
+  reverseProxy: 'none',
+  publicPort: 443,
+  rotationPolicy: 'fixed_domain',
+});
+
+export const validateHttpsFallbackSettings = (
+  settings?: ManagedProfileSettings,
+  port?: string,
+  fallbackDomain?: string,
+): string | null => {
+  const domain = settings?.domain?.trim() || fallbackDomain?.trim() || '';
+  if (!domain) {
+    return 'HTTPS Fallback требует указать домен с действующим TLS-сертификатом';
+  }
+  if (!HOSTNAME_RE.test(domain)) {
+    return 'HTTPS Fallback: укажите корректный домен (например fallback.example.com)';
+  }
+  if (settings?.path && /[\s?#]/.test(settings.path.trim())) {
+    return 'HTTPS Fallback: endpoint path не должен содержать пробелы, ? или #';
+  }
+  const reverseProxy = settings?.reverseProxy ?? 'none';
+  const publicPort = settings?.publicPort ?? 443;
+  if (
+    !Number.isInteger(publicPort) ||
+    publicPort < 1 ||
+    publicPort > 65535
+  ) {
+    return 'HTTPS Fallback: публичный HTTPS-порт должен быть от 1 до 65535';
+  }
+  if (
+    reverseProxy !== 'none' &&
+    port &&
+    port !== 'random' &&
+    /^\d+$/.test(port) &&
+    Number(port) === publicPort
+  ) {
+    return `Внутренний порт Xray (${port}) не должен совпадать с публичным портом ${reverseProxy} (${publicPort})`;
+  }
+  return null;
+};
+
 export const isValidPort = (value: string): boolean =>
   value === 'random' ||
   (/^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= 65535);
@@ -250,10 +313,7 @@ export const createInboundTemplate = (
     certificateFile:
       isCert && certMode === 'custom' ? partial?.certificateFile || '' : '',
     keyFile: isCert && certMode === 'custom' ? partial?.keyFile || '' : '',
-    profileId:
-      type === 'xhttp-stable' || type === 'self-sni'
-        ? partial?.profileId
-        : undefined,
+    profileId: MANAGED_PROFILE_TYPES.has(type) ? partial?.profileId : undefined,
     profileSettings:
       type === 'xhttp-stable'
         ? { ...createDefaultXhttpStableSettings(), ...partial?.profileSettings }
@@ -268,7 +328,18 @@ export const createInboundTemplate = (
               ),
               ...partial?.profileSettings,
             }
-          : undefined,
+          : type === 'https-fallback'
+            ? {
+                ...createDefaultHttpsFallbackSettings(
+                  partial?.profileSettings?.domain ||
+                    partial?.tlsServerName ||
+                    (HOSTNAME_RE.test(getNodeAddress(nodeId, nodes))
+                      ? getNodeAddress(nodeId, nodes)
+                      : ''),
+                ),
+                ...partial?.profileSettings,
+              }
+            : undefined,
     enabled: partial?.enabled,
     disabledReason: partial?.disabledReason,
   };
@@ -353,7 +424,9 @@ export const sanitizeInboundForStorage = (
         ? inbound.profileSettings || createDefaultXhttpStableSettings()
         : inbound.type === 'self-sni'
           ? inbound.profileSettings || createDefaultSelfSniSettings()
-          : undefined,
+          : inbound.type === 'https-fallback'
+            ? inbound.profileSettings || createDefaultHttpsFallbackSettings()
+            : undefined,
   };
 };
 

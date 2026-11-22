@@ -238,4 +238,47 @@ describe('profile-compatibility', () => {
       ]),
     );
   });
+
+  it('validates HTTPS Fallback reverse-proxy port collisions, Xray version, and direct TLS readiness', () => {
+    const portConflict = validateManagedProfileSettings(
+      'https-fallback',
+      {
+        domain: 'fb.example.com',
+        path: '/api/v2/stream',
+        reverseProxy: 'nginx',
+        publicPort: 443,
+      },
+      { port: 443 },
+    );
+    expect(portConflict).toEqual(
+      expect.arrayContaining([expect.stringContaining('не может совпадать')]),
+    );
+
+    const readyFallback = evaluateProfileCompatibility({
+      kind: 'https-fallback',
+      port: 20443,
+      settings: {
+        domain: 'fb.example.com',
+        path: '/api/v2/stream',
+        mode: 'auto',
+        reverseProxy: 'caddy',
+        publicPort: 443,
+      },
+      node: {
+        name: 'EU-Fallback',
+        xrayVersion: '26.7.11',
+        autoTlsCertificate: false,
+      },
+      occupiedPorts: [443, 8443],
+    });
+    expect(readyFallback.compatible).toBe(true);
+    expect(readyFallback.status).toBe('passed');
+    expect(readyFallback.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'FALLBACK_DOMAIN_OK', severity: 'ok' }),
+        expect.objectContaining({ code: 'XRAY_VERSION_OK', severity: 'ok' }),
+        expect.objectContaining({ code: 'PORT_FREE', severity: 'ok' }),
+      ]),
+    );
+  });
 });

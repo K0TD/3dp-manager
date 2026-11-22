@@ -74,7 +74,7 @@ export const PROFILE_CATALOG: readonly ProfileCatalogEntry[] = [
   {
     kind: 'https-fallback',
     stage: 3,
-    status: 'planned',
+    status: 'ready',
     title: 'HTTPS Fallback',
     transportSummary: 'VLESS + XHTTP + TLS',
     description:
@@ -285,18 +285,27 @@ export function normalizeManagedProfileSettings(
     input.mode && (XHTTP_MODES as readonly string[]).includes(input.mode)
       ? input.mode
       : 'auto';
+  const xmux = normalizeXmuxSettings(input.xmux);
   return {
-    ...(input.domain?.trim() ? { domain: input.domain.trim() } : {}),
+    ...(input.domain?.trim()
+      ? { domain: input.domain.trim().toLowerCase() }
+      : {}),
     mode,
     path: normalizeXhttpPath(input.path || '/api/v2/stream'),
     ...(input.host?.trim() ? { host: input.host.trim() } : {}),
     fingerprint,
+    ...(input.noGRPCHeader === true ? { noGRPCHeader: true } : {}),
+    ...(xmux ? { xmux } : {}),
     reverseProxy:
       input.reverseProxy &&
       (REVERSE_PROXY_ENGINES as readonly string[]).includes(input.reverseProxy)
         ? input.reverseProxy
         : 'none',
     publicPort: input.publicPort ?? 443,
+    ...(input.certificateFile?.trim()
+      ? { certificateFile: input.certificateFile.trim() }
+      : {}),
+    ...(input.keyFile?.trim() ? { keyFile: input.keyFile.trim() } : {}),
     rotationPolicy,
     ...(monitoring ? { monitoring } : {}),
   };
@@ -365,7 +374,10 @@ export function validateManagedProfileSettings(
     }
   }
 
-  if (kind === 'xhttp-stable' && input.xmux?.enabled) {
+  if (
+    (kind === 'xhttp-stable' || kind === 'https-fallback') &&
+    input.xmux?.enabled
+  ) {
     const x = input.xmux;
     if (x.maxConcurrency?.trim() && x.maxConnections?.trim()) {
       errors.push(
@@ -472,11 +484,55 @@ export function validateManagedProfileSettings(
   }
 
   if (kind === 'https-fallback') {
-    const domain =
+    const rawDomain =
       input.domain?.trim() ||
-      (context?.sni !== 'random' ? context?.sni?.trim() : '');
-    if (domain && !isValidHostname(domain)) {
+      (context?.sni && context.sni !== 'random' ? context.sni.trim() : '');
+    if (!rawDomain) {
+      errors.push(
+        'HTTPS Fallback требует указать домен с действующим TLS-сертификатом',
+      );
+    } else if (!isValidHostname(rawDomain)) {
       errors.push('HTTPS Fallback требует валидный домен для TLS-сертификата');
+    }
+    if (
+      input.publicPort !== undefined &&
+      (!Number.isInteger(input.publicPort) ||
+        input.publicPort < 1 ||
+        input.publicPort > 65535)
+    ) {
+      errors.push('HTTPS Fallback: публичный порт должен быть от 1 до 65535');
+    }
+    const safePathRe = /^\/[A-Za-z0-9._/@+-]+$/;
+    if (
+      input.certificateFile?.trim() &&
+      (!safePathRe.test(input.certificateFile.trim()) ||
+        input.certificateFile.includes('..'))
+    ) {
+      errors.push(
+        'HTTPS Fallback: путь сертификата должен быть безопасным абсолютным путём',
+      );
+    }
+    if (
+      input.keyFile?.trim() &&
+      (!safePathRe.test(input.keyFile.trim()) || input.keyFile.includes('..'))
+    ) {
+      errors.push(
+        'HTTPS Fallback: путь приватного ключа должен быть безопасным абсолютным путём',
+      );
+    }
+    const effectiveProxy = input.reverseProxy ?? 'none';
+    const effectivePublicPort = input.publicPort ?? 443;
+    if (
+      effectiveProxy !== 'none' &&
+      context?.port !== undefined &&
+      context.port !== null &&
+      context.port !== '' &&
+      context.port !== 'random' &&
+      Number(context.port) === effectivePublicPort
+    ) {
+      errors.push(
+        `HTTPS Fallback: внутренний порт Xray (${String(context.port)}) не может совпадать с публичным портом ${effectiveProxy} (${effectivePublicPort})`,
+      );
     }
   }
 
@@ -657,7 +713,8 @@ export function evaluateProfileCompatibility(
   } else if (input.kind === 'https-fallback') {
     const domain =
       normalized.domain ||
-      (input.sni && input.sni !== 'random' ? input.sni : '');
+      (input.sni && input.sni !== 'random' ? input.sni.trim() : '');
+    const reverseProxy = normalized.reverseProxy ?? 'none';
     if (!domain) {
       checks.push({
         code: 'FALLBACK_DOMAIN_REQUIRED',
@@ -666,6 +723,17 @@ export function evaluateProfileCompatibility(
         message:
           'Для HTTPS Fallback необходимо указать домен с действующим TLS-сертификатом.',
       });
+    } else if (isValidHostname(domain)) {
+      const modeDesc =
+        reverseProxy === 'none'
+          ? `прямой TLS в Xray (endpoint ${normalized.path || '/api/v2/stream'})`
+          : `за reverse proxy ${reverseProxy} (публичный порт ${normalized.publicPort ?? 443}, endpoint ${normalized.path || '/api/v2/stream'})`;
+      checks.push({
+        code: 'FALLBACK_DOMAIN_OK',
+        severity: 'ok',
+        title: 'Независимый HTTPS Fallback настроен',
+        message: `Домен «${domain}», режим: ${modeDesc}.`,
+      });
     }
     if (normalized.path === '/') {
       checks.push({
@@ -673,28 +741,70 @@ export function evaluateProfileCompatibility(
         severity: 'warning',
         title: 'Используется корневой путь /',
         message:
-          'Для HTTPS Fallback рекомендуется выделить отдельный endpoint (например, /api/v2/stream).',
+          'Для HTTPS Fallback рекомендуется выделить отдельный endpoint (например, /api/v2/stream), чтобы отделить служебный трафик от корня сайта.',
       });
     }
-    if (
-      input.node &&
-      xrayVersion &&
-      !isVersionAtLeast(xrayVersion, XHTTP_MIN_XRAY_VERSION)
-    ) {
+
+    const needsXmuxOrStreamOne =
+      normalized.xmux?.enabled === true || normalized.mode === 'stream-one';
+    const minVersion = needsXmuxOrStreamOne
+      ? XHTTP_XMUX_MIN_XRAY_VERSION
+      : XHTTP_MIN_XRAY_VERSION;
+    const minLabel = minVersion.join('.');
+
+    if (!input.node) {
+      checks.push({
+        code: 'NODE_NOT_SELECTED',
+        severity: 'warning',
+        title: 'Нода не выбрана',
+        message: `Выберите ноду для проверки Xray >= ${minLabel} и сертификата.`,
+      });
+    } else if (!xrayVersion) {
+      checks.push({
+        code: 'XRAY_VERSION_UNKNOWN',
+        severity: 'warning',
+        title: 'Версия Xray не определена',
+        message: `Выполните проверку подключения ноды «${input.node.name || 'node'}», чтобы подтвердить Xray >= ${minLabel}.`,
+      });
+    } else if (!isVersionAtLeast(xrayVersion, minVersion)) {
       checks.push({
         code: 'XRAY_VERSION_TOO_OLD',
         severity: 'error',
         title: 'Несовместимая версия Xray',
-        message: `Для HTTPS Fallback (VLESS + XHTTP + TLS) требуется Xray >= 24.11.30 (текущая: ${xrayVersion}).`,
+        message: `Для HTTPS Fallback (VLESS + XHTTP + TLS, режим ${normalized.mode}) требуется Xray >= ${minLabel} (текущая: ${xrayVersion}).`,
+      });
+    } else {
+      checks.push({
+        code: 'XRAY_VERSION_OK',
+        severity: 'ok',
+        title: 'Версия Xray совместима',
+        message: `Xray ${xrayVersion} поддерживает HTTPS Fallback (${normalized.mode}).`,
       });
     }
-    checks.push({
-      code: 'STAGE_3_DEPLOYMENT',
-      severity: 'warning',
-      title: 'Профиль доступен в Этапе 3',
-      message:
-        'Модель и проверки HTTPS Fallback готовы; генератор reverse proxy (Nginx/Caddy) и независимое развёртывание активируются на Этапе 3.',
-    });
+
+    if (reverseProxy === 'none' && input.node) {
+      const hasCustomCert = Boolean(
+        normalized.certificateFile?.trim() && normalized.keyFile?.trim(),
+      );
+      if (hasCustomCert || input.node.autoTlsCertificate) {
+        checks.push({
+          code: 'FALLBACK_CERT_READY',
+          severity: 'ok',
+          title: 'TLS-сертификат настроен',
+          message: hasCustomCert
+            ? 'Используется собственный TLS-сертификат.'
+            : 'Будет использован TLS-сертификат панели 3x-ui выбранной ноды.',
+        });
+      } else {
+        checks.push({
+          code: 'FALLBACK_CERT_MISSING',
+          severity: 'warning',
+          title: 'Не подтверждён TLS-сертификат ноды',
+          message:
+            'Для прямого TLS укажите пути своего сертификата или получите сертификат панели 3x-ui, либо переключитесь на режим за reverse proxy (Nginx/Caddy).',
+        });
+      }
+    }
   }
 
   // Port conflict check against live 3x-ui inbounds

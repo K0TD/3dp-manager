@@ -24,6 +24,8 @@ import {
   validateManagedProfileSettings,
 } from './profile-compatibility';
 import {
+  buildHttpsFallbackExportBundle,
+  buildHttpsFallbackServerInbound,
   buildSelfSniExportBundle,
   buildSelfSniServerInbound,
   buildXhttpStableExportBundle,
@@ -32,7 +34,10 @@ import {
   buildVlessUriFromClientProfile,
   sanitizeServerInboundPreview,
 } from './profile-config.builder';
-import { buildSelfSniWebServerBundle } from './web-server-config.builder';
+import {
+  buildHttpsFallbackProxyBundle,
+  buildSelfSniWebServerBundle,
+} from './web-server-config.builder';
 import { TlsSiteProbeService } from './tls-site-probe.service';
 import type {
   ManagedProfileKind,
@@ -359,45 +364,54 @@ export class ConnectionProfilesService {
       };
     }
 
-    // Stage 3 preview skeleton (HTTPS Fallback)
-    const clientConfig: SeparatedClientProfile = {
-      kind: 'https-fallback',
-      protocol: 'vless',
-      address: normalized.domain || address,
-      port: normalized.publicPort || numericPort,
+    // HTTPS Fallback (Stage 3): VLESS + XHTTP + TLS (direct or behind Nginx/Caddy reverse proxy)
+    const fallbackUpstreamPort =
+      dto.port && dto.port !== 'random' && /^\d+$/.test(String(dto.port))
+        ? Number(dto.port)
+        : normalized.reverseProxy === 'nginx' ||
+            normalized.reverseProxy === 'caddy'
+          ? 20443
+          : 443;
+    const serverInbound = buildHttpsFallbackServerInbound({
+      port: fallbackUpstreamPort,
       uuid: PREVIEW_UUID,
       remark,
-      network: 'xhttp',
-      security: 'tls',
-      sni: effectiveSni,
-      fingerprint: normalized.fingerprint || 'chrome',
-      alpn: ['h2', 'http/1.1'],
-      xhttp: {
+      domain: effectiveSni,
+      certificateFile: normalized.certificateFile || node?.webCertificateFile,
+      keyFile: normalized.keyFile || node?.webKeyFile,
+      settings: normalized,
+    });
+    const clientPreview = buildHttpsFallbackExportBundle({
+      address: explicitDomain || address,
+      port: fallbackUpstreamPort,
+      uuid: PREVIEW_UUID,
+      remark,
+      domain: effectiveSni,
+      settings: normalized,
+    });
+    let webServerConfig: WebServerConfigBundle | undefined;
+    if (
+      (normalized.reverseProxy === 'nginx' ||
+        normalized.reverseProxy === 'caddy') &&
+      isValidHostname(effectiveSni)
+    ) {
+      webServerConfig = buildHttpsFallbackProxyBundle({
+        engine: normalized.reverseProxy,
+        domain: effectiveSni,
         path: normalized.path || '/api/v2/stream',
-        host: normalized.host || effectiveSni,
-        mode: normalized.mode || 'auto',
-      },
-    };
-
-    const clientPreview: ProfileExportBundle = {
-      kind: dto.kind,
-      vlessLink: buildVlessUriFromClientProfile(clientConfig),
-      clientConfig,
-      xrayClientJson: buildXrayClientJsonFromProfile(clientConfig),
-    };
+        publicPort: normalized.publicPort ?? 443,
+        upstreamPort: fallbackUpstreamPort,
+        certificateFile: normalized.certificateFile || node?.webCertificateFile,
+        keyFile: normalized.keyFile || node?.webKeyFile,
+      });
+    }
 
     return {
       kind: dto.kind,
       compatibility,
-      serverPreview: {
-        protocol: 'vless',
-        port: numericPort,
-        remark,
-        profileKind: dto.kind,
-        stageNote:
-          'Полная генерация серверного HTTPS Fallback и reverse proxy будет активирована на Этапе 3',
-      },
+      serverPreview: sanitizeServerInboundPreview(serverInbound),
       clientPreview,
+      ...(webServerConfig ? { webServerConfig } : {}),
       ...(tlsProbe ? { tlsProbe } : {}),
     };
   }

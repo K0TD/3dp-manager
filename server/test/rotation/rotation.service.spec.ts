@@ -70,6 +70,8 @@ describe('RotationService resilient generations', () => {
     buildXhttpStableClientBundle: jest.fn(),
     buildSelfSniInbound: jest.fn(),
     buildSelfSniClientBundle: jest.fn(),
+    buildHttpsFallbackInbound: jest.fn(),
+    buildHttpsFallbackClientBundle: jest.fn(),
     buildVlessRealityGrpc: jest.fn(),
     buildVlessWs: jest.fn(),
     buildVlessTlsTcp: jest.fn(),
@@ -1954,6 +1956,140 @@ describe('RotationService resilient generations', () => {
       expect(result.status).toBe('preserved');
       expect(result.created).toBe(0);
       expect(xuiService.addInbound).not.toHaveBeenCalled();
+    });
+
+    it('rotates independent https-fallback behind nginx reverse proxy without requiring panel cert or REALITY keys', async () => {
+      const configId = '77777777-7777-4777-8777-777777777777';
+      const sub = {
+        id: 'sub-fallback',
+        name: 'SubFallback',
+        isEnabled: true,
+        isAutoRotationEnabled: true,
+        inboundsConfig: [
+          {
+            configId,
+            type: 'https-fallback',
+            port: 20443,
+            nodeId: node.id,
+            name: 'Fallback Proxy',
+            profileSettings: {
+              domain: 'fb.example.com',
+              path: '/api/v2/stream',
+              mode: 'auto',
+              reverseProxy: 'nginx',
+              publicPort: 443,
+              rotationPolicy: 'fixed_domain',
+            },
+          },
+        ],
+        inbounds: [
+          {
+            id: 960,
+            xuiId: 96,
+            configId,
+            nodeId: node.id,
+            protocol: 'vless',
+            status: InboundStatus.Active,
+          } as Inbound,
+        ],
+      } as Subscription;
+
+      const builtInbound = {
+        enable: true,
+        listen: '127.0.0.1',
+        port: 20443,
+        protocol: 'vless',
+        remark: 'Fallback Proxy',
+        settings: JSON.stringify({ clients: [{ id: 'u-fb', flow: '' }] }),
+        streamSettings: JSON.stringify({
+          network: 'xhttp',
+          security: 'none',
+          xhttpSettings: {
+            path: '/api/v2/stream',
+            host: 'fb.example.com',
+            mode: 'auto',
+          },
+        }),
+      };
+
+      xuiService.assertXrayHealthy.mockResolvedValue(undefined);
+      inboundBuilder.buildHttpsFallbackInbound.mockReturnValue(builtInbound);
+      xuiService.addInbound.mockResolvedValue({
+        id: 97,
+        inbound: { ...builtInbound, id: 97 },
+      });
+      inboundBuilder.buildHttpsFallbackClientBundle.mockReturnValue({
+        kind: 'https-fallback',
+        vlessLink:
+          'vless://u-fb@fb.example.com:443?type=xhttp&security=tls&sni=fb.example.com&path=%2Fapi%2Fv2%2Fstream#Fallback',
+        clientConfig: {
+          kind: 'https-fallback',
+          protocol: 'vless',
+          address: 'fb.example.com',
+          port: 443,
+          uuid: 'u-fb',
+          remark: 'Fallback Proxy',
+          network: 'xhttp',
+          security: 'tls',
+          sni: 'fb.example.com',
+          fingerprint: 'chrome',
+          alpn: ['h2', 'http/1.1'],
+          xhttp: {
+            path: '/api/v2/stream',
+            host: 'fb.example.com',
+            mode: 'auto',
+          },
+        },
+        xrayClientJson: {
+          log: { loglevel: 'warning' },
+          inbounds: [],
+          outbounds: [],
+          routing: {},
+        },
+      });
+
+      const result = await (
+        service as unknown as {
+          rotateNodeGroup: (
+            s: Subscription,
+            k: string,
+            g: {
+              node?: Node;
+              configs: Array<{ config: unknown; position: number }>;
+            },
+            d: Domain[],
+          ) => Promise<{
+            status: string;
+            created: number;
+            pendingCleanup: number;
+          }>;
+        }
+      ).rotateNodeGroup(
+        sub,
+        node.id,
+        { node, configs: [{ config: sub.inboundsConfig[0], position: 0 }] },
+        [],
+      );
+
+      expect(result).toMatchObject({
+        status: 'succeeded',
+        created: 1,
+        pendingCleanup: 1,
+      });
+      expect(xuiService.getNewX25519Cert).not.toHaveBeenCalled();
+      expect(xuiService.getWebCertificateFiles).not.toHaveBeenCalled();
+      expect(inboundBuilder.buildHttpsFallbackInbound).toHaveBeenCalledWith(
+        expect.objectContaining({
+          domain: 'fb.example.com',
+          port: 20443,
+        }),
+      );
+      const lastSaved = inboundRepo.save.mock.calls.at(-1)?.[0] as {
+        profileKind?: string;
+        clientProfileJson?: string;
+      };
+      expect(lastSaved.profileKind).toBe('https-fallback');
+      expect(lastSaved.clientProfileJson).toContain('/api/v2/stream');
     });
   });
 });

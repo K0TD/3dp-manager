@@ -37,7 +37,27 @@ export const MANAGED_PROFILE_TYPES = new Set<string>([
 export const ACTIVE_MANAGED_PROFILE_TYPES = new Set<string>([
   'xhttp-stable',
   'self-sni',
+  'https-fallback',
 ]);
+
+export function requiresPanelTlsCertificate(config: {
+  type?: string;
+  profileSettings?: { reverseProxy?: string } | null;
+}): boolean {
+  if (
+    !config.type ||
+    !CERTIFICATE_INBOUND_TYPES.has(config.type as InboundType)
+  )
+    return false;
+  if (
+    config.type === 'https-fallback' &&
+    (config.profileSettings?.reverseProxy === 'nginx' ||
+      config.profileSettings?.reverseProxy === 'caddy')
+  ) {
+    return false;
+  }
+  return true;
+}
 
 // These clients import credentials once, rather than refreshing a subscription.
 export const PERSISTENT_INBOUND_TYPES = new Set<string>([

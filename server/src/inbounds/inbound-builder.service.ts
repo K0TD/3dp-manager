@@ -16,6 +16,8 @@ import { resolveSniProfile } from './sni-profiles';
 import { buildProxyLink, buildWireguardLink } from './connection-profiles';
 import { panelInboundProtocol } from '../subscriptions/inbound-config.constants';
 import {
+  buildHttpsFallbackExportBundle,
+  buildHttpsFallbackServerInbound,
   buildSelfSniExportBundle,
   buildSelfSniServerInbound,
   buildXhttpStableExportBundle,
@@ -577,6 +579,60 @@ export class InboundBuilderService {
               .fingerprint as ManagedProfileSettings['fingerprint']) ||
             profileSettings?.fingerprint,
           spiderX: reality.settings.spiderX || profileSettings?.spiderX,
+        },
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  buildHttpsFallbackInbound(params: {
+    port: number;
+    uuid: string;
+    email?: string;
+    remark?: string;
+    domain: string;
+    certificateFile?: string;
+    keyFile?: string;
+    settings?: ManagedProfileSettings | null;
+  }) {
+    return buildHttpsFallbackServerInbound(params);
+  }
+
+  buildHttpsFallbackClientBundle(
+    inbound: XuiInboundRaw,
+    address: string,
+    flagEmoji: string,
+    profileSettings?: ManagedProfileSettings | null,
+    resolvedDomain?: string,
+  ): ProfileExportBundle | null {
+    try {
+      const stream = JSON.parse(inbound.streamSettings) as XuiStreamSettings;
+      const settings = JSON.parse(inbound.settings) as XuiInboundSettings;
+      const client = settings.clients?.[0];
+      if (!client?.id) return null;
+      const domain =
+        resolvedDomain?.trim() ||
+        stream.tlsSettings?.serverName ||
+        profileSettings?.domain ||
+        stream.xhttpSettings?.host ||
+        '';
+      if (!domain) return null;
+      return buildHttpsFallbackExportBundle({
+        address,
+        port: inbound.port,
+        uuid: client.id,
+        remark: inbound.remark || 'https-fallback',
+        domain,
+        flagEmoji,
+        settings: {
+          ...profileSettings,
+          domain,
+          path: stream.xhttpSettings?.path || profileSettings?.path,
+          host: stream.xhttpSettings?.host || profileSettings?.host,
+          mode:
+            (stream.xhttpSettings?.mode as ManagedProfileSettings['mode']) ||
+            profileSettings?.mode,
         },
       });
     } catch {

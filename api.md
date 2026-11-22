@@ -977,7 +977,7 @@ http://<host>:<port>/bus/<uuid>
 
 ## Управляемые профили подключений (`ConnectionProfile`)
 
-Единая модель профилей (`xhttp-stable`, `self-sni`, `https-fallback`) с разделением серверной конфигурации 3x-ui и клиентских параметров (VLESS URI + Xray JSON). Активны для развёртывания: `xhttp-stable` (`VLESS + XHTTP + REALITY`) и `self-sni` (`VLESS + RAW + REALITY + Vision`); схема `https-fallback` доступна в каталоге и предпросмотре для Этапа 3.
+Единая модель профилей (`xhttp-stable`, `self-sni`, `https-fallback`) с разделением серверной конфигурации 3x-ui и клиентских параметров (VLESS URI + Xray JSON). Активны все три профиля: `xhttp-stable` (`VLESS + XHTTP + REALITY`), `self-sni` (`VLESS + RAW + REALITY + Vision`) и `https-fallback` (`VLESS + XHTTP + TLS`).
 
 - `GET /api/profiles/catalog` — каталог профилей, минимальных версий Xray и значений по умолчанию
 - `GET /api/profiles` / `GET /api/profiles/:id` — список и карточка профиля (без приватных ключей)
@@ -989,6 +989,7 @@ http://<host>:<port>/bus/<uuid>
 В `inboundsConfig` подписки поддерживаются:
 - `type: "xhttp-stable"` с `profileSettings` (`mode: "auto" | "stream-one" | "packet-up"`, `path`, `host`, `fingerprint`, `spiderX`, `rotationPolicy`, клиентский `xmux`).
 - `type: "self-sni"` с `profileSettings` (`domain` — обязательный собственный домен, `webServer: "nginx" | "caddy" | "none"`, `localHttpsPort`, `destPort`, `xver: 0 | 1 | 2`, `fingerprint`, `spiderX`, `rotationPolicy`, опциональные пути `certificateFile`/`keyFile` для шаблона веб-сервера). Ротация никогда не подменяет собственный домен случайным.
+- `type: "https-fallback"` с `profileSettings` (`domain` — обязательный домен TLS-сертификата, `path` — выделенный endpoint вроде `/api/v2/stream`, `mode`, `fingerprint`, `reverseProxy: "none" | "nginx" | "caddy"`, `publicPort`, `rotationPolicy`). При `reverseProxy: "none"` TLS терминируется в Xray; при `nginx`/`caddy` Xray слушает `127.0.0.1`, а клиент подключается по TLS на `domain:publicPort`. Независим от REALITY-профилей и сохраняет домен/сертификат при ротации.
 
 ---
 

@@ -19,6 +19,7 @@ import {
   PERSISTENT_INBOUND_TYPES,
   ROUTING_INBOUND_TYPES,
   panelInboundProtocol,
+  requiresPanelTlsCertificate,
 } from './inbound-config.constants';
 import { supportsInboundType } from '../nodes/node-capabilities';
 import { isManagedProfileKind } from '../profiles/connection-profile.types';
@@ -431,9 +432,7 @@ export class SubscriptionsService {
     config: InboundConfig,
     existingConfig?: { configId?: string; nodeId?: string },
   ): InboundConfig {
-    const isCertificateInbound = CERTIFICATE_INBOUND_TYPES.has(
-      config.type as InboundType,
-    );
+    const isCertificateInbound = requiresPanelTlsCertificate(config);
     // When changing node in an already created inbound, reset certificate to the target node
     const nodeChanged = Boolean(
       existingConfig &&
@@ -448,7 +447,8 @@ export class SubscriptionsService {
       ...config,
       configId: config.configId || uuidv4(),
       sni:
-        isCertificateInbound || PERSISTENT_INBOUND_TYPES.has(config.type)
+        CERTIFICATE_INBOUND_TYPES.has(config.type as InboundType) ||
+        PERSISTENT_INBOUND_TYPES.has(config.type)
           ? undefined
           : config.sni?.trim() || undefined,
       certificateMode,
@@ -505,21 +505,34 @@ export class SubscriptionsService {
   }
 
   private validateTlsConfig(config: InboundConfig) {
-    if (!CERTIFICATE_INBOUND_TYPES.has(config.type as InboundType)) return;
+    if (!requiresPanelTlsCertificate(config)) return;
     const certificateMode = this.resolveCertificateMode(config);
     if (certificateMode === 'node') return;
 
-    const hasCertificate = Boolean(config.certificateFile?.trim());
-    const hasPrivateKey = Boolean(config.keyFile?.trim());
+    const hasCertificate = Boolean(
+      config.certificateFile?.trim() ||
+      config.profileSettings?.certificateFile?.trim(),
+    );
+    const hasPrivateKey = Boolean(
+      config.keyFile?.trim() || config.profileSettings?.keyFile?.trim(),
+    );
     if (!hasCertificate || !hasPrivateKey) {
       throw new BadRequestException(
         'Custom TLS mode requires certificate and private key paths',
       );
     }
-    this.validateRemotePath(config.certificateFile || '', 'Certificate');
-    this.validateRemotePath(config.keyFile || '', 'Private key');
+    this.validateRemotePath(
+      config.certificateFile || config.profileSettings?.certificateFile || '',
+      'Certificate',
+    );
+    this.validateRemotePath(
+      config.keyFile || config.profileSettings?.keyFile || '',
+      'Private key',
+    );
     const serverName =
-      config.tlsServerName?.trim() || this.legacyTlsServerName(config);
+      config.tlsServerName?.trim() ||
+      config.profileSettings?.domain?.trim() ||
+      this.legacyTlsServerName(config);
     if (!serverName || !TLS_SERVER_NAME_PATTERN.test(serverName)) {
       throw new BadRequestException(
         'Custom TLS mode requires a valid TLS server name',
@@ -537,7 +550,7 @@ export class SubscriptionsService {
     const errors = validateManagedProfileSettings(
       config.type,
       config.profileSettings,
-      { sni: config.sni, port: config.port },
+      { sni: config.tlsServerName || config.sni, port: config.port },
     );
     if (errors.length > 0) {
       throw new BadRequestException(errors.join('; '));
@@ -604,7 +617,7 @@ export class SubscriptionsService {
         const compat = evaluateProfileCompatibility({
           kind: config.type,
           port: config.port,
-          sni: config.sni,
+          sni: config.tlsServerName || config.sni,
           settings: config.profileSettings,
           node: {
             name: node.name,
