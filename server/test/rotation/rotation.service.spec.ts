@@ -1,4 +1,4 @@
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { SubscriptionLockService } from 'src/subscriptions/subscription-lock.service';
 import { NodeDeletionService } from 'src/nodes/node-deletion.service';
 import { ClientProbeService } from 'src/profiles/client-probe.service';
@@ -16,8 +16,9 @@ import { databaseAvailability } from 'src/database/database-availability';
 import { Logger } from '@nestjs/common';
 
 describe('RotationService resilient generations', () => {
-  const manager: { update: jest.Mock; transaction: jest.Mock } = {
+  const manager = {
     update: jest.fn().mockResolvedValue({}),
+    existsBy: jest.fn().mockResolvedValue(true),
     transaction: jest.fn(
       async (work: (value: { update: jest.Mock }) => Promise<void>) =>
         work(manager),
@@ -463,7 +464,10 @@ describe('RotationService resilient generations', () => {
     ]);
     expect(old.status).toBe(InboundStatus.PendingCleanup);
     expect(old).toHaveProperty('nextCleanupAt', expect.any(Date));
-    expect(inboundRepo.save).toHaveBeenCalledWith([old]);
+    expect(inboundRepo.update).toHaveBeenCalledWith(
+      { id: In([old.id]) },
+      { status: InboundStatus.PendingCleanup, nextCleanupAt: expect.any(Date) },
+    );
     expect(persistent.status).toBe(InboundStatus.Active);
     expect(manager.transaction).not.toHaveBeenCalled();
     expect(xuiService.addInbound).not.toHaveBeenCalled();
@@ -1301,13 +1305,9 @@ describe('RotationService resilient generations', () => {
       await expect((service as any).createInbound(request())).rejects.toThrow(
         'detail unavailable',
       );
-      expect(inboundRepo.save).toHaveBeenCalledWith(
-        expect.arrayContaining([
-          expect.objectContaining({
-            xuiId: 300,
-            status: InboundStatus.PendingCleanup,
-          }),
-        ]),
+      expect(inboundRepo.update).toHaveBeenCalledWith(
+        { id: In([500]) },
+        { status: InboundStatus.PendingCleanup, nextCleanupAt: expect.any(Date) },
       );
       expect(inboundBuilder.buildInboundLink).not.toHaveBeenCalled();
     });
@@ -1502,6 +1502,88 @@ describe('RotationService resilient generations', () => {
       version: '3.8.5',
       xrayVersion: '26.7.11',
     } as Node;
+
+    it('queues cleanup without saving a rejected profile reference again', async () => {
+      const config = {
+        configId: '33333333-3333-4333-8333-333333333333',
+        profileId: '44444444-4444-4444-8444-444444444444',
+        type: 'xhttp-stable',
+        port: 'random',
+        sni: 'random',
+        nodeId: node.id,
+      };
+      const previous = {
+        id: 700,
+        configId: config.configId,
+        nodeId: node.id,
+        protocol: 'vless',
+        status: InboundStatus.Active,
+      };
+      const subscription = {
+        id: 'sub-xhttp',
+        name: 'SubXhttp',
+        inboundsConfig: [config],
+        inbounds: [previous],
+      } as Subscription;
+      const staged = {
+        id: 500,
+        xuiId: 71,
+        profileId: config.profileId,
+        status: InboundStatus.Staged,
+      } as Inbound;
+      xuiService.assertXrayHealthy.mockResolvedValueOnce(undefined);
+      xuiService.getNewX25519Cert.mockResolvedValueOnce({
+        privateKey: 'private',
+        publicKey: 'public',
+      });
+      xuiService.deleteInbound.mockResolvedValueOnce(true);
+      jest.spyOn(service as any, 'createInbound').mockImplementationOnce(
+        async ({ onStaged }) => {
+          onStaged(staged);
+          throw new Error(
+            'insert or update on table "inbound" violates foreign key constraint "FK_inbound_connection_profile"',
+          );
+        },
+      );
+
+      const result = await (service as any).rotateNodeGroup(
+        subscription,
+        node.id,
+        { node, configs: [{ config, position: 0 }] },
+        [],
+      );
+      expect(result).toMatchObject({
+        status: 'preserved',
+        inboundResults: [{
+          status: 'preserved',
+          previousActive: true,
+          error: { code: 'CONNECTION_PROFILE_NOT_FOUND' },
+        }],
+      });
+      expect(inboundRepo.update).toHaveBeenCalledWith(
+        { id: In([staged.id]) },
+        { status: InboundStatus.PendingCleanup, nextCleanupAt: expect.any(Date) },
+      );
+      expect(inboundRepo.save).not.toHaveBeenCalled();
+      expect(previous.status).toBe(InboundStatus.Active);
+
+      manager.existsBy.mockResolvedValueOnce(false);
+      xuiService.addInbound.mockClear();
+      const staleResult = await (service as any).rotateNodeGroup(
+        subscription,
+        node.id,
+        { node, configs: [{ config, position: 0 }] },
+        [],
+      );
+      expect(staleResult).toMatchObject({
+        status: 'preserved',
+        inboundResults: [{
+          status: 'preserved',
+          error: { code: 'CONNECTION_PROFILE_NOT_FOUND', stage: 'preflight' },
+        }],
+      });
+      expect(xuiService.addInbound).not.toHaveBeenCalled();
+    });
 
     it('creates minimal server inbound, saves separated clientProfileJson, and preserves fixed SNI on rotation', async () => {
       const configId = '33333333-3333-4333-8333-333333333333';

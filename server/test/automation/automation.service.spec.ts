@@ -1,6 +1,38 @@
 import { AutomationService } from 'src/automation/automation.service';
 
 describe('Rotation diagnostics export', () => {
+  it('returns the technical cause of an old operation with no inbound results', async () => {
+    const technicalDetails =
+      'insert or update on table "inbound" violates foreign key constraint "FK_inbound_connection_profile"';
+    const message = `${technicalDetails}\nDETAIL: Key (profileId)=(private-value) is not present`;
+    const rotation = {
+      getOperation: jest.fn().mockResolvedValue({
+        id: 'op',
+        status: 'failed',
+        error: message,
+        errorDetails: { stage: 'rotation', code: 'OPERATION_FAILED' },
+        results: [],
+      }),
+    };
+    const service = new AutomationService(
+      undefined!,
+      undefined!,
+      undefined!,
+      rotation as never,
+    );
+
+    const report = await service.getOperation('op');
+    expect(report).toMatchObject({
+      error: {
+        code: 'CONNECTION_PROFILE_NOT_FOUND',
+        stage: 'rotation',
+        technicalDetails,
+      },
+      results: [],
+    });
+    expect(JSON.stringify(report)).not.toContain('private-value');
+  });
+
   it('includes probe attempts and preserves diagnostics for legacy operations without exposing raw output', async () => {
     const fakeProbe = {
       success: false,

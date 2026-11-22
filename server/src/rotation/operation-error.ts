@@ -19,6 +19,22 @@ export interface OperationErrorDetails {
   raw: string;
 }
 
+const PROFILE_REFERENCE_CONSTRAINT = 'FK_inbound_connection_profile';
+const PROFILE_REFERENCE_ERROR =
+  `insert or update on table "inbound" violates foreign key constraint "${PROFILE_REFERENCE_CONSTRAINT}"`;
+
+export class MissingConnectionProfileError extends Error {
+  constructor() {
+    super('Профиль, указанный в конфигурации подключения, удалён или не существует');
+  }
+}
+
+export function profileReferenceFailure(message?: string) {
+  return message?.includes(PROFILE_REFERENCE_ERROR)
+    ? PROFILE_REFERENCE_ERROR
+    : undefined;
+}
+
 export interface OperationErrorContext {
   node?: string;
   inboundType?: string;
@@ -91,7 +107,12 @@ export function normalizeOperationError(
   let title: string;
   let hint: string;
   let code: string;
-  if (/Canary-проверка профиля/i.test(raw)) {
+  const technicalDetails = profileReferenceFailure(raw);
+  if (error instanceof MissingConnectionProfileError || technicalDetails) {
+    code = 'CONNECTION_PROFILE_NOT_FOUND';
+    title = 'Профиль подключения не найден';
+    hint = 'Выберите существующий профиль в настройках подписки и повторите ротацию подключения.';
+  } else if (/Canary-проверка профиля/i.test(raw)) {
     code = 'CANARY_PROBE_FAILED';
     stage = 'verify';
     const hasSelfSni = /\(self-sni\)/i.test(raw);

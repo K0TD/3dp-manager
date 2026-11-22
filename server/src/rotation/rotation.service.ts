@@ -52,6 +52,7 @@ import { SubscriptionLockService } from '../subscriptions/subscription-lock.serv
 import { NodeDeletionService } from '../nodes/node-deletion.service';
 import { renameAmneziaVpnLink } from '../inbounds/amnezia-vpn-link';
 import {
+  MissingConnectionProfileError,
   normalizeOperationError,
   redactOperationError,
   OperationErrorStage,
@@ -79,6 +80,7 @@ import {
   xhttpStableSniSettings,
 } from '../profiles/profile-config.builder';
 import { ClientProbeService } from '../profiles/client-probe.service';
+import { ConnectionProfile } from '../profiles/entities/connection-profile.entity';
 
 type InboundConfig = NonNullable<Subscription['inboundsConfig']>[number];
 
@@ -1028,6 +1030,16 @@ export class RotationService implements OnModuleInit {
         )
           throw new Error(`Нода ${node.name} временно недоступна`);
         this.assertNodeCompatibility(config, node);
+        if (
+          isManagedProfileKind(config.type) &&
+          config.profileId &&
+          !(await this.inboundRepo.manager.existsBy(ConnectionProfile, {
+            id: config.profileId,
+            kind: config.type,
+          }))
+        ) {
+          throw new MissingConnectionProfileError();
+        }
         if (runtimeUnhealthy)
           throw new Error('Xray недоступен после создания инбаунда');
         if (node)
@@ -1392,6 +1404,7 @@ export class RotationService implements OnModuleInit {
         Boolean(inbound.clientProfileJson),
     );
     if (!active || !active.clientProfileJson) return null;
+    if ((active.profileId ?? null) !== (config.profileId ?? null)) return null;
     if (fixedPort !== null && active.port !== fixedPort) return null;
 
     let parsed: SeparatedClientProfile;
@@ -2615,12 +2628,16 @@ export class RotationService implements OnModuleInit {
 
   private async queueCleanup(inbounds: Inbound[]) {
     if (!inbounds.length) return;
-    const now = new Date();
+    const nextCleanupAt = new Date();
+    const status = InboundStatus.PendingCleanup;
+    await this.inboundRepo.update(
+      { id: In(inbounds.map((inbound) => inbound.id)) },
+      { status, nextCleanupAt },
+    );
     for (const inbound of inbounds) {
-      inbound.status = InboundStatus.PendingCleanup;
-      inbound.nextCleanupAt = now;
+      inbound.status = status;
+      inbound.nextCleanupAt = nextCleanupAt;
     }
-    await this.inboundRepo.save(inbounds);
   }
 
   private pickDomain(domains: Domain[]) {

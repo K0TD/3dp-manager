@@ -14,6 +14,7 @@ import { Subscription } from '../subscriptions/entities/subscription.entity';
 import {
   OperationErrorDetails,
   normalizeOperationError,
+  profileReferenceFailure,
 } from '../rotation/operation-error';
 import {
   RotationOperation,
@@ -26,7 +27,16 @@ import {
 } from '../rotation/rotation.service';
 import { sha256 } from './api-token.service';
 
-function errorSummary(error?: OperationErrorDetails | null) {
+function errorSummary(error?: OperationErrorDetails | null, message?: string) {
+  const technicalDetails =
+    profileReferenceFailure(error?.raw) || profileReferenceFailure(message);
+  if (technicalDetails) {
+    error = normalizeOperationError(technicalDetails, {
+      stage: error?.stage,
+      inboundType: error?.inboundType,
+      port: error?.port,
+    });
+  }
   if (!error) return error;
   const code =
     error.code === 'PORT_IN_USE' ||
@@ -39,6 +49,10 @@ function errorSummary(error?: OperationErrorDetails | null) {
     stage: error.stage,
     port: error.port,
     inboundType: error.inboundType,
+    ...(error.code === 'CONNECTION_PROFILE_NOT_FOUND'
+      ? { title: error.title, hint: error.hint }
+      : {}),
+    ...(technicalDetails ? { technicalDetails } : {}),
   };
 }
 
@@ -181,7 +195,7 @@ export class AutomationService {
       startedAt: op.startedAt,
       finishedAt: op.finishedAt,
       sourceOperationId: op.target?.operationId,
-      error: errorSummary(op.errorDetails),
+      error: errorSummary(op.errorDetails, op.error),
       results: (op.results || []).map((result) => ({
         subscriptionId: result.subscriptionId,
         nodeId: result.nodeId,
@@ -190,7 +204,7 @@ export class AutomationService {
         status: result.status,
         created: result.created,
         pendingCleanup: result.pendingCleanup,
-        error: errorSummary(result.errorDetails),
+        error: errorSummary(result.errorDetails, result.message),
         canary: result.inboundResults?.length
           ? undefined
           : result.canaryResults?.map(probeSummary),
