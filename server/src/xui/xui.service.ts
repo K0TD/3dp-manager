@@ -465,6 +465,231 @@ export class XuiService {
     });
   }
 
+  async addInboundClient(
+    inboundId: number,
+    client: Record<string, unknown>,
+    node?: Node,
+  ): Promise<XuiCreatedInbound | null> {
+    if (!inboundId || inboundId <= 0) return null;
+    const run = () => this.appendInboundClient(inboundId, client, node);
+    if (!node || !this.routingStore) return run();
+    return this.routingStore.withLock(node.id, run);
+  }
+
+  private async appendInboundClient(
+    inboundId: number,
+    client: Record<string, unknown>,
+    node?: Node,
+  ): Promise<XuiCreatedInbound | null> {
+    const key = node?.id || 'main';
+    this.lastInboundErrors.delete(key);
+    const clientId = typeof client.id === 'string' ? client.id : '';
+    try {
+      return await this.authenticatedRequest(node, async (api) => {
+        const currentResp = await api.get<unknown>(
+          `/panel/api/inbounds/get/${inboundId}`,
+        );
+        const current = normalizeInbound(responsePayload(currentResp.data));
+        if (!current.enable) {
+          throw new XuiApiError(
+            `Общий inbound ${inboundId} отключён на панели 3x-ui`,
+          );
+        }
+
+        let added = false;
+        try {
+          const addResp = await api.post<unknown>(
+            '/panel/api/inbounds/addClient',
+            {
+              id: inboundId,
+              settings: JSON.stringify({ clients: [client] }),
+            },
+          );
+          responsePayload(addResp.data);
+          added = true;
+        } catch (addError) {
+          const status = (addError as AxiosError).response?.status;
+          if (status === 401 || status === 403) throw addError;
+          // Fallback to /panel/api/inbounds/update/:id for panels without addClient
+          const parsedSettings = jsonObject(
+            typeof current.settings === 'string'
+              ? JSON.parse(current.settings)
+              : current.settings,
+            'inbound settings',
+          );
+          const existingClients = Array.isArray(parsedSettings.clients)
+            ? (parsedSettings.clients as Array<Record<string, unknown>>)
+            : [];
+          const nextClients = existingClients.some((c) => c.id === clientId)
+            ? existingClients
+            : [...existingClients, client];
+          const body: Record<string, unknown> = {
+            ...current,
+            settings: JSON.stringify({
+              ...parsedSettings,
+              clients: nextClients,
+            }),
+          };
+          for (const field of ['streamSettings', 'sniffing']) {
+            if (typeof body[field] !== 'string')
+              body[field] = JSON.stringify(body[field] ?? {});
+          }
+          for (const field of [
+            'up',
+            'down',
+            'allTime',
+            'clientStats',
+            'lastTrafficResetTime',
+          ]) {
+            delete body[field];
+          }
+          const updateResp = await api.post<unknown>(
+            `/panel/api/inbounds/update/${inboundId}`,
+            body,
+          );
+          responsePayload(updateResp.data);
+          added = true;
+        }
+
+        if (!added) return null;
+        const savedResp = await api.get<unknown>(
+          `/panel/api/inbounds/get/${inboundId}`,
+        );
+        const saved = normalizeInbound(responsePayload(savedResp.data));
+        const savedSettings = jsonObject(
+          typeof saved.settings === 'string'
+            ? JSON.parse(saved.settings)
+            : saved.settings,
+          'saved inbound settings',
+        );
+        const savedClients = Array.isArray(savedSettings.clients)
+          ? (savedSettings.clients as Array<Record<string, unknown>>)
+          : [];
+        if (clientId && !savedClients.some((c) => c.id === clientId)) {
+          throw new XuiApiError(
+            `3x-ui не сохранила клиента ${clientId} в общем inbound ${inboundId}`,
+          );
+        }
+        return { id: inboundId, inbound: saved };
+      });
+    } catch (error) {
+      const message = this.errorMessage(error);
+      this.lastInboundErrors.set(key, message);
+      this.logger.warn(
+        `Shared inbound client attach (${node?.name || 'main'}, inbound ${inboundId}): ${message}`,
+      );
+      return null;
+    }
+  }
+
+  async deleteInboundClient(
+    inboundId: number,
+    clientId: string,
+    node?: Node,
+  ): Promise<boolean> {
+    if (!inboundId || inboundId <= 0 || !clientId) return true;
+    const run = () => this.removeInboundClient(inboundId, clientId, node);
+    if (!node || !this.routingStore) return run();
+    return this.routingStore.withLock(node.id, run);
+  }
+
+  private async removeInboundClient(
+    inboundId: number,
+    clientId: string,
+    node?: Node,
+  ): Promise<boolean> {
+    try {
+      return await this.authenticatedRequest(node, async (api) => {
+        try {
+          const resp = await api.post<unknown>(
+            `/panel/api/inbounds/${inboundId}/delClient/${encodeURIComponent(clientId)}`,
+          );
+          const body = asRecord(resp.data);
+          if (
+            body?.success === false &&
+            typeof body.msg === 'string' &&
+            /not found|does not exist|record not found|no client/i.test(
+              body.msg,
+            )
+          ) {
+            return true;
+          }
+          responsePayload(resp.data);
+          return true;
+        } catch (delError) {
+          const status = (delError as AxiosError).response?.status;
+          if (status === 401 || status === 403) throw delError;
+          // Fallback: remove client via GET + update/:id (or delete inbound if empty)
+          const getResp = await api.get<unknown>(
+            `/panel/api/inbounds/get/${inboundId}`,
+          );
+          const getBody = asRecord(getResp.data);
+          if (
+            getBody?.success === false &&
+            typeof getBody.msg === 'string' &&
+            /not found|does not exist|record not found/i.test(getBody.msg)
+          ) {
+            return true;
+          }
+          const current = normalizeInbound(responsePayload(getResp.data));
+          const parsedSettings = jsonObject(
+            typeof current.settings === 'string'
+              ? JSON.parse(current.settings)
+              : current.settings,
+            'inbound settings',
+          );
+          const existingClients = Array.isArray(parsedSettings.clients)
+            ? (parsedSettings.clients as Array<Record<string, unknown>>)
+            : [];
+          const remainingClients = existingClients.filter(
+            (c) => c.id !== clientId && c.email !== clientId,
+          );
+          if (remainingClients.length === existingClients.length) {
+            return true;
+          }
+          if (remainingClients.length === 0) {
+            const delInboundResp = await api.post<unknown>(
+              `/panel/api/inbounds/del/${inboundId}`,
+            );
+            responsePayload(delInboundResp.data);
+            return true;
+          }
+          const body: Record<string, unknown> = {
+            ...current,
+            settings: JSON.stringify({
+              ...parsedSettings,
+              clients: remainingClients,
+            }),
+          };
+          for (const field of ['streamSettings', 'sniffing']) {
+            if (typeof body[field] !== 'string')
+              body[field] = JSON.stringify(body[field] ?? {});
+          }
+          for (const field of [
+            'up',
+            'down',
+            'allTime',
+            'clientStats',
+            'lastTrafficResetTime',
+          ]) {
+            delete body[field];
+          }
+          const updateResp = await api.post<unknown>(
+            `/panel/api/inbounds/update/${inboundId}`,
+            body,
+          );
+          responsePayload(updateResp.data);
+          return true;
+        }
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Shared inbound client deletion (${inboundId}/${clientId}): ${this.errorMessage(error)}`,
+      );
+      return false;
+    }
+  }
+
   async deleteInbound(id: number, node?: Node): Promise<boolean> {
     if (!node || !this.routingStore) return this.removeInbound(id, node);
     return this.routingStore.withLock(node.id, async () => {

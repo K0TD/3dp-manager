@@ -2492,5 +2492,222 @@ describe('RotationService resilient generations', () => {
       expect(result.message).toContain('Конфликт порта 8443');
       expect(xuiService.addInbound).not.toHaveBeenCalled();
     });
+
+    it('shares one 3x-ui inbound across subscriptions by attaching a separate client UUID and detaching only that client on rollback', async () => {
+      const sharedProfileId = '99999999-9999-4999-8999-999999999999';
+      const existingSharedRow = {
+        id: 2001,
+        xuiId: 82,
+        nodeId: node.id,
+        port: 24443,
+        protocol: 'vless',
+        profileId: sharedProfileId,
+        profileKind: 'self-sni',
+        status: InboundStatus.Active,
+        subscriptionId: 'sub-owner-a',
+        clientProfileJson: JSON.stringify({
+          kind: 'self-sni',
+          protocol: 'vless',
+          address: 'portal.example.com',
+          port: 24443,
+          uuid: 'uuid-sub-a',
+          remark: 'self-sni-mscone',
+          flow: 'xtls-rprx-vision',
+          network: 'tcp',
+          security: 'reality',
+          sni: 'portal.example.com',
+          fingerprint: 'chrome',
+        }),
+      } as Inbound;
+
+      inboundRepo.find.mockResolvedValue([existingSharedRow]);
+      inboundRepo.count.mockResolvedValue(1);
+      xuiService.assertXrayHealthy.mockResolvedValue(undefined);
+      xuiService.getNewX25519Cert.mockResolvedValue({
+        privateKey: 'PRIV',
+        publicKey: 'PUB_KEY_1234567890123456789012345678901234',
+      });
+      let attachedUuid = '';
+      (xuiService as Record<string, unknown>).addInboundClient = jest.fn(
+        (xuiId: number, clientEntry: { id: string }) => {
+          attachedUuid = clientEntry.id;
+          return Promise.resolve({
+            id: xuiId,
+            inbound: {
+              id: xuiId,
+              enable: true,
+              port: 24443,
+              protocol: 'vless',
+              remark: 'self-sni-mscone',
+              settings: JSON.stringify({
+                clients: [{ id: 'uuid-sub-a' }, clientEntry],
+              }),
+              streamSettings: JSON.stringify({
+                network: 'tcp',
+                security: 'reality',
+                realitySettings: {
+                  serverNames: ['portal.example.com'],
+                  shortIds: ['abcd1234'],
+                  settings: {
+                    publicKey: 'PUB_KEY_1234567890123456789012345678901234',
+                    fingerprint: 'chrome',
+                    spiderX: '/',
+                  },
+                },
+              }),
+            },
+          });
+        },
+      );
+      (xuiService as Record<string, unknown>).deleteInboundClient = jest
+        .fn()
+        .mockResolvedValue(true);
+
+      inboundBuilder.buildSelfSniInbound.mockReturnValue({
+        enable: true,
+        port: 24443,
+        protocol: 'vless',
+        remark: 'self-sni-mscone',
+        settings: '{}',
+        streamSettings: '{}',
+      });
+      inboundBuilder.buildSelfSniClientBundle.mockImplementation(
+        (_saved: unknown, _addr: string, _flag: string, _s: unknown, cid?: string) => ({
+          kind: 'self-sni',
+          vlessLink: `vless://${cid || 'fallback'}@portal.example.com:24443#self-sni`,
+          clientConfig: {
+            kind: 'self-sni',
+            protocol: 'vless',
+            address: 'portal.example.com',
+            port: 24443,
+            uuid: cid || 'fallback',
+            remark: 'self-sni-mscone',
+            flow: 'xtls-rprx-vision',
+            network: 'tcp',
+            security: 'reality',
+            sni: 'portal.example.com',
+            fingerprint: 'chrome',
+          },
+          xrayClientJson: {},
+        }),
+      );
+
+      const mockClientProbe = {
+        probeClientProfile: jest.fn().mockResolvedValue({
+          success: true,
+          engine: 'xray-core',
+          targetAddress: 'portal.example.com',
+          targetPort: 24443,
+          protocol: 'vless',
+          profileKind: 'self-sni',
+          httpStatusCode: 204,
+          latencyMs: 55,
+        }),
+      };
+      (service as unknown as { clientProbe: unknown }).clientProbe =
+        mockClientProbe;
+
+      const subB = {
+        id: 'sub-b',
+        name: 'SubB',
+        isEnabled: true,
+        inboundsConfig: [
+          {
+            configId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+            type: 'self-sni',
+            port: 24443,
+            sni: 'portal.example.com',
+            nodeId: node.id,
+            name: 'self-sni-mscone',
+            profileId: sharedProfileId,
+            profileSettings: {
+              domain: 'portal.example.com',
+              webServer: 'nginx',
+              localHttpsPort: 8443,
+              rotationPolicy: 'fixed_domain',
+            },
+          },
+        ],
+        inbounds: [],
+      } as Subscription;
+
+      const rotateOk = await (
+        service as unknown as {
+          rotateNodeGroup: (
+            s: Subscription,
+            k: string,
+            g: {
+              node?: Node;
+              configs: Array<{ config: unknown; position: number }>;
+            },
+            d: Domain[],
+          ) => Promise<{ status: string; created: number }>;
+        }
+      ).rotateNodeGroup(
+        subB,
+        node.id,
+        { node, configs: [{ config: subB.inboundsConfig[0], position: 0 }] },
+        [],
+      );
+
+      expect(rotateOk.status).toBe('succeeded');
+      expect(rotateOk.created).toBe(1);
+      expect(xuiService.addInbound).not.toHaveBeenCalled();
+      expect(
+        (xuiService as Record<string, jest.Mock>).addInboundClient,
+      ).toHaveBeenCalledWith(
+        82,
+        expect.objectContaining({
+          id: attachedUuid,
+          flow: 'xtls-rprx-vision',
+        }),
+        node,
+      );
+      expect(inboundBuilder.buildSelfSniClientBundle).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 82 }),
+        expect.any(String),
+        expect.any(String),
+        expect.any(Object),
+        attachedUuid,
+      );
+
+      // Now simulate canary failure on a 3rd sub sharing xuiId=82:
+      // rollback MUST detach only its client, NOT delete shared inbound 82!
+      mockClientProbe.probeClientProfile.mockResolvedValueOnce({
+        success: false,
+        engine: 'xray-core',
+        targetAddress: 'portal.example.com',
+        targetPort: 24443,
+        protocol: 'vless',
+        profileKind: 'self-sni',
+        latencyMs: 500,
+        error: 'simulated canary failure',
+      });
+      const rotateFail = await (
+        service as unknown as {
+          rotateNodeGroup: (
+            s: Subscription,
+            k: string,
+            g: {
+              node?: Node;
+              configs: Array<{ config: unknown; position: number }>;
+            },
+            d: Domain[],
+          ) => Promise<{ status: string; rolledBack?: boolean }>;
+        }
+      ).rotateNodeGroup(
+        subB,
+        node.id,
+        { node, configs: [{ config: subB.inboundsConfig[0], position: 0 }] },
+        [],
+      );
+
+      expect(rotateFail.status).toBe('preserved');
+      expect(rotateFail.rolledBack).toBe(true);
+      expect(
+        (xuiService as Record<string, jest.Mock>).deleteInboundClient,
+      ).toHaveBeenCalledWith(82, attachedUuid, node);
+      expect(xuiService.deleteInbound).not.toHaveBeenCalled();
+    });
   });
 });

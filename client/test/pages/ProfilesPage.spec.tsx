@@ -217,9 +217,9 @@ describe('ProfilesPage', () => {
     // Select all subscriptions (Main Sub + Backup Sub)
     fireEvent.click(screen.getByRole('button', { name: 'Выбрать все' }));
 
-    // Fixed port warning should appear because SelfSNI Main has port 443 across >1 sub
+    // Info about shared multi-client inbound should appear across >1 sub
     expect(
-      screen.getByText(/указан фиксированный порт/),
+      screen.getByText(/один общий inbound/),
     ).toBeInTheDocument();
 
     // Planned additions: Main Sub gets 2, Backup Sub already has prof-1 so gets 1 => total 3

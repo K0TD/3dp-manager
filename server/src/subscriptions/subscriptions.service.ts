@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, In, Repository } from 'typeorm';
+import { EntityManager, In, Not, Repository } from 'typeorm';
 import { Subscription } from './entities/subscription.entity';
 import { XuiService } from '../xui/xui.service';
 import { CreateSubscriptionDto } from './dto/create-subscription.dto';
@@ -9,6 +9,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { Node } from '../nodes/entities/node.entity';
 import { Tunnel } from '../tunnels/entities/tunnel.entity';
 import { Inbound, InboundStatus } from '../inbounds/entities/inbound.entity';
+import { extractInboundClientId } from '../inbounds/inbound-client.util';
 import { sortInboundsByPosition } from '../inbounds/inbound-order';
 import {
   ACTIVE_MANAGED_PROFILE_TYPES,
@@ -222,7 +223,43 @@ export class SubscriptionsService {
         let isDeleted = false;
         try {
           node = await this.resolveInboundNode(inbound);
-          isDeleted = await this.xuiService.deleteInbound(inbound.xuiId, node);
+          const targetNodeId = inbound.nodeId || inbound.node?.id || node?.id;
+          let otherRefs = 0;
+          if (
+            targetNodeId &&
+            typeof this.subRepo.manager?.count === 'function'
+          ) {
+            otherRefs = await this.subRepo.manager
+              .count(Inbound, {
+                where: {
+                  nodeId: targetNodeId,
+                  xuiId: inbound.xuiId,
+                  subscriptionId: Not(sub.id),
+                  status: In([InboundStatus.Active, InboundStatus.Staged]),
+                },
+              })
+              .catch(() => 0);
+          }
+          if (otherRefs > 0) {
+            const clientId = extractInboundClientId(inbound);
+            if (
+              clientId &&
+              typeof this.xuiService.deleteInboundClient === 'function'
+            ) {
+              isDeleted = await this.xuiService.deleteInboundClient(
+                inbound.xuiId,
+                clientId,
+                node,
+              );
+            } else {
+              isDeleted = true;
+            }
+          } else {
+            isDeleted = await this.xuiService.deleteInbound(
+              inbound.xuiId,
+              node,
+            );
+          }
         } catch (error) {
           this.logger.warn(
             `Ошибка удаления инбаунда ${inbound.xuiId}: ${String(error)}`,

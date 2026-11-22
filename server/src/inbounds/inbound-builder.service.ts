@@ -494,11 +494,14 @@ export class InboundBuilderService {
     address: string,
     flagEmoji: string,
     profileSettings?: ManagedProfileSettings | null,
+    clientId?: string,
   ): ProfileExportBundle | null {
     try {
       const stream = JSON.parse(inbound.streamSettings) as XuiStreamSettings;
       const settings = JSON.parse(inbound.settings) as XuiInboundSettings;
-      const client = settings.clients?.[0];
+      const client = clientId
+        ? settings.clients?.find((item) => item.id === clientId)
+        : settings.clients?.[0];
       const reality = stream.realitySettings;
       if (!client?.id || !reality?.settings?.publicKey) return null;
       const sni =
@@ -553,11 +556,14 @@ export class InboundBuilderService {
     address: string,
     flagEmoji: string,
     profileSettings?: ManagedProfileSettings | null,
+    clientId?: string,
   ): ProfileExportBundle | null {
     try {
       const stream = JSON.parse(inbound.streamSettings) as XuiStreamSettings;
       const settings = JSON.parse(inbound.settings) as XuiInboundSettings;
-      const client = settings.clients?.[0];
+      const client = clientId
+        ? settings.clients?.find((item) => item.id === clientId)
+        : settings.clients?.[0];
       const reality = stream.realitySettings;
       if (!client?.id || !reality?.settings?.publicKey) return null;
       const domain = reality.serverNames?.[0] || profileSettings?.domain || '';
@@ -605,11 +611,14 @@ export class InboundBuilderService {
     flagEmoji: string,
     profileSettings?: ManagedProfileSettings | null,
     resolvedDomain?: string,
+    clientId?: string,
   ): ProfileExportBundle | null {
     try {
       const stream = JSON.parse(inbound.streamSettings) as XuiStreamSettings;
       const settings = JSON.parse(inbound.settings) as XuiInboundSettings;
-      const client = settings.clients?.[0];
+      const client = clientId
+        ? settings.clients?.find((item) => item.id === clientId)
+        : settings.clients?.[0];
       if (!client?.id) return null;
       const domain =
         resolvedDomain?.trim() ||

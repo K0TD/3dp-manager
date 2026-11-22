@@ -654,7 +654,7 @@ export default function ProfilesPage() {
       nodeId: profile.nodeId || undefined,
       name: profile.name,
       enabled: true,
-      profileId: profile.id,
+      profileId: forceRandomPort ? undefined : profile.id,
       profileSettings: {
         ...profile.spec,
         rotationPolicy: profile.rotationPolicy,
@@ -2052,16 +2052,12 @@ export default function ProfilesPage() {
                   </List>
                 </Paper>
 
-                {hasFixedPortMultiSubWarning && (
-                  <Alert severity="warning" sx={{ py: 0.5 }}>
-                    У{' '}
-                    {fixedPortTargets
-                      .map((p) => `«${p.name}» (:${p.port})`)
-                      .join(', ')}{' '}
-                    указан фиксированный порт. В 3x-ui несколько подписок на
-                    одной ноде не могут одновременно занять один порт — включите
-                    случайный порт ниже или добавляйте по одной подписке на
-                    ноду.
+                {targetSubIds.length > 1 && (
+                  <Alert severity="info" sx={{ py: 0.5 }}>
+                    При добавлении профиля в несколько подписок на одной ноде
+                    автоматически используется <strong>один общий inbound</strong>{' '}
+                    в 3x-ui с отдельным клиентом (UUID) для каждой подписки —
+                    конфликта портов не будет.
                   </Alert>
                 )}
 
@@ -2076,7 +2072,7 @@ export default function ProfilesPage() {
                         }
                       />
                     }
-                    label="Назначать случайный порт (random) при добавлении в несколько подписок"
+                    label="Создавать отдельные инбаунды на случайных портах (random) вместо одного общего"
                   />
                 )}
 

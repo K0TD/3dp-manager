@@ -396,6 +396,66 @@ describe('3x-ui API contracts', () => {
     ).resolves.toMatchObject({ id: 42, verificationError: expect.any(String) });
   });
 
+  it('adds and deletes individual clients on a shared inbound via addClient/delClient and update fallback', async () => {
+    const baseInbound = {
+      ...normalizeInbound(inbound),
+      id: 82,
+      settings: JSON.stringify({
+        clients: [{ id: 'client-a', email: 'sub-a', enable: true }],
+      }),
+    };
+    const updatedInbound = {
+      ...baseInbound,
+      settings: JSON.stringify({
+        clients: [
+          { id: 'client-a', email: 'sub-a', enable: true },
+          { id: 'client-b', email: 'sub-b', enable: true },
+        ],
+      }),
+    };
+
+    api.get
+      .mockResolvedValueOnce({ data: { success: true, obj: baseInbound } })
+      .mockResolvedValueOnce({ data: { success: true, obj: updatedInbound } });
+    api.post.mockResolvedValueOnce({ data: { success: true, obj: null } });
+
+    const attached = await service.addInboundClient(
+      82,
+      { id: 'client-b', email: 'sub-b', enable: true },
+      tokenNode,
+    );
+    expect(attached?.id).toBe(82);
+    expect(api.post).toHaveBeenCalledWith(
+      '/panel/api/inbounds/addClient',
+      expect.objectContaining({ id: 82 }),
+    );
+
+    // Deleting a single client via /delClient/
+    api.post.mockResolvedValueOnce({ data: { success: true, obj: null } });
+    await expect(
+      service.deleteInboundClient(82, 'client-b', tokenNode),
+    ).resolves.toBe(true);
+    expect(api.post).toHaveBeenCalledWith(
+      '/panel/api/inbounds/82/delClient/client-b',
+    );
+
+    // Fallback when /delClient/ returns 404: removes client via update/:id while preserving sibling
+    api.post.mockRejectedValueOnce({ response: { status: 404 } });
+    api.get.mockResolvedValueOnce({
+      data: { success: true, obj: updatedInbound },
+    });
+    api.post.mockResolvedValueOnce({ data: { success: true, obj: null } });
+    await expect(
+      service.deleteInboundClient(82, 'client-b', tokenNode),
+    ).resolves.toBe(true);
+    expect(api.post).toHaveBeenLastCalledWith(
+      '/panel/api/inbounds/update/82',
+      expect.objectContaining({
+        settings: expect.stringContaining('client-a'),
+      }),
+    );
+  });
+
   it.each([
     { success: false, msg: 'Port 443 is already in use' },
     '<html>login</html>',

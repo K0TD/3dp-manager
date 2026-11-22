@@ -7,11 +7,12 @@ import {
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, Not, Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
 
 import { Subscription } from '../subscriptions/entities/subscription.entity';
 import { Inbound, InboundStatus } from '../inbounds/entities/inbound.entity';
+import { extractInboundClientId } from '../inbounds/inbound-client.util';
 import { Domain } from '../domains/entities/domain.entity';
 import { Setting } from '../settings/entities/setting.entity';
 import { Node, NodeHealthStatus } from '../nodes/entities/node.entity';
@@ -1045,14 +1046,16 @@ export class RotationService implements OnModuleInit {
       );
       const pendingForCleanup: Inbound[] = [];
       if (canaryFailed && group.node && created.length > 0) {
+        const createdIds = created.map((item) => item.id);
         const removedImmediately: Inbound[] = [];
         for (const stagedInbound of created) {
           let deletedOnPanel = false;
           if (stagedInbound.xuiId > 0) {
             try {
-              deletedOnPanel = await this.xuiService.deleteInbound(
-                stagedInbound.xuiId,
+              deletedOnPanel = await this.removeOrDetachInboundFromPanel(
+                stagedInbound,
                 group.node,
+                createdIds,
               );
             } catch {
               deletedOnPanel = false;
@@ -1323,6 +1326,114 @@ export class RotationService implements OnModuleInit {
     }
 
     return active;
+  }
+
+  /**
+   * Finds an existing active managed inbound on the same node so multiple
+   * subscriptions can share one 3x-ui inbound (one port) with separate per-subscription
+   * VLESS clients (UUIDs) instead of colliding on the same port.
+   */
+  private async findSharedManagedInbound(
+    config: InboundConfig,
+    nodeId: string,
+    sni: string,
+  ): Promise<Inbound | null> {
+    if (
+      !isManagedProfileKind(config.type) ||
+      typeof this.inboundRepo.find !== 'function'
+    ) {
+      return null;
+    }
+    const fixedPort = this.parseFixedPort(config.port);
+    if (!config.profileId && fixedPort === null) {
+      return null;
+    }
+
+    const candidates = await this.inboundRepo.find({
+      where: {
+        nodeId,
+        status: InboundStatus.Active,
+        profileKind: config.type,
+      },
+      order: { createdAt: 'DESC' },
+    });
+    if (!Array.isArray(candidates) || candidates.length === 0) return null;
+
+    const normalizedSni = (sni || '').trim().toLowerCase();
+    for (const candidate of candidates) {
+      if (!candidate.xuiId || candidate.xuiId <= 0) continue;
+      if (config.profileId && candidate.profileId === config.profileId) {
+        if (fixedPort !== null && candidate.port !== fixedPort) continue;
+        return candidate;
+      }
+      if (fixedPort !== null && candidate.port === fixedPort) {
+        if (normalizedSni && candidate.clientProfileJson) {
+          try {
+            const parsed = JSON.parse(
+              candidate.clientProfileJson,
+            ) as Partial<SeparatedClientProfile>;
+            const candidateSni = (parsed.sni || '').trim().toLowerCase();
+            if (candidateSni && candidateSni !== normalizedSni) {
+              continue;
+            }
+          } catch {
+            // Allow match by fixed port + profileKind if JSON is unreadable
+          }
+        }
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Deletes only this subscription's client from a shared 3x-ui inbound when
+   * other active/staged subscriptions still reference the same (nodeId, xuiId);
+   * deletes the whole 3x-ui inbound only once the last reference is gone.
+   */
+  private async removeOrDetachInboundFromPanel(
+    inbound: Inbound,
+    node?: Node,
+    excludeIds?: number[],
+  ): Promise<boolean> {
+    if (!inbound.xuiId || inbound.xuiId <= 0) return true;
+    const ignored = excludeIds?.length ? excludeIds : [inbound.id];
+    const targetNodeId = inbound.nodeId || inbound.node?.id || node?.id;
+    let otherRefs = 0;
+    if (targetNodeId && typeof this.inboundRepo.count === 'function') {
+      try {
+        otherRefs = await this.inboundRepo.count({
+          where: {
+            nodeId: targetNodeId,
+            xuiId: inbound.xuiId,
+            id: Not(In(ignored)),
+            status: In([InboundStatus.Active, InboundStatus.Staged]),
+          },
+        });
+      } catch {
+        otherRefs = 0;
+      }
+    }
+
+    if (otherRefs > 0) {
+      const clientId = extractInboundClientId(inbound);
+      if (
+        clientId &&
+        typeof this.xuiService.deleteInboundClient === 'function'
+      ) {
+        return this.xuiService.deleteInboundClient(
+          inbound.xuiId,
+          clientId,
+          node,
+        );
+      }
+      this.logger.warn(
+        `[RotationService] Пропущено удаление общего inbound ${inbound.xuiId} (используется ещё ${otherRefs} подписками; UUID клиента не извлечён)`,
+      );
+      return true;
+    }
+
+    return this.xuiService.deleteInbound(inbound.xuiId, node);
   }
 
   private assertNodeCompatibility(config: InboundConfig, node?: Node) {
@@ -1614,16 +1725,52 @@ export class RotationService implements OnModuleInit {
     if (this.nodeDeletion.isDeleting(node.id)) {
       throw new Error(`Нода «${node.name}» удаляется`);
     }
-    let result = await this.xuiService.addInbound(built, node);
-    for (let attempt = 1; !result && randomPort && attempt < 3; attempt++) {
-      if (!isPortConflict(this.xuiService.getLastInboundError(node))) break;
-      built.port = await this.getFreePort(usedPorts);
-      diagnostic.port = built.port;
-      usedPorts.add(built.port);
-      if (this.nodeDeletion.isDeleting(node.id)) {
-        throw new Error(`Нода «${node.name}» удаляется`);
+    let result: Awaited<ReturnType<XuiService['addInbound']>> = null;
+    let attachedToShared = false;
+    if (
+      isManagedProfileKind(config.type) &&
+      typeof this.xuiService.addInboundClient === 'function'
+    ) {
+      const shared = await this.findSharedManagedInbound(config, node.id, sni);
+      if (shared) {
+        const clientEntry = {
+          id: uuid,
+          flow: config.type === 'self-sni' ? 'xtls-rprx-vision' : '',
+          email,
+          enable: true,
+          limitIp: 0,
+          totalGB: 0,
+          expiryTime: 0,
+          subId: '',
+          reset: 0,
+        };
+        const attached = await this.xuiService.addInboundClient(
+          shared.xuiId,
+          clientEntry,
+          node,
+        );
+        if (attached) {
+          result = attached;
+          attachedToShared = true;
+          diagnostic.port = attached.inbound.port;
+          this.logger.log(
+            `[RotationService] Подписка «${subscription.name}» добавлена клиентом в общий inbound ${shared.xuiId} (порт ${attached.inbound.port}, профиль «${config.name || config.type}») на ноде «${node.name}»`,
+          );
+        }
       }
+    }
+    if (!result) {
       result = await this.xuiService.addInbound(built, node);
+      for (let attempt = 1; !result && randomPort && attempt < 3; attempt++) {
+        if (!isPortConflict(this.xuiService.getLastInboundError(node))) break;
+        built.port = await this.getFreePort(usedPorts);
+        diagnostic.port = built.port;
+        usedPorts.add(built.port);
+        if (this.nodeDeletion.isDeleting(node.id)) {
+          throw new Error(`Нода «${node.name}» удаляется`);
+        }
+        result = await this.xuiService.addInbound(built, node);
+      }
     }
     if (!result) return null;
     const saved = result.inbound;
@@ -1647,7 +1794,9 @@ export class RotationService implements OnModuleInit {
         link: '',
       });
     } catch (error) {
-      const deleted = await this.xuiService.deleteInbound(result.id, node);
+      const deleted = attachedToShared
+        ? await this.xuiService.deleteInboundClient(result.id, uuid, node)
+        : await this.xuiService.deleteInbound(result.id, node);
       if (!deleted)
         this.logger.error(
           `Не удалось сохранить или удалить новый инбаунд ${result.id} на ноде «${node.name}»; требуется очистка на панели`,
@@ -1668,6 +1817,7 @@ export class RotationService implements OnModuleInit {
                 targetAddress,
                 flag,
                 config.profileSettings,
+                attachedToShared ? uuid : undefined,
               )
             : config.type === 'self-sni'
               ? this.inboundBuilder.buildSelfSniClientBundle(
@@ -1675,6 +1825,7 @@ export class RotationService implements OnModuleInit {
                   targetAddress,
                   flag,
                   config.profileSettings,
+                  attachedToShared ? uuid : undefined,
                 )
               : this.inboundBuilder.buildHttpsFallbackClientBundle(
                   saved,
@@ -1686,6 +1837,7 @@ export class RotationService implements OnModuleInit {
                   flag,
                   config.profileSettings,
                   sni || resolvedTls?.serverName,
+                  attachedToShared ? uuid : undefined,
                 );
         if (!bundle) {
           throw new Error(
@@ -1855,6 +2007,7 @@ export class RotationService implements OnModuleInit {
         position,
         subscription,
         node,
+        nodeId: node.id,
         relayServer,
         status: InboundStatus.Staged,
         generationId,
@@ -1960,11 +2113,11 @@ export class RotationService implements OnModuleInit {
           continue;
         }
 
-        // 6. Normal deletion attempt via 3x-ui API
+        // 6. Normal deletion attempt via 3x-ui API (or single-client detach if shared)
         const deleted =
           !inbound.xuiId || inbound.xuiId <= 0
             ? true
-            : await this.xuiService.deleteInbound(inbound.xuiId, node);
+            : await this.removeOrDetachInboundFromPanel(inbound, node);
 
         if (deleted) {
           if (node?.id) {
@@ -2111,7 +2264,7 @@ export class RotationService implements OnModuleInit {
           try {
             const resolvedNode = await this.resolveInboundNode(item);
             if (resolvedNode) {
-              await this.xuiService.deleteInbound(item.xuiId, resolvedNode);
+              await this.removeOrDetachInboundFromPanel(item, resolvedNode);
               nodesToClean.set(resolvedNode.id, resolvedNode);
             }
           } catch {
