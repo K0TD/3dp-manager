@@ -7,7 +7,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository, type FindOptionsWhere } from 'typeorm';
 import * as dns from 'dns/promises';
 import { ConnectionProfile } from './entities/connection-profile.entity';
 import { Node } from '../nodes/entities/node.entity';
@@ -95,23 +95,42 @@ export class ConnectionProfilesService {
     const profiles = await this.profileRepo.find({
       order: { updatedAt: 'DESC', createdAt: 'DESC' },
     });
-    if (profiles.length === 0 || typeof this.inboundRepo.find !== 'function') {
-      return profiles.map((profile) => ({
-        ...profile,
-        deployed: false,
-        activeInbound: null,
-      }));
-    }
+    if (!profiles.length) return [];
 
     const activeInbounds = await this.inboundRepo.find({
       where: { status: InboundStatus.Active },
+      select: {
+        id: true,
+        profileId: true,
+        configId: true,
+        profileKind: true,
+        port: true,
+        remark: true,
+        subscriptionId: true,
+      },
       order: { createdAt: 'DESC' },
     });
     return profiles.map((profile) => {
-      const matched = this.matchActiveInbound(profile, activeInbounds);
+      const matches = activeInbounds.filter(
+        (inbound) =>
+          inbound.profileId === profile.id ||
+          (!inbound.profileId &&
+            profile.configId &&
+            inbound.configId === profile.configId &&
+            inbound.profileKind === profile.kind &&
+            (!profile.subscriptionId ||
+              inbound.subscriptionId === profile.subscriptionId)),
+      );
+      const [matched] = matches;
       return {
         ...profile,
         deployed: Boolean(matched),
+        activePorts: [...new Set(matches.map((inbound) => inbound.port))].sort(
+          (a, b) => a - b,
+        ),
+        activeSubscriptionCount: new Set(
+          matches.map((inbound) => inbound.subscriptionId).filter(Boolean),
+        ).size,
         activeInbound: matched
           ? {
               id: matched.id,
@@ -845,79 +864,27 @@ export class ConnectionProfilesService {
     };
   }
 
-  private matchActiveInbound(
-    profile: ConnectionProfile,
-    activeInbounds: Inbound[],
-  ): Inbound | null {
-    if (profile.configId) {
-      const byConfig = activeInbounds.find(
-        (item) => item.configId === profile.configId,
-      );
-      if (byConfig) return byConfig;
-    }
-    const byProfileId = activeInbounds.find(
-      (item) => item.profileId === profile.id,
-    );
-    if (byProfileId) return byProfileId;
-
-    if (profile.nodeId) {
-      if (profile.port) {
-        const byNodeKindPort = activeInbounds.find(
-          (item) =>
-            item.nodeId === profile.nodeId &&
-            item.profileKind === profile.kind &&
-            item.port === profile.port,
-        );
-        if (byNodeKindPort) return byNodeKindPort;
-      }
-      const byNodeKind = activeInbounds.find(
-        (item) =>
-          item.nodeId === profile.nodeId && item.profileKind === profile.kind,
-      );
-      if (byNodeKind) return byNodeKind;
-    }
-    return null;
-  }
-
   private async findActiveInboundForProfile(
     profile: ConnectionProfile,
   ): Promise<Inbound | null> {
+    const where: FindOptionsWhere<Inbound>[] = [
+      { profileId: profile.id, status: InboundStatus.Active },
+    ];
     if (profile.configId) {
-      const byConfig = await this.inboundRepo.findOne({
-        where: { configId: profile.configId, status: InboundStatus.Active },
-        order: { createdAt: 'DESC' },
+      where.push({
+        profileId: IsNull(),
+        configId: profile.configId,
+        profileKind: profile.kind,
+        status: InboundStatus.Active,
+        ...(profile.subscriptionId
+          ? { subscriptionId: profile.subscriptionId }
+          : {}),
       });
-      if (byConfig) return byConfig;
     }
-    const byProfileId = await this.inboundRepo.findOne({
-      where: { profileId: profile.id, status: InboundStatus.Active },
+    return this.inboundRepo.findOne({
+      where,
       order: { createdAt: 'DESC' },
     });
-    if (byProfileId) return byProfileId;
-
-    if (profile.nodeId) {
-      if (profile.port) {
-        const byNodeKindPort = await this.inboundRepo.findOne({
-          where: {
-            nodeId: profile.nodeId,
-            profileKind: profile.kind,
-            port: profile.port,
-            status: InboundStatus.Active,
-          },
-          order: { createdAt: 'DESC' },
-        });
-        if (byNodeKindPort) return byNodeKindPort;
-      }
-      return this.inboundRepo.findOne({
-        where: {
-          nodeId: profile.nodeId,
-          profileKind: profile.kind,
-          status: InboundStatus.Active,
-        },
-        order: { createdAt: 'DESC' },
-      });
-    }
-    return null;
   }
 
   private resolveExpectedNodeIps(

@@ -36,6 +36,7 @@ describe('ConnectionProfilesService', () => {
   };
 
   const inboundRepo = {
+    find: jest.fn().mockResolvedValue([]),
     findOne: jest.fn(),
   };
 
@@ -73,6 +74,32 @@ describe('ConnectionProfilesService', () => {
       webKeyFile: '/key.pem',
     });
     inboundRepo.findOne.mockResolvedValue(null);
+  });
+
+  it('reports only linked listeners and counts distinct subscriptions', async () => {
+    store.set('profile-a', {
+      id: 'profile-a', kind: 'self-sni', nodeId: 'node-1', port: 24443,
+    } as ConnectionProfile);
+    store.set('profile-b', {
+      id: 'profile-b', kind: 'self-sni', nodeId: 'node-1', port: 24443,
+    } as ConnectionProfile);
+    inboundRepo.find.mockResolvedValueOnce([
+      { id: 10, nodeId: 'node-1', profileKind: 'self-sni', port: 24443, subscriptionId: 'unlinked' },
+      { id: 11, profileId: 'profile-a', port: 26658, subscriptionId: 'sub-a' },
+      { id: 12, profileId: 'profile-a', port: 26659, subscriptionId: 'sub-a' },
+      { id: 13, profileId: 'profile-a', port: 26658, subscriptionId: 'sub-b' },
+    ]);
+
+    expect(await service.findAll()).toMatchObject([
+      {
+        id: 'profile-a', deployed: true, activeSubscriptionCount: 2,
+        activePorts: [26658, 26659], activeInbound: { id: 11 },
+      },
+      {
+        id: 'profile-b', deployed: false, activeSubscriptionCount: 0,
+        activePorts: [], activeInbound: null,
+      },
+    ]);
   });
 
   it('previews random XHTTP Stable with an enabled catalog domain and its settings', async () => {

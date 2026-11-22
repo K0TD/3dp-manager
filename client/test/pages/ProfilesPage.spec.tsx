@@ -50,7 +50,11 @@ describe('ProfilesPage', () => {
       if (url === '/subscriptions') {
         return Promise.resolve({
           data: [
-            { id: 'sub-1', name: 'Main Sub', inboundsConfig: [] },
+            {
+              id: 'sub-1',
+              name: 'Main Sub',
+              inboundsConfig: [{ type: 'self-sni', name: 'SelfSNI Main', nodeId: 'node-1' }],
+            },
             {
               id: 'sub-2',
               name: 'Backup Sub',
@@ -97,7 +101,9 @@ describe('ProfilesPage', () => {
             kind: 'self-sni',
             enabled: true,
             deployed: true,
-            activeInbound: { id: 10, port: 443, remark: 'SelfSNI Main' },
+            activeInbound: { id: 10, port: 26658, remark: 'SelfSNI Main' },
+            activePorts: [26658],
+            activeSubscriptionCount: 1,
             nodeId: 'node-1',
             port: 443,
             sni: 'portal.example.com',
@@ -136,6 +142,21 @@ describe('ProfilesPage', () => {
         ],
       });
     });
+  });
+
+  it('uses a consistent attach button and shows linked subscriptions and listener ports', async () => {
+    render(
+      <ThemeProvider>
+        <ProfilesPage />
+      </ThemeProvider>,
+    );
+
+    const buttons = await screen.findAllByRole('button', { name: /В подписки$/ });
+    expect(buttons).toHaveLength(2);
+    buttons.forEach((button) => expect(button).toHaveClass('MuiButton-contained'));
+    expect(screen.getByText('Подписки · настроено: 1 · развёрнуто: 1')).toBeInTheDocument();
+    expect(screen.getByText(/Порт шаблона: 443/)).toBeInTheDocument();
+    expect(screen.getByText('Порты развёрнутых инбаундов: 26658')).toBeInTheDocument();
   });
 
   it('loads profiles, runs client probe and manual revision rollback', async () => {

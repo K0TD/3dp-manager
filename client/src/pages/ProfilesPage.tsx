@@ -88,6 +88,8 @@ interface ConnectionProfileRecord {
   kind: ManagedProfileKind;
   enabled: boolean;
   nodeId?: string | null;
+  subscriptionId?: string | null;
+  configId?: string | null;
   port?: number | null;
   sni?: string | null;
   rotationPolicy: ProfileRotationPolicy;
@@ -99,6 +101,8 @@ interface ConnectionProfileRecord {
   previousSnapshot?: ConnectionProfileSnapshot | null;
   updatedAt?: string;
   deployed?: boolean;
+  activePorts?: number[];
+  activeSubscriptionCount?: number;
   activeInbound?: {
     id: number;
     port: number;
@@ -602,11 +606,12 @@ export default function ProfilesPage() {
   ): boolean => {
     const configs = Array.isArray(sub.inboundsConfig) ? sub.inboundsConfig : [];
     return configs.some((cfg) => {
-      if (cfg.profileId && String(cfg.profileId) === profile.id) return true;
+      if (cfg.profileId) return cfg.profileId === profile.id;
       return (
-        String(cfg.type || '') === profile.kind &&
-        String(cfg.name || '').trim() === profile.name.trim() &&
-        String(cfg.nodeId || '') === String(profile.nodeId || '')
+        Boolean(profile.configId) &&
+        cfg.configId === profile.configId &&
+        cfg.type === profile.kind &&
+        (!profile.subscriptionId || sub.id === profile.subscriptionId)
       );
     });
   };
@@ -1012,7 +1017,7 @@ export default function ProfilesPage() {
                     )
                   }
                 >
-                  Выбрать черновики
+                  Выбрать неразвёрнутые
                 </Button>
               )}
             </Stack>
@@ -1038,11 +1043,18 @@ export default function ProfilesPage() {
             const isBusy = busyId === profile.id;
             const latestProbe = probeResults[profile.id];
             const isSelected = selectedProfileIds.includes(profile.id);
-            const usedInSubsCount = countProfileSubscriptions(profile);
+            const configuredCount = countProfileSubscriptions(profile);
+            const activeCount = profile.activeSubscriptionCount ?? 0;
+            const activePorts = profile.activePorts ??
+              (profile.activeInbound ? [profile.activeInbound.port] : []);
             const webServerEngine = getWebServerEngine(
               profile.kind,
               profile.spec,
             );
+            const templatePort = profile.port ??
+              (profile.kind === 'https-fallback' && webServerEngine ? 20443 : undefined);
+            const portDiffers = templatePort !== undefined &&
+              activePorts.some((port) => port !== templatePort);
             const webServerChipLabel =
               webServerEngine && profile.kind === 'self-sni'
                 ? `${webServerEngine === 'caddy' ? 'Caddy' : 'Nginx'} · 127.0.0.1:${profile.spec?.localHttpsPort ?? 8443}`
@@ -1102,16 +1114,17 @@ export default function ProfilesPage() {
                           color={profile.deployed ? 'success' : 'default'}
                           label={
                             profile.deployed
-                              ? `Развёрнут · порт ${profile.activeInbound?.port ?? profile.port ?? '?'}`
-                              : 'Черновик (не в подписке)'
+                              ? 'Развёрнут'
+                              : configuredCount > 0
+                                ? 'Ожидает развёртывания'
+                                : 'Черновик'
                           }
                         />
-                        {usedInSubsCount > 0 && (
+                        {(configuredCount > 0 || activeCount > 0) && (
                           <Chip
                             size="small"
-                            color="info"
                             variant="outlined"
-                            label={`Подписок: ${usedInSubsCount}`}
+                            label={`Подписки · настроено: ${configuredCount} · развёрнуто: ${activeCount}`}
                           />
                         )}
                         {webServerChipLabel && (
@@ -1124,18 +1137,28 @@ export default function ProfilesPage() {
                         )}
                       </Stack>
                       <Typography variant="body2" color="text.secondary">
-                        Нода: {nodeNameById(profile.nodeId)} · Порт:{' '}
-                        {profile.port ?? 'random'} · Домен/SNI:{' '}
+                        Нода: {nodeNameById(profile.nodeId)} · Порт шаблона:{' '}
+                        {templatePort ?? 'random'} · Домен/SNI:{' '}
                         {profile.spec?.domain || profile.sni || 'random'} ·
                         Ротация: {profile.rotationPolicy}
                       </Typography>
+                      {activePorts.length > 0 && (
+                        <Typography variant="body2" color="text.secondary">
+                          Порты развёрнутых инбаундов: {activePorts.join(', ')}
+                        </Typography>
+                      )}
+                      {portDiffers && (
+                        <Typography variant="body2" color="text.secondary">
+                          Подписки хранят порт отдельно. Проверьте порт инбаунда в настройках подписки.
+                        </Typography>
+                      )}
                     </Stack>
                   </Stack>
 
                   <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                     <Button
                       size="small"
-                      variant={profile.deployed ? 'outlined' : 'contained'}
+                      variant="contained"
                       startIcon={<PlaylistAdd />}
                       disabled={isBusy || subscriptions.length === 0 || profile.lastCheckStatus === 'failed'}
                       onClick={() => openAttachDialog([profile])}
