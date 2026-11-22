@@ -38,6 +38,9 @@ export class Subscription {
   @Column({ default: true })
   isAutoRotationEnabled: boolean;
 
+  @Column({ type: 'integer', nullable: true, select: false, update: false })
+  displayOrder?: number;
+
   @Column({ type: 'simple-json', nullable: true })
   inboundsConfig: Array<{
     configId?: string;

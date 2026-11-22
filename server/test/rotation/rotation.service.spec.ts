@@ -835,6 +835,24 @@ describe('RotationService resilient generations', () => {
     expect(resolvedSni).toBe('vk.com');
   });
 
+  it('rotates explicit subscriptions in the requested order even with automatic rotation disabled', async () => {
+    const first = { id: 'first', name: 'First', isEnabled: true, isAutoRotationEnabled: false };
+    const second = { id: 'second', name: 'Second', isEnabled: true };
+    subRepo.find.mockResolvedValueOnce([first, second]);
+    subRepo.findOne.mockResolvedValueOnce(second).mockResolvedValueOnce(first);
+    domainRepo.find.mockResolvedValueOnce([]);
+    jest.spyOn(service as any, 'getDefaultNode').mockResolvedValue(null);
+    const rotate = jest.spyOn(service as any, 'rotateSubscription').mockImplementation(async (sub: any) => [
+      { subscriptionId: sub.id, status: 'succeeded', created: 1 },
+    ]);
+
+    const result = await service.performRotation(['second', 'FIRST']);
+
+    expect(rotate.mock.calls.map(([sub]: any) => sub.id)).toEqual(['second', 'first']);
+    expect(result.success).toBe(true);
+    expect(result.results.map(item => item.subscriptionId)).toEqual(['second', 'first']);
+  });
+
   it('returns an operation id immediately when rotation is queued', async () => {
     const operation = await service.enqueueRotation(['sub-1', 'sub-1']);
     expect(operation).toMatchObject({

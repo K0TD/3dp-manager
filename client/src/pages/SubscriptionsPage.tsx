@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -33,6 +33,8 @@ import {
 } from '@mui/material';
 import {
   Add,
+  ArrowDownward,
+  ArrowUpward,
   ContentCopy,
   Delete,
   Edit,
@@ -99,6 +101,7 @@ interface Subscription {
   }>;
   inboundsConfig?: InboundConfigUI[];
   isAutoRotationEnabled?: boolean;
+  isEnabled?: boolean;
 }
 
 interface Tunnel {
@@ -142,6 +145,9 @@ const getSubscriptionUrl = (uuid: string) => {
 
 export default function SubscriptionsPage() {
   const [subs, setSubs] = useState<Subscription[]>([]);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [savingOrder, setSavingOrder] = useState(false);
+  const listRevision = useRef(0);
   const [tunnels, setTunnels] = useState<Tunnel[]>([]);
   const [nodes, setNodes] = useState<NodeRecord[]>([]);
   const [domains, setDomains] = useState<Domain[]>([]);
@@ -204,6 +210,7 @@ export default function SubscriptionsPage() {
   const openActionMenu = Boolean(menuAnchorEl);
 
   const loadSubs = useCallback(async () => {
+    const revision = ++listRevision.current;
     try {
       const [
         subsRes,
@@ -225,7 +232,16 @@ export default function SubscriptionsPage() {
           .catch(() => ({ data: [] as SavedProfileOption[] })),
       ]);
 
-      setSubs(Array.isArray(subsRes.data) ? subsRes.data : []);
+      if (revision === listRevision.current) {
+        const loadedSubs: Subscription[] = Array.isArray(subsRes.data)
+          ? subsRes.data
+          : [];
+        setSubs(loadedSubs);
+        const selectable = new Set(
+          loadedSubs.filter((sub) => sub.isEnabled !== false).map((sub) => sub.id),
+        );
+        setSelectedIds((ids) => ids.filter((id) => selectable.has(id)));
+      }
       setTunnels(
         Array.isArray(tunnelsRes.data)
           ? tunnelsRes.data.filter((tunnel: Tunnel) => tunnel.isInstalled)
@@ -850,6 +866,67 @@ export default function SubscriptionsPage() {
     }
   };
 
+  const selectableIds = subs.filter((sub) => sub.isEnabled !== false).map((sub) => sub.id);
+  const selected = new Set(selectedIds);
+  const selectedSubscriptionIds = selectableIds.filter((id) => selected.has(id));
+  const allSelected = selectableIds.length > 0 &&
+    selectedSubscriptionIds.length === selectableIds.length;
+  const someSelected = selectedSubscriptionIds.length > 0 && !allSelected;
+
+  const moveSubscription = async (position: number, direction: 'up' | 'down') => {
+    const subscription = subs[position];
+    const neighbor = subs[position + (direction === 'up' ? -1 : 1)];
+    if (savingOrder || dataLoading || !subscription || !neighbor) return;
+
+    setSavingOrder(true);
+    try {
+      const { data } = await api.put<{ subscriptionIds: string[] }>(
+        '/subscriptions/order',
+        { subscriptionId: subscription.id, neighborId: neighbor.id, direction },
+      );
+      listRevision.current += 1;
+      const positions = new Map(data.subscriptionIds.map((id, index) => [id, index]));
+      setSubs((current) => [...current].sort(
+        (left, right) => (positions.get(left.id) ?? -1) - (positions.get(right.id) ?? -1),
+      ));
+    } catch (error) {
+      const conflict = (error as { response?: { status?: number } }).response?.status === 409;
+      if (conflict) await loadSubs();
+      setSnackbar({
+        open: true,
+        type: 'error',
+        message: conflict ? 'Порядок подписок изменился. Повторите перемещение.' : 'Не удалось сохранить порядок подписок',
+      });
+    } finally {
+      setSavingOrder(false);
+    }
+  };
+
+  const rotateSelected = async () => {
+    if (rotationLoading || !selectedSubscriptionIds.length) return;
+
+    setRotationLoading(true);
+    try {
+      const { data } = await api.post('/rotation/operations', {
+        subscriptionIds: selectedSubscriptionIds,
+      });
+      setSelectedIds([]);
+      setSnackbar({
+        open: true,
+        type: 'success',
+        message: `Ротация выбранных подписок поставлена в очередь · ${String(data?.id || '').slice(0, 8)}`,
+      });
+    } catch {
+      setSnackbar({
+        open: true,
+        type: 'error',
+        message: 'Не удалось запустить ротацию выбранных подписок',
+      });
+    } finally {
+      setRotationLoading(false);
+    }
+  };
+
   const handleManualRotate = (sub: Subscription) => {
     setConfirmDialog({
       open: true,
@@ -1138,9 +1215,33 @@ export default function SubscriptionsPage() {
         className="workspace-panel workspace-table"
         sx={{ overflowX: 'auto' }}
       >
+        {subs.length > 0 && (
+          <Stack direction="row" justifyContent="flex-end" sx={{ p: 1 }}>
+            <Button
+              variant="outlined"
+              disabled={rotationLoading || !selectedSubscriptionIds.length}
+              onClick={() => void rotateSelected()}
+            >
+              Ротация выбранных{selectedSubscriptionIds.length ? ` (${selectedSubscriptionIds.length})` : ''}
+            </Button>
+          </Stack>
+        )}
         <Table sx={{ minWidth: 760 }}>
           <TableHead>
             <TableRow>
+              <TableCell padding="checkbox">
+                <Checkbox
+                  checked={allSelected}
+                  indeterminate={someSelected}
+                  disabled={rotationLoading || !selectableIds.length}
+                  inputProps={{
+                    'aria-label': 'Выбрать все активные подписки',
+                    'aria-checked': someSelected ? 'mixed' : undefined,
+                  }}
+                  onChange={(event) => setSelectedIds(event.target.checked ? selectableIds : [])}
+                />
+              </TableCell>
+              <TableCell>Порядок</TableCell>
               <TableCell>Имя</TableCell>
               <TableCell>UUID</TableCell>
               <TableCell>Инбаунды</TableCell>
@@ -1149,8 +1250,41 @@ export default function SubscriptionsPage() {
             </TableRow>
           </TableHead>
           <TableBody>
-            {subs.map((sub) => (
-              <TableRow key={sub.id}>
+            {subs.map((sub, position) => (
+              <TableRow key={sub.id} selected={selected.has(sub.id)}>
+                <TableCell padding="checkbox">
+                  <Checkbox
+                    inputProps={{ 'aria-label': `Выбрать подписку ${sub.name}` }}
+                    checked={selected.has(sub.id)}
+                    disabled={rotationLoading || sub.isEnabled === false}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setSelectedIds((current) => checked
+                        ? [...current, sub.id]
+                        : current.filter((id) => id !== sub.id));
+                    }}
+                  />
+                </TableCell>
+                <TableCell>
+                  <Stack direction="row">
+                    <IconButton
+                      size="small"
+                      aria-label={`Поднять подписку ${sub.name}`}
+                      disabled={savingOrder || dataLoading || position === 0}
+                      onClick={() => void moveSubscription(position, 'up')}
+                    >
+                      <ArrowUpward fontSize="small" />
+                    </IconButton>
+                    <IconButton
+                      size="small"
+                      aria-label={`Опустить подписку ${sub.name}`}
+                      disabled={savingOrder || dataLoading || position === subs.length - 1}
+                      onClick={() => void moveSubscription(position, 'down')}
+                    >
+                      <ArrowDownward fontSize="small" />
+                    </IconButton>
+                  </Stack>
+                </TableCell>
                 <TableCell sx={{ fontWeight: 700 }}>{sub.name}</TableCell>
                 <TableCell>
                   <Typography

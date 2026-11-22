@@ -86,6 +86,21 @@ describe('RotationController', () => {
     });
   });
 
+  describe('enqueue', () => {
+    it('queues exactly the selected subscriptions', async () => {
+      const ids = ['9250909a-7658-44ea-a696-d73865c0dc79', 'c71f79c6-2bfa-445e-8763-d064bbf566d6'];
+      mockRotationService.enqueueRotation.mockResolvedValue({ id: 'operation' });
+
+      await expect(controller.enqueue({ subscriptionIds: ids })).resolves.toEqual({ id: 'operation' });
+      expect(rotationService.enqueueRotation).toHaveBeenCalledWith(ids);
+    });
+
+    it('rejects an empty selection before it can turn into a full rotation', () => {
+      expect(() => controller.enqueue({ subscriptionIds: [] })).toThrow('Выберите хотя бы одну подписку');
+      expect(rotationService.enqueueRotation).not.toHaveBeenCalled();
+    });
+  });
+
   describe('deleteCleanup', () => {
     it('должен удалить инбаунд из очереди очистки', async () => {
       mockRotationService.deleteCleanup.mockResolvedValue({ success: true });

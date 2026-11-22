@@ -74,6 +74,50 @@ describe('SubscriptionsPage', () => {
     vi.clearAllMocks()
   })
 
+  it('queues only the selected subscriptions, including one with automatic rotation off', async () => {
+    setupMockGet({ subscriptions: [
+      { id: 'a', name: 'Alpha', uuid: 'alpha', inbounds: [], isAutoRotationEnabled: false },
+      { id: 'b', name: 'Beta', uuid: 'beta', inbounds: [] },
+      { id: 'c', name: 'Gamma', uuid: 'gamma', inbounds: [] },
+      { id: 'd', name: 'Delta', uuid: 'delta', inbounds: [], isEnabled: false },
+    ] })
+    mockPost.mockResolvedValue({ data: { id: 'operation-selected' } })
+    renderSubscriptionsPage()
+
+    expect(await screen.findByRole('button', { name: 'Ротация выбранных' })).toBeDisabled()
+    expect(screen.getByRole('checkbox', { name: 'Выбрать подписку Delta' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Выбрать все активные подписки' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Выбрать подписку Beta' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Ротация выбранных (2)' }))
+
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledTimes(1)
+      expect(mockPost).toHaveBeenCalledWith('/rotation/operations', { subscriptionIds: ['a', 'c'] })
+      expect(screen.getByRole('button', { name: 'Ротация выбранных' })).toBeDisabled()
+    })
+  })
+
+  it('saves the new subscription order and keeps selection attached to the subscription', async () => {
+    setupMockGet({ subscriptions: [
+      { id: 'a', name: 'Alpha', uuid: 'alpha', inbounds: [] },
+      { id: 'b', name: 'Beta', uuid: 'beta', inbounds: [] },
+    ] })
+    mockPut.mockResolvedValue({ data: { subscriptionIds: ['b', 'a'] } })
+    renderSubscriptionsPage()
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Выбрать подписку Beta' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Поднять подписку Beta' }))
+
+    await waitFor(() => {
+      expect(mockPut).toHaveBeenCalledWith('/subscriptions/order', {
+        subscriptionId: 'b', neighborId: 'a', direction: 'up',
+      })
+      expect(screen.getByRole('button', { name: 'Поднять подписку Beta' })).toBeDisabled()
+    })
+    expect(screen.getByRole('checkbox', { name: 'Выбрать подписку Beta' })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: 'Выбрать подписку Alpha' })).not.toBeChecked()
+  })
+
   it('reopens an empty subscription without adding a default inbound', async () => {
     setupMockGet({ subscriptions: [{ id: 'empty', name: 'Empty', uuid: 'empty', inbounds: [], inboundsConfig: [] }] })
     renderSubscriptionsPage()
@@ -216,7 +260,7 @@ describe('SubscriptionsPage', () => {
       renderSubscriptionsPage()
 
       await waitFor(() => {
-        const checkbox = screen.getByRole('checkbox')
+        const checkbox = screen.getByRole('checkbox', { name: 'Авторотация Test Sub' })
         expect(checkbox).toBeChecked()
       })
     })
@@ -1028,7 +1072,7 @@ describe('SubscriptionsPage', () => {
 
       renderSubscriptionsPage()
 
-      const checkbox = await screen.findByRole('checkbox')
+      const checkbox = await screen.findByRole('checkbox', { name: 'Авторотация Test Sub' })
       fireEvent.click(checkbox)
 
       await waitFor(() => {
@@ -1048,7 +1092,7 @@ describe('SubscriptionsPage', () => {
 
       renderSubscriptionsPage()
 
-      const checkbox = await screen.findByRole('checkbox')
+      const checkbox = await screen.findByRole('checkbox', { name: 'Авторотация Test Sub' })
       fireEvent.click(checkbox)
 
       await waitFor(() => {
@@ -1065,7 +1109,7 @@ describe('SubscriptionsPage', () => {
 
       renderSubscriptionsPage()
 
-      const checkbox = await screen.findByRole('checkbox')
+      const checkbox = await screen.findByRole('checkbox', { name: 'Авторотация Test Sub' })
       fireEvent.click(checkbox)
 
       await waitFor(() => {
@@ -1082,7 +1126,7 @@ describe('SubscriptionsPage', () => {
 
       renderSubscriptionsPage()
 
-      const checkbox = await screen.findByRole('checkbox')
+      const checkbox = await screen.findByRole('checkbox', { name: 'Авторотация Test Sub' })
       fireEvent.click(checkbox)
 
       await waitFor(() => {

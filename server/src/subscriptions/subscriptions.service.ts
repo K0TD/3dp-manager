@@ -1,10 +1,16 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, In, Not, Repository } from 'typeorm';
+import { EntityManager, FindOptionsOrder, In, Not, Repository } from 'typeorm';
 import { Subscription } from './entities/subscription.entity';
 import { XuiService } from '../xui/xui.service';
 import { CreateSubscriptionDto } from './dto/create-subscription.dto';
 import { UpdateSubscriptionDto } from './dto/update-subscription.dto';
+import { MoveSubscriptionDto } from './dto/move-subscription.dto';
 import { v4 as uuidv4 } from 'uuid';
 import { Node } from '../nodes/entities/node.entity';
 import { Tunnel } from '../tunnels/entities/tunnel.entity';
@@ -51,6 +57,12 @@ type InboundConfig = NonNullable<
 const TLS_SERVER_NAME_PATTERN =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
 
+const subscriptionOrder: FindOptionsOrder<Subscription> = {
+  displayOrder: { direction: 'ASC', nulls: 'FIRST' },
+  createdAt: 'DESC',
+  id: 'DESC',
+};
+
 @Injectable()
 export class SubscriptionsService {
   private readonly logger = new Logger(SubscriptionsService.name);
@@ -71,7 +83,7 @@ export class SubscriptionsService {
   async findAll() {
     const subscriptions = await this.subRepo.find({
       relations: ['inbounds', 'node', 'relayServer'],
-      order: { createdAt: 'DESC' },
+      order: subscriptionOrder,
     });
     for (const subscription of subscriptions) {
       subscription.inbounds = sortInboundsByPosition(
@@ -89,6 +101,40 @@ export class SubscriptionsService {
       }
     }
     return subscriptions;
+  }
+
+  async move({ subscriptionId, neighborId, direction }: MoveSubscriptionDto) {
+    return this.subRepo.manager.transaction(async (manager) => {
+      // Keep the checked neighbor and the positions stable during a concurrent edit.
+      await manager.query(
+        'LOCK TABLE "subscription" IN SHARE ROW EXCLUSIVE MODE',
+      );
+      const subscriptions = await manager.find(Subscription, {
+        select: ['id'],
+        order: subscriptionOrder,
+      });
+      const ids = subscriptions.map((subscription) => subscription.id);
+      const position = ids.indexOf(subscriptionId.toLowerCase());
+      const neighborPosition = position + (direction === 'up' ? -1 : 1);
+      if (position < 0 || ids[neighborPosition] !== neighborId.toLowerCase()) {
+        throw new ConflictException(
+          'Порядок подписок изменился. Повторите перемещение.',
+        );
+      }
+
+      [ids[position], ids[neighborPosition]] = [
+        ids[neighborPosition],
+        ids[position],
+      ];
+      await manager.query(
+        `UPDATE "subscription" AS sub
+         SET "displayOrder" = ordered.position
+         FROM unnest($1::uuid[]) WITH ORDINALITY AS ordered(id, position)
+         WHERE sub.id = ordered.id AND sub."displayOrder" IS DISTINCT FROM ordered.position`,
+        [ids],
+      );
+      return { subscriptionIds: ids };
+    });
   }
 
   async count() {

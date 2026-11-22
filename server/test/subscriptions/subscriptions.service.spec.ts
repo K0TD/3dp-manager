@@ -23,6 +23,8 @@ describe('SubscriptionsService', () => {
   const mockEntityManager = {
     save: jest.fn(async (_entity, subscription) => subscription),
     update: jest.fn(),
+    query: jest.fn(),
+    find: jest.fn(),
   };
 
   const mockSubRepo = {
@@ -360,7 +362,11 @@ describe('SubscriptionsService', () => {
       expect(result).toEqual(mockSubs);
       expect(subRepo.find).toHaveBeenCalledWith({
         relations: ['inbounds', 'node', 'relayServer'],
-        order: { createdAt: 'DESC' },
+        order: {
+          displayOrder: { direction: 'ASC', nulls: 'FIRST' },
+          createdAt: 'DESC',
+          id: 'DESC',
+        },
       });
     });
 
@@ -379,6 +385,27 @@ describe('SubscriptionsService', () => {
       const result = await service.findAll();
 
       expect(result).toEqual([]);
+    });
+  });
+
+  describe('move', () => {
+    it('writes a single ordered list with the selected subscription and its neighbor swapped', async () => {
+      mockEntityManager.find.mockResolvedValue([{ id: 'first' }, { id: 'second' }, { id: 'third' }]);
+
+      await expect(service.move({ subscriptionId: 'third', neighborId: 'second', direction: 'up' }))
+        .resolves.toEqual({ subscriptionIds: ['first', 'third', 'second'] });
+      expect(mockEntityManager.query).toHaveBeenNthCalledWith(1, expect.stringContaining('LOCK TABLE'));
+      expect(mockEntityManager.query).toHaveBeenNthCalledWith(
+        2, expect.stringContaining('UPDATE "subscription"'), [['first', 'third', 'second']],
+      );
+    });
+
+    it('rejects a stale neighbor without updating the order', async () => {
+      mockEntityManager.find.mockResolvedValue([{ id: 'first' }, { id: 'second' }, { id: 'third' }]);
+
+      await expect(service.move({ subscriptionId: 'third', neighborId: 'first', direction: 'up' }))
+        .rejects.toMatchObject({ status: 409 });
+      expect(mockEntityManager.query).toHaveBeenCalledTimes(1);
     });
   });
 

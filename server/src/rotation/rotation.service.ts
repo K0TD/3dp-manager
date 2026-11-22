@@ -433,7 +433,15 @@ export class RotationService implements OnModuleInit {
     }
 
     const results: RotationNodeResult[] = [];
-    for (const subscription of subscriptions) {
+    const subscriptionsById = new Map(
+      subscriptions.map((sub) => [sub.id, sub]),
+    );
+    const orderedSubscriptions = subscriptionIds?.length
+      ? [...new Set(subscriptionIds.map((id) => id.toLowerCase()))]
+          .map((id) => subscriptionsById.get(id))
+          .filter((sub) => sub !== undefined)
+      : subscriptions;
+    for (const subscription of orderedSubscriptions) {
       const subscriptionResults = await this.subscriptionLock.run(
         subscription.id,
         async () => {

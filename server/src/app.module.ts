@@ -50,6 +50,8 @@ import { AddAutomation1850000000000 } from './migrations/1850000000000-add-autom
 
 import { ReconcileSniDomains1860000000000 } from './migrations/1860000000000-reconcile-sni-domains';
 
+import { AddSubscriptionDisplayOrder1870000000000 } from './migrations/1870000000000-add-subscription-display-order';
+
 const dbPoolLogger = new Logger('DatabasePool');
 
 @Module({
@@ -95,6 +97,7 @@ const dbPoolLogger = new Logger('DatabasePool');
         AddConnectionProfiles1840000000000,
         AddAutomation1850000000000,
         ReconcileSniDomains1860000000000,
+        AddSubscriptionDisplayOrder1870000000000,
       ],
       synchronize: process.env.DB_SYNCHRONIZE === 'true',
       migrationsRun: process.env.DB_MIGRATIONS_RUN !== 'false',

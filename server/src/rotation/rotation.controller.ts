@@ -37,10 +37,21 @@ export class RotationController {
   @Post('operations')
   @HttpCode(HttpStatus.ACCEPTED)
   enqueue(@Body() body: { subscriptionIds?: string[] }) {
+    const ids = body?.subscriptionIds;
+    if (
+      ids !== undefined &&
+      (!Array.isArray(ids) ||
+        !ids.length ||
+        ids.some((id) => typeof id !== 'string' || !isUUID(id)))
+    ) {
+      throw new BadRequestException(
+        'Выберите хотя бы одну подписку с корректным ID',
+      );
+    }
     this.logger.log(
-      `Received request to enqueue rotation operations for: ${body.subscriptionIds?.join(', ') || 'all'}`,
+      `Received request to enqueue rotation operations for: ${ids?.join(', ') || 'all'}`,
     );
-    return this.rotationService.enqueueRotation(body.subscriptionIds);
+    return this.rotationService.enqueueRotation(ids);
   }
 
   @Get('operations')

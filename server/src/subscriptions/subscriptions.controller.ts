@@ -14,6 +14,7 @@ import {
 import { SubscriptionsService } from './subscriptions.service';
 import { CreateSubscriptionDto } from './dto/create-subscription.dto';
 import { UpdateSubscriptionDto } from './dto/update-subscription.dto';
+import { MoveSubscriptionDto } from './dto/move-subscription.dto';
 
 @Controller('subscriptions')
 export class SubscriptionsController {
@@ -76,6 +77,11 @@ export class SubscriptionsController {
       updatedCount: updated.length,
       notFound: notFound.length > 0 ? notFound : undefined,
     };
+  }
+
+  @Put('order')
+  move(@Body() body: MoveSubscriptionDto) {
+    return this.subscriptionsService.move(body);
   }
 
   @Put(':id')
