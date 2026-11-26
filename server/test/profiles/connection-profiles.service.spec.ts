@@ -8,6 +8,9 @@ import { Inbound } from 'src/inbounds/entities/inbound.entity';
 import { XuiService } from 'src/xui/xui.service';
 import { TlsSiteProbeService } from 'src/profiles/tls-site-probe.service';
 import { buildXhttpStableClientProfile } from 'src/profiles/profile-config.builder';
+import type { ManagedProfileKind } from 'src/profiles/connection-profile.types';
+
+const franceFlag = '%F0%9F%87%AB%F0%9F%87%B7';
 
 describe('ConnectionProfilesService', () => {
   const store = new Map<string, ConnectionProfile>();
@@ -68,12 +71,52 @@ describe('ConnectionProfilesService', () => {
       id: 'node-1',
       name: 'EU-1',
       domain: 'eu1.example.com',
+      flag: '🇩🇪',
       version: '3.8.5',
       xrayVersion: '26.7.11',
       webCertificateFile: '/cert.pem',
       webKeyFile: '/key.pem',
     });
     inboundRepo.findOne.mockResolvedValue(null);
+  });
+
+  it.each<ManagedProfileKind>(['xhttp-stable', 'self-sni', 'https-fallback'])(
+    'labels the %s preview and draft export with the chosen or inherited flag',
+    async (kind) => {
+      const profile = await service.create({
+        kind,
+        name: 'Европа',
+        flag: franceFlag,
+        nodeId: 'node-1',
+        sni: 'portal.example.com',
+      });
+      const exported = await service.exportProfile(profile.id);
+      expect(exported.source).toBe('preview');
+      expect(decodeURIComponent(new URL(exported.exportBundle.vlessLink).hash)).toBe('#🇫🇷 Европа');
+
+      const preview = await service.preview({
+        kind,
+        name: 'Европа',
+        nodeId: 'node-1',
+        sni: 'portal.example.com',
+      });
+      expect(decodeURIComponent(new URL(preview.clientPreview.vlessLink).hash)).toBe('#🇩🇪 Европа');
+    },
+  );
+
+  it('retains a flag on partial updates and restores it on rollback after clearing it', async () => {
+    const { id } = await service.create({
+      name: 'Main XHTTP',
+      kind: 'xhttp-stable',
+      sni: 'www.microsoft.com',
+      flag: franceFlag,
+    });
+    expect(await service.update(id, { name: 'Updated' })).toMatchObject({ flag: franceFlag });
+    expect(await service.update(id, { flag: null })).toMatchObject({
+      flag: null,
+      previousSnapshot: { flag: franceFlag },
+    });
+    expect(await service.rollback(id)).toMatchObject({ flag: franceFlag });
   });
 
   it('reports only linked listeners and counts distinct subscriptions', async () => {

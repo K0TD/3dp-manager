@@ -67,7 +67,7 @@ import {
   validateSelfSniSettings,
   validateXhttpStableSettings,
 } from '../utils/inboundUtils';
-import { FlagOptionLabel } from '../utils/flags';
+import { CountryFlagSelect } from './CountryFlagSelect';
 import { ProfilePreviewDialog } from './ProfilePreviewDialog';
 
 export interface InboundsEditorProps {
@@ -77,6 +77,8 @@ export interface InboundsEditorProps {
   tunnels: Tunnel[];
   domains: Domain[];
   countries: CountryOption[];
+  getLinkedProfile?: (inbound: InboundConfigUI) => { flag?: string | null } | undefined;
+  subscriptionNodeId?: string;
   portErrors?: Record<string, string>;
   onPortErrorsChange?: (errors: Record<string, string>) => void;
   onResetDefaults?: () => void;
@@ -94,6 +96,8 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
   tunnels,
   domains,
   countries,
+  getLinkedProfile,
+  subscriptionNodeId,
   portErrors = {},
   onPortErrorsChange,
   onResetDefaults,
@@ -203,7 +207,7 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
         const prevNode = getSelectedNode(inbound.nodeId, nodes);
         const nextNode = getSelectedNode(value, nodes);
         next.relayServerId = '';
-        next.flag = getNodeFlag(value, nodes);
+        if (!MANAGED_PROFILE_TYPES.has(next.type)) next.flag = getNodeFlag(value, nodes);
         if (CERTIFICATE_TYPES.has(next.type)) {
           next.certificateMode = 'node';
           next.certificateFile = '';
@@ -377,7 +381,9 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
         const defaultNode =
           nodes.find((n) => n.isMain)?.id || nodes[0]?.id || '';
         next.nodeId = defaultNode;
-        next.flag = getNodeFlag(next.nodeId, nodes);
+        if (!MANAGED_PROFILE_TYPES.has(next.type)) {
+          next.flag = getNodeFlag(next.nodeId, nodes);
+        }
       }
 
       if (field === 'certificateMode') {
@@ -474,6 +480,9 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
 
       <Box sx={{ display: 'grid', gap: 2 }}>
         {inbounds.map((inbound, index) => {
+          const managed = MANAGED_PROFILE_TYPES.has(inbound.type);
+          const linkedProfile = managed ? getLinkedProfile?.(inbound) : undefined;
+          const nodeFlag = getNodeFlag(inbound.nodeId || subscriptionNodeId, nodes);
           const expanded = !compact || expandedId === inbound.id || Boolean(portErrors[inbound.id]);
           return (
           <Box
@@ -707,49 +716,15 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                   </Select>
                 </FormControl>
 
-                <FormControl size="small" sx={{ width: '100%', minWidth: 0 }}>
-                  <InputLabel>Флаг</InputLabel>
-                  <Select
-                    value={inbound.flag || getNodeFlag(inbound.nodeId, nodes)}
-                    label="Флаг"
-                    onChange={(e) =>
-                      handleInboundChange(inbound.id, 'flag', e.target.value)
-                    }
-                    renderValue={(value) => (
-                      <FlagOptionLabel
-                        flag={value}
-                        label={
-                          countries.find((country) => country.emoji === value)
-                            ?.name || 'Флаг'
-                        }
-                      />
-                    )}
-                  >
-                    <MenuItem value="">Без флага</MenuItem>
-                    {inbound.flag &&
-                      !countries.some((c) => c.emoji === inbound.flag) && (
-                        <MenuItem
-                          key={inbound.flag}
-                          value={inbound.flag}
-                          sx={{ display: 'none' }}
-                        >
-                          <FlagOptionLabel
-                            flag={inbound.flag}
-                            label={inbound.flag}
-                          />
-                        </MenuItem>
-                      )}
-                    {countries.map((country) => (
-                      <MenuItem key={country.code} value={country.emoji}>
-                        <FlagOptionLabel
-                          flag={country.emoji}
-                          code={country.code}
-                          label={country.name}
-                        />
-                      </MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
+                <CountryFlagSelect
+                  countries={countries}
+                  value={inbound.flag || (managed ? '' : nodeFlag)}
+                  onChange={(flag) => handleInboundChange(inbound.id, 'flag', flag)}
+                  inheritLabel={managed
+                    ? (inbound.profileId || linkedProfile ? 'Из профиля' : 'Как у ноды')
+                    : 'Без флага'}
+                  inheritedFlag={managed ? linkedProfile?.flag || nodeFlag : undefined}
+                />
 
                 <TextField
                   size="small"
@@ -1675,7 +1650,8 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
           onClose={() => setPreviewTarget(null)}
           kind={previewTarget.type as ManagedProfileKind}
           name={previewTarget.name}
-          nodeId={previewTarget.nodeId}
+          flag={previewTarget.flag || getLinkedProfile?.(previewTarget)?.flag || undefined}
+          nodeId={previewTarget.nodeId || subscriptionNodeId}
           port={previewTarget.port}
           sni={previewTarget.sni}
           settings={previewTarget.profileSettings}

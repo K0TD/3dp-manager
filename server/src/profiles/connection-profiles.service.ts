@@ -12,6 +12,8 @@ import * as dns from 'dns/promises';
 import { ConnectionProfile } from './entities/connection-profile.entity';
 import { Node } from '../nodes/entities/node.entity';
 import { Inbound, InboundStatus } from '../inbounds/entities/inbound.entity';
+import { Setting } from '../settings/entities/setting.entity';
+import { DEFAULT_COUNTRY_FLAG } from '../settings/countries';
 import { XuiService } from '../xui/xui.service';
 import {
   CreateConnectionProfileDto,
@@ -77,6 +79,9 @@ export class ConnectionProfilesService {
     @Optional()
     @InjectRepository(Domain)
     private readonly domainRepo?: Repository<Domain>,
+    @Optional()
+    @InjectRepository(Setting)
+    private readonly settingRepo?: Repository<Setting>,
   ) {}
 
   private get probe(): TlsSiteProbeService {
@@ -175,6 +180,7 @@ export class ConnectionProfilesService {
 
     const profile = this.profileRepo.create({
       name: dto.name.trim(),
+      flag: dto.flag ?? null,
       kind: dto.kind,
       enabled: dto.enabled !== false,
       subscriptionId: dto.subscriptionId ?? null,
@@ -228,6 +234,7 @@ export class ConnectionProfilesService {
       revision: profile.activeRevision,
       savedAt: new Date().toISOString(),
       name: profile.name,
+      flag: profile.flag ?? null,
       kind: profile.kind,
       port: profile.port,
       sni: profile.sni,
@@ -238,6 +245,7 @@ export class ConnectionProfilesService {
     if (dto.name !== undefined && dto.name.trim()) {
       profile.name = dto.name.trim();
     }
+    if (dto.flag !== undefined) profile.flag = dto.flag;
     if (dto.enabled !== undefined) profile.enabled = dto.enabled;
     if (dto.subscriptionId !== undefined) {
       profile.subscriptionId = dto.subscriptionId;
@@ -316,6 +324,7 @@ export class ConnectionProfilesService {
       effectiveSni = sample.name;
     }
     const remark = dto.name?.trim() || dto.kind;
+    const flagEmoji = await this.resolveFlag(dto.flag, node);
 
     let occupiedPorts: number[] | undefined;
     let nodeResources:
@@ -385,6 +394,7 @@ export class ConnectionProfilesService {
         port: numericPort,
         uuid: PREVIEW_UUID,
         remark,
+        flagEmoji,
         sni: effectiveSni,
         publicKey: PREVIEW_PUBLIC_KEY,
         shortId: PREVIEW_SHORT_ID,
@@ -416,6 +426,7 @@ export class ConnectionProfilesService {
         port: numericPort,
         uuid: PREVIEW_UUID,
         remark,
+        flagEmoji,
         domain: effectiveSni,
         publicKey: PREVIEW_PUBLIC_KEY,
         shortId: PREVIEW_SHORT_ID,
@@ -470,6 +481,7 @@ export class ConnectionProfilesService {
       port: fallbackUpstreamPort,
       uuid: PREVIEW_UUID,
       remark,
+      flagEmoji,
       domain: effectiveSni,
       settings: normalized,
     });
@@ -728,6 +740,7 @@ export class ConnectionProfilesService {
       revision: profile.activeRevision,
       savedAt: new Date().toISOString(),
       name: profile.name,
+      flag: profile.flag ?? null,
       kind: profile.kind,
       nodeId: profile.nodeId,
       port: profile.port,
@@ -737,6 +750,7 @@ export class ConnectionProfilesService {
     };
 
     profile.name = snapshot.name;
+    profile.flag = snapshot.flag ?? null;
     if (snapshot.nodeId !== undefined) {
       profile.nodeId = snapshot.nodeId ?? null;
     }
@@ -820,13 +834,24 @@ export class ConnectionProfilesService {
     exportBundle: ProfileExportBundle;
   }> {
     const profile = await this.findOne(id);
-    const activeInbound = await this.findActiveInboundForProfile(profile);
+    const activeInbound = await this.findActiveInboundForProfile(profile, true);
 
     if (activeInbound?.clientProfileJson) {
       try {
         const clientConfig = JSON.parse(
           activeInbound.clientProfileJson,
         ) as SeparatedClientProfile;
+        let vlessLink = activeInbound.link;
+        if (!vlessLink) {
+          const config = activeInbound.subscription?.inboundsConfig?.find(
+            (item) => item.configId && item.configId === activeInbound.configId,
+          );
+          const node = activeInbound.nodeId
+            ? await this.loadNodeMeta(activeInbound.nodeId)
+            : null;
+          const flag = await this.resolveFlag(config?.flag || profile.flag, node);
+          vlessLink = buildVlessUriFromClientProfile(clientConfig, flag);
+        }
         return {
           id: profile.id,
           name: profile.name,
@@ -834,9 +859,7 @@ export class ConnectionProfilesService {
           source: 'active_inbound',
           exportBundle: {
             kind: profile.kind,
-            vlessLink:
-              activeInbound.link ||
-              buildVlessUriFromClientProfile(clientConfig),
+            vlessLink,
             clientConfig,
             xrayClientJson: buildXrayClientJsonFromProfile(clientConfig),
           },
@@ -849,6 +872,7 @@ export class ConnectionProfilesService {
     const previewResult = await this.preview({
       kind: profile.kind,
       name: profile.name,
+      flag: profile.flag,
       nodeId: profile.nodeId ?? undefined,
       port: profile.port ?? 'random',
       sni: profile.sni ?? undefined,
@@ -866,6 +890,7 @@ export class ConnectionProfilesService {
 
   private async findActiveInboundForProfile(
     profile: ConnectionProfile,
+    includeSubscription = false,
   ): Promise<Inbound | null> {
     const where: FindOptionsWhere<Inbound>[] = [
       { profileId: profile.id, status: InboundStatus.Active },
@@ -884,6 +909,7 @@ export class ConnectionProfilesService {
     return this.inboundRepo.findOne({
       where,
       order: { createdAt: 'DESC' },
+      ...(includeSubscription ? { relations: { subscription: true } } : {}),
     });
   }
 
@@ -913,6 +939,13 @@ export class ConnectionProfilesService {
 
   private async loadNodeMeta(nodeId: string): Promise<Node | null> {
     return this.nodeRepo.findOne({ where: { id: nodeId } });
+  }
+
+  private async resolveFlag(flag: string | null | undefined, node: Node | null) {
+    const configured = flag || node?.flag;
+    if (configured) return configured;
+    const setting = await this.settingRepo?.findOneBy({ key: 'xui_geo_flag' });
+    return setting?.value || DEFAULT_COUNTRY_FLAG;
   }
 
   private async loadNodeWithSecrets(nodeId: string): Promise<Node | null> {

@@ -18,7 +18,8 @@ import { Logger } from '@nestjs/common';
 describe('RotationService resilient generations', () => {
   const manager = {
     update: jest.fn().mockResolvedValue({}),
-    existsBy: jest.fn().mockResolvedValue(true),
+    findOneBy: jest.fn().mockResolvedValue({ flag: null }),
+    findOne: jest.fn().mockResolvedValue(null),
     transaction: jest.fn(
       async (work: (value: { update: jest.Mock }) => Promise<void>) =>
         work(manager),
@@ -1556,14 +1557,14 @@ describe('RotationService resilient generations', () => {
       xuiService.getNewX25519Cert.mockResolvedValue({ privateKey: 'private', publicKey: 'public' });
       const group = { node, configs: subscription.inboundsConfig.map((entry, position) => ({ config: entry, position })) };
       const create = jest.spyOn(service as any, 'createInbound');
-      manager.existsBy.mockResolvedValueOnce(false);
+      manager.findOneBy.mockResolvedValueOnce(null);
       create.mockResolvedValueOnce(null);
       const failed = await (service as any).rotateNodeGroup(subscription, node.id, group, []);
       expect(failed.inboundResults[0].status).toBe('preserved');
       expect(manager.transaction).not.toHaveBeenCalled();
       expect(subscription.inboundsConfig).toEqual([config, replacement]);
 
-      manager.existsBy.mockResolvedValueOnce(false);
+      manager.findOneBy.mockResolvedValueOnce(null);
       create.mockResolvedValueOnce({ id: 501, port: 12443, xuiId: 10 });
       const activated = await (service as any).rotateNodeGroup(subscription, node.id, group, []);
       expect(activated.inboundResults.map((item) => item.status))
@@ -1638,7 +1639,7 @@ describe('RotationService resilient generations', () => {
       expect(inboundRepo.save).not.toHaveBeenCalled();
       expect(previous.status).toBe(InboundStatus.Active);
 
-      manager.existsBy.mockResolvedValueOnce(false);
+      manager.findOneBy.mockResolvedValueOnce(null);
       xuiService.addInbound.mockClear();
       const staleResult = await (service as any).rotateNodeGroup(
         subscription,
@@ -2449,6 +2450,9 @@ describe('RotationService resilient generations', () => {
     it('preserves unchanged fixed-port managed profile (self-sni :443) without port collision while rotating sibling inbounds', async () => {
       const selfSniConfigId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
       const tcpConfigId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+      const profileId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+      const selfSniLink = 'vless://u-existing@portal.example.com:443?flow=xtls-rprx-vision&type=tcp';
+      manager.findOneBy.mockResolvedValueOnce({ flag: '%F0%9F%87%AB%F0%9F%87%B7' });
       const sub = {
         id: 'sub-mixed-fixed',
         name: 'SubMixedFixed',
@@ -2457,6 +2461,7 @@ describe('RotationService resilient generations', () => {
         inboundsConfig: [
           {
             configId: selfSniConfigId,
+            profileId,
             type: 'self-sni',
             port: 443,
             sni: 'portal.example.com',
@@ -2485,12 +2490,14 @@ describe('RotationService resilient generations', () => {
             id: 1001,
             xuiId: 101,
             configId: selfSniConfigId,
+            profileId,
             nodeId: node.id,
             port: 443,
             position: 0,
             protocol: 'vless',
             profileKind: 'self-sni',
             status: InboundStatus.Active,
+            link: `${selfSniLink}#%F0%9F%87%A9%F0%9F%87%AA%20SelfSNI%20443`,
             clientProfileJson: JSON.stringify({
               kind: 'self-sni',
               protocol: 'vless',
@@ -2579,6 +2586,10 @@ describe('RotationService resilient generations', () => {
       // Self-SNI was NOT recreated, avoiding port 443 collision
       expect(inboundBuilder.buildSelfSniInbound).not.toHaveBeenCalled();
       expect(xuiService.addInbound).toHaveBeenCalledTimes(1);
+      expect(manager.update).toHaveBeenCalledWith(Inbound, { id: 1001 }, {
+        position: 0,
+        link: `${selfSniLink}#%F0%9F%87%AB%F0%9F%87%B7%20SelfSNI%20443`,
+      });
       // Only the old sibling TCP inbound (id 1002) was sent to PendingCleanup, NOT 1001
       const updateCalls = inboundRepo.manager.transaction.mock.calls;
       expect(updateCalls).toHaveLength(1);
@@ -2893,6 +2904,7 @@ describe('RotationService resilient generations', () => {
             nodeId: node.id,
             name: 'self-sni-mscone',
             profileId: sharedProfileId,
+            flag: '%F0%9F%87%A9%F0%9F%87%AA',
             profileSettings: {
               domain: 'portal.example.com',
               webServer: 'nginx',
@@ -2904,6 +2916,7 @@ describe('RotationService resilient generations', () => {
         inbounds: [],
       } as Subscription;
 
+      manager.findOneBy.mockResolvedValueOnce({ flag: '%F0%9F%87%AB%F0%9F%87%B7' });
       const rotateOk = await (
         service as unknown as {
           rotateNodeGroup: (
@@ -2943,7 +2956,7 @@ describe('RotationService resilient generations', () => {
       expect(inboundBuilder.buildSelfSniClientBundle).toHaveBeenCalledWith(
         expect.objectContaining({ id: 82 }),
         expect.any(String),
-        expect.any(String),
+        '%F0%9F%87%A9%F0%9F%87%AA',
         expect.any(Object),
         attachedUuid,
       );

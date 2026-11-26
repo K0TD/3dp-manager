@@ -4,6 +4,7 @@ import { ConnectionProfile } from './entities/connection-profile.entity';
 import { Node } from '../nodes/entities/node.entity';
 import { Domain } from '../domains/entities/domain.entity';
 import { Inbound } from '../inbounds/entities/inbound.entity';
+import { Setting } from '../settings/entities/setting.entity';
 import { XuiModule } from '../xui/xui.module';
 import { ConnectionProfilesService } from './connection-profiles.service';
 import { ConnectionProfilesController } from './connection-profiles.controller';
@@ -12,7 +13,7 @@ import { ClientProbeService } from './client-probe.service';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([ConnectionProfile, Node, Inbound, Domain]),
+    TypeOrmModule.forFeature([ConnectionProfile, Node, Inbound, Domain, Setting]),
     XuiModule,
   ],
   controllers: [ConnectionProfilesController],

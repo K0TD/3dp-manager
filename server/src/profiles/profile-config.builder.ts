@@ -313,6 +313,17 @@ function formatUrlHost(address: string): string {
   return host.includes(':') ? `[${host}]` : host;
 }
 
+export function buildVlessLinkFragment(remark: string, flag = ''): string {
+  let decodedFlag = flag;
+  try {
+    decodedFlag = decodeURIComponent(flag);
+  } catch {
+    // An existing node or subscription can have a literal percent sign.
+  }
+  const prefix = decodedFlag ? `${encodeURIComponent(decodedFlag)}%20` : '';
+  return `#${prefix}${encodeURIComponent(remark)}`;
+}
+
 export function buildVlessUriFromClientProfile(
   client: SeparatedClientProfile,
   flagEmoji = '',
@@ -349,11 +360,10 @@ export function buildVlessUriFromClientProfile(
     }
   }
 
-  const tagPrefix = flagEmoji ? `${flagEmoji}%20` : '';
   return (
     `vless://${encodeURIComponent(client.uuid)}@${formatUrlHost(client.address)}:${client.port}` +
     `?${params.toString()}` +
-    `#${tagPrefix}${encodeURIComponent(client.remark || client.kind)}`
+    buildVlessLinkFragment(client.remark || client.kind, flagEmoji)
   );
 }
 

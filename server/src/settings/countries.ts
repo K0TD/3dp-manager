@@ -1,3 +1,5 @@
+export const DEFAULT_COUNTRY_FLAG = '%F0%9F%92%AF';
+
 export const COUNTRIES = [
   {
     name: 'Ascension Island',

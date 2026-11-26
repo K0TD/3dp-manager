@@ -12,6 +12,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { COUNTRIES } from '../../settings/countries';
 import {
   CLIENT_FINGERPRINTS,
   MANAGED_PROFILE_KINDS,
@@ -24,6 +25,8 @@ import {
   type ReverseProxyEngine,
   type XhttpMode,
 } from '../connection-profile.types';
+
+const COUNTRY_FLAGS = COUNTRIES.map((country) => country.emoji);
 
 export class XhttpXmuxDto {
   @IsBoolean()
@@ -189,6 +192,10 @@ export class CreateConnectionProfileDto {
   @MaxLength(160)
   name: string;
 
+  @IsOptional()
+  @IsIn(COUNTRY_FLAGS)
+  flag?: string | null;
+
   @IsString()
   @IsIn(MANAGED_PROFILE_KINDS)
   kind: ManagedProfileKind;
@@ -243,6 +250,10 @@ export class UpdateConnectionProfileDto {
   @IsOptional()
   name?: string;
 
+  @IsOptional()
+  @IsIn(COUNTRY_FLAGS)
+  flag?: string | null;
+
   @IsBoolean()
   @IsOptional()
   enabled?: boolean;
@@ -292,6 +303,11 @@ export class PreviewConnectionProfileDto {
   @IsOptional()
   @MaxLength(160)
   name?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  flag?: string | null;
 
   @IsUUID()
   @IsOptional()

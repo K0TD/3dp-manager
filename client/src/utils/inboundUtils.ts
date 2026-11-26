@@ -298,7 +298,7 @@ export const createInboundTemplate = (
       ? ''
       : partial?.flag !== undefined
         ? partial.flag
-        : getNodeFlag(nodeId, nodes),
+        : MANAGED_PROFILE_TYPES.has(type) ? '' : getNodeFlag(nodeId, nodes),
     name: isRouting || isCustom ? '' : (partial?.name ?? ''),
     certificateMode: certMode,
     tlsServerName: isCert

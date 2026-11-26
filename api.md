@@ -996,6 +996,8 @@ http://<host>:<port>/bus/<uuid>
 - `POST /api/profiles/:id/rollback` — откат профиля к предыдущей сохранённой ревизии (`previousSnapshot`)
 - `GET /api/profiles/:id/export` — экспорт клиентской VLESS-ссылки и полного Xray JSON для активного inbound или предпросмотра
 
+При создании, обновлении и предпросмотре профиля можно передать `flag` со значением `emoji` из `GET /api/settings/countries`. Значение `null` включает наследование флага ноды. Обновление без поля `flag` сохраняет текущий выбор. В подписке собственный флаг инбаунда имеет приоритет, а изменения флага профиля применяются при следующей ротации.
+
 В `inboundsConfig` подписки поддерживаются:
 - `type: "xhttp-stable"` с `profileSettings` (`mode: "auto" | "stream-one" | "packet-up"`, `path`, `host`, `fingerprint`, `spiderX`, `rotationPolicy`, клиентский `xmux`).
 - `type: "self-sni"` с `profileSettings` (`domain` — обязательный собственный домен, `webServer: "nginx" | "caddy" | "none"`, `localHttpsPort`, `destPort`, `xver: 0 | 1 | 2`, `fingerprint`, `spiderX`, `rotationPolicy`, опциональные пути `certificateFile`/`keyFile` для шаблона веб-сервера). Ротация никогда не подменяет собственный домен случайным.

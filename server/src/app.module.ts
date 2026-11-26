@@ -41,6 +41,7 @@ import { AddRoutingPresets1810000000000 } from './migrations/1810000000000-add-r
 import { AddSubscriptionMetadata1820000000000 } from './migrations/1820000000000-add-subscription-metadata';
 import { AddOperationErrorDetails1830000000000 } from './migrations/1830000000000-add-operation-error-details';
 import { AddConnectionProfiles1840000000000 } from './migrations/1840000000000-add-connection-profiles';
+import { AddConnectionProfileFlag1880000000000 } from './migrations/1880000000000-add-connection-profile-flag';
 import { ConnectionProfile } from './profiles/entities/connection-profile.entity';
 import { ConnectionProfilesModule } from './profiles/connection-profiles.module';
 
@@ -98,6 +99,7 @@ const dbPoolLogger = new Logger('DatabasePool');
         AddAutomation1850000000000,
         ReconcileSniDomains1860000000000,
         AddSubscriptionDisplayOrder1870000000000,
+        AddConnectionProfileFlag1880000000000,
       ],
       synchronize: process.env.DB_SYNCHRONIZE === 'true',
       migrationsRun: process.env.DB_MIGRATIONS_RUN !== 'false',

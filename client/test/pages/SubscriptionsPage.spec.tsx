@@ -1390,6 +1390,7 @@ describe('SubscriptionsPage', () => {
           {
             id: 'prof-a',
             name: 'XHTTP One',
+            flag: '%F0%9F%87%AB%F0%9F%87%B7',
             kind: 'xhttp-stable',
             nodeId: 'node-1',
             port: null,
@@ -1426,6 +1427,20 @@ describe('SubscriptionsPage', () => {
       expect(await screen.findByText('Инбаунды (2/20)')).toBeInTheDocument()
       expect(screen.getByText('XHTTP One')).toBeInTheDocument()
       expect(screen.getByText('SelfSNI One')).toBeInTheDocument()
+
+      fireEvent.click((await screen.findAllByRole('button', { name: 'Редактировать инбаунд' }))[0])
+      const flagField = screen.getByRole('combobox', { name: 'Флаг' })
+      expect(flagField).toHaveTextContent('Из профиля')
+      expect(flagField.querySelector('img')).toHaveAttribute('src', expect.stringContaining('/fr.png'))
+
+      mockPut.mockResolvedValue({})
+      fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }))
+      await waitFor(() => expect(mockPut).toHaveBeenCalledWith('/subscriptions/sub-bulk-1', expect.objectContaining({
+        inboundsConfig: expect.arrayContaining([
+          expect.objectContaining({ profileId: 'prof-a', flag: undefined }),
+          expect.objectContaining({ profileId: 'prof-b', flag: undefined }),
+        ]),
+      })))
     })
   })
 })

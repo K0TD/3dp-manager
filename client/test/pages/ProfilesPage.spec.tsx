@@ -4,6 +4,8 @@ import ProfilesPage from '../../src/pages/ProfilesPage';
 import { ThemeProvider } from '../../src/ThemeContext';
 import api from '../../src/api';
 
+const franceFlag = '%F0%9F%87%AB%F0%9F%87%B7';
+
 vi.mock('../../src/api', () => ({
   default: {
     get: vi.fn(),
@@ -17,6 +19,9 @@ describe('ProfilesPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/settings/countries') {
+        return Promise.resolve({ data: [{ code: 'FR', name: 'France', emoji: franceFlag }] });
+      }
       if (url === '/profiles/catalog') {
         return Promise.resolve({
           data: [
@@ -39,6 +44,7 @@ describe('ProfilesPage', () => {
             {
               id: 'node-1',
               name: 'EU-1',
+              flag: '🇩🇪',
               domain: 'eu1.example.com',
               webCertificateFile: '/root/cert/eu1/fullchain.pem',
               webKeyFile: '/root/cert/eu1/privkey.pem',
@@ -98,6 +104,7 @@ describe('ProfilesPage', () => {
           {
             id: 'prof-1',
             name: 'SelfSNI Main',
+            flag: franceFlag,
             kind: 'self-sni',
             enabled: true,
             deployed: true,
@@ -142,6 +149,21 @@ describe('ProfilesPage', () => {
         ],
       });
     });
+  });
+
+  it('clears the saved country and restores node flag inheritance', async () => {
+    vi.mocked(api.put).mockResolvedValue({ data: {} });
+    render(<ThemeProvider><ProfilesPage /></ThemeProvider>);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Редактировать профиль SelfSNI Main' }));
+    const field = screen.getByRole('combobox', { name: 'Флаг' });
+    expect(field).toHaveTextContent('France');
+    fireEvent.mouseDown(field);
+    fireEvent.click(await screen.findByRole('option', { name: 'Как у ноды' }));
+    expect(field).toHaveTextContent('Как у ноды');
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/profiles/prof-1', expect.objectContaining({ flag: null })));
   });
 
   it('uses a consistent attach button and shows linked subscriptions and listener ports', async () => {
@@ -252,7 +274,7 @@ describe('ProfilesPage', () => {
         '/subscriptions/sub-1',
         expect.objectContaining({
           inboundsConfig: expect.arrayContaining([
-            expect.objectContaining({ profileId: 'prof-1' }),
+            expect.objectContaining({ profileId: 'prof-1', flag: undefined }),
             expect.objectContaining({ profileId: 'prof-2' }),
           ]),
         }),
@@ -385,6 +407,10 @@ describe('ProfilesPage', () => {
     fireEvent.change(screen.getByLabelText('Название профиля'), {
       target: { value: 'Apple XHTTP' },
     });
+    const flagField = screen.getByRole('combobox', { name: 'Флаг' });
+    expect(flagField).toHaveTextContent('Как у ноды');
+    fireEvent.mouseDown(flagField);
+    fireEvent.click(await screen.findByRole('option', { name: 'France' }));
 
     const sniInput = screen.getByLabelText(
       /SNI \(выбор из «Доменов» \/ SNI-профилей или свой\)/,
@@ -403,6 +429,7 @@ describe('ProfilesPage', () => {
         '/profiles',
         expect.objectContaining({
           name: 'Apple XHTTP',
+          flag: franceFlag,
           kind: 'xhttp-stable',
           sni: 'swdist.apple.com',
           spec: expect.not.objectContaining({ path: expect.anything() }),

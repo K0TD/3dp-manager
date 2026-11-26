@@ -14,6 +14,7 @@ import { TYPEORM_MODULE_OPTIONS } from '@nestjs/typeorm/dist/typeorm.constants';
 import { AddSubscriptionMetadata1820000000000 } from 'src/migrations/1820000000000-add-subscription-metadata';
 import { AddOperationErrorDetails1830000000000 } from 'src/migrations/1830000000000-add-operation-error-details';
 import { AddConnectionProfiles1840000000000 } from 'src/migrations/1840000000000-add-connection-profiles';
+import { AddConnectionProfileFlag1880000000000 } from 'src/migrations/1880000000000-add-connection-profile-flag';
 import { databaseAvailability } from 'src/database/database-availability';
 import { Logger } from '@nestjs/common';
 
@@ -47,6 +48,7 @@ describe('AppModule конфигурация', () => {
     expect(options.migrations).toContain(AddSubscriptionMetadata1820000000000);
     expect(options.migrations).toContain(AddOperationErrorDetails1830000000000);
     expect(options.migrations).toContain(AddConnectionProfiles1840000000000);
+    expect(options.migrations).toContain(AddConnectionProfileFlag1880000000000);
   });
 
   it('configures PostgreSQL retry, timeouts, and pool error resilience', async () => {

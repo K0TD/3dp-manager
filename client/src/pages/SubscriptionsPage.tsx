@@ -84,6 +84,7 @@ interface Subscription {
   note?: string;
   supportUrl?: string;
   websiteUrl?: string;
+  nodeId?: string | null;
   inbounds: Array<{
     protocol?: string;
     configId?: string;
@@ -129,6 +130,9 @@ interface SavedProfileOption {
   id: string;
   name: string;
   kind: ManagedProfileKind;
+  flag?: string | null;
+  configId?: string | null;
+  subscriptionId?: string | null;
   nodeId?: string | null;
   port?: number | null;
   sni?: string | null;
@@ -293,6 +297,25 @@ export default function SubscriptionsPage() {
     nodes.find((node) => node.id === (nodeId || getDefaultNodeId()))?.flag ||
     '';
 
+  const getLinkedProfile = (inbound: InboundConfigUI) => {
+    if (inbound.profileId) {
+      return savedProfiles.find(
+        (profile) => profile.id === inbound.profileId && profile.kind === inbound.type,
+      );
+    }
+    if (!inbound.configId) return undefined;
+    return savedProfiles
+      .filter((profile) =>
+        profile.configId === inbound.configId &&
+        profile.kind === inbound.type &&
+        (!profile.subscriptionId || profile.subscriptionId === editingId),
+      )
+      .sort((left, right) =>
+        Number(Boolean(right.subscriptionId)) - Number(Boolean(left.subscriptionId)) ||
+        left.id.localeCompare(right.id),
+      )[0];
+  };
+
   const isListedSni = (sni: string) => {
     const normalizedSni = sni.trim().toLowerCase();
     return (
@@ -327,7 +350,7 @@ export default function SubscriptionsPage() {
       sni: inboundSni(type),
       link: '',
       nodeId,
-      flag: getNodeFlag(nodeId),
+      flag: MANAGED_PROFILE_TYPES.has(type) ? '' : getNodeFlag(nodeId),
       name: '',
       certificateMode: CERTIFICATE_TYPES.has(type) ? 'node' : undefined,
       tlsServerName: CERTIFICATE_TYPES.has(type)
@@ -397,7 +420,7 @@ export default function SubscriptionsPage() {
           const itemNodeExists = nodes.some((n) => n.id === item.nodeId);
           if (itemNodeExists) {
             nodeId = item.nodeId;
-            if (!flag) {
+            if (!flag && !MANAGED_PROFILE_TYPES.has(item.type)) {
               flag = getNodeFlag(nodeId);
             }
           } else {
@@ -708,7 +731,9 @@ export default function SubscriptionsPage() {
           relayServerId: inbound.relayServerId
             ? parseInt(inbound.relayServerId, 10)
             : undefined,
-          flag: inbound.flag || getNodeFlag(inbound.nodeId) || undefined,
+          flag: inbound.flag || (MANAGED_PROFILE_TYPES.has(inbound.type)
+            ? undefined
+            : getNodeFlag(inbound.nodeId) || undefined),
           name: inbound.name?.trim() || undefined,
           enabled: true,
           certificateMode: requiresPanelTlsCertificate(inbound)
@@ -1529,6 +1554,8 @@ export default function SubscriptionsPage() {
             tunnels={tunnels}
             domains={domains}
             countries={countries}
+            getLinkedProfile={getLinkedProfile}
+            subscriptionNodeId={subs.find((sub) => sub.id === editingId)?.nodeId || undefined}
             portErrors={portErrors}
             onPortErrorsChange={setPortErrors}
             extraActions={
@@ -1672,8 +1699,6 @@ export default function SubscriptionsPage() {
                 if (existingConnCount + appended.length >= 20) break;
                 const configId = crypto.randomUUID();
                 const targetNodeId = profile.nodeId || getDefaultNodeId();
-                const nodeFlag =
-                  nodes.find((n) => n.id === targetNodeId)?.flag || '';
                 const domain =
                   profile.spec?.domain?.trim() || profile.sni?.trim() || '';
                 const isDirectFallback =
@@ -1695,7 +1720,7 @@ export default function SubscriptionsPage() {
                         : '',
                   nodeId: targetNodeId,
                   relayServerId: '',
-                  flag: nodeFlag,
+                  flag: '',
                   name: profile.name,
                   enabled: true,
                   profileId: profile.id,

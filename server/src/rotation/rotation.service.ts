@@ -9,7 +9,7 @@ import {
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Not, Repository } from 'typeorm';
+import { In, IsNull, Not, Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
 import { createHash } from 'node:crypto';
 
@@ -19,6 +19,7 @@ import { extractInboundClientId } from '../inbounds/inbound-client.util';
 import { isExcludedSniDomain } from '../domains/sni-exclusions';
 import { Domain } from '../domains/entities/domain.entity';
 import { Setting } from '../settings/entities/setting.entity';
+import { DEFAULT_COUNTRY_FLAG } from '../settings/countries';
 import { Node, NodeHealthStatus } from '../nodes/entities/node.entity';
 import { Tunnel } from '../tunnels/entities/tunnel.entity';
 import {
@@ -81,6 +82,7 @@ import {
 } from '../profiles/connection-profile.types';
 import { evaluateProfileCompatibility } from '../profiles/profile-compatibility';
 import {
+  buildVlessLinkFragment,
   explicitXhttpStableSni,
   xhttpStableSniSettings,
 } from '../profiles/profile-config.builder';
@@ -105,6 +107,7 @@ interface CreateInboundRequest {
   domains: Domain[];
   usedPorts: Set<number>;
   generationId: string;
+  profileFlag?: string | null;
   realityKeys?: { privateKey: string; publicKey: string } | null;
   nodeCertificate?: XuiCertificateFiles;
   diagnostics?: RotationInboundDiagnostic[];
@@ -968,7 +971,8 @@ export class RotationService implements OnModuleInit {
       previous?: Inbound;
       result: RotationConfigResult;
     }> = [];
-    const preservedPositions: Array<{ id: number; position: number }> = [];
+    const preservedUpdates: Array<{ id: number; position: number; link?: string }> =
+      [];
     const missingProfiles: Array<{
       config: InboundConfig;
       previous?: Inbound;
@@ -1041,16 +1045,10 @@ export class RotationService implements OnModuleInit {
         )
           throw new Error(`Нода ${node.name} временно недоступна`);
         this.assertNodeCompatibility(config, node);
-        if (
-          isManagedProfileKind(config.type) &&
-          config.profileId &&
-          !(await this.inboundRepo.manager.existsBy(ConnectionProfile, {
-            id: config.profileId,
-            kind: config.type,
-          }))
-        ) {
-          throw new MissingConnectionProfileError();
-        }
+        const profileFlag = await this.resolveConnectionProfileFlag(
+          config,
+          subscription.id,
+        );
         if (runtimeUnhealthy)
           throw new Error('Xray недоступен после создания инбаунда');
         if (node)
@@ -1066,9 +1064,20 @@ export class RotationService implements OnModuleInit {
             domains,
           );
         if (preservable) {
-          preservedPositions.push({ id: preservable.id, position });
+          const { inbound, remark } = preservable;
+          const update: (typeof preservedUpdates)[number] = {
+            id: inbound.id,
+            position,
+          };
+          if (inbound.link?.startsWith('vless://')) {
+            const flag = await this.resolveInboundFlag(config.flag || profileFlag, node);
+            const [baseLink] = inbound.link.split('#', 1);
+            const link = baseLink + buildVlessLinkFragment(remark, flag);
+            if (link !== inbound.link) update.link = link;
+          }
+          preservedUpdates.push(update);
           result.status = 'unchanged';
-          result.port = preservable.port;
+          result.port = inbound.port;
           continue;
         }
         let nodeCertificate: XuiCertificateFiles | undefined;
@@ -1104,6 +1113,7 @@ export class RotationService implements OnModuleInit {
           domains,
           usedPorts,
           generationId,
+          profileFlag,
           realityKeys,
           nodeCertificate,
           diagnostics,
@@ -1301,9 +1311,7 @@ export class RotationService implements OnModuleInit {
       created: replacements.length,
       pendingCleanup,
       inboundResults,
-      ...(preservedPositions.length
-        ? { preserved: preservedPositions.length }
-        : {}),
+      ...(preservedUpdates.length ? { preserved: preservedUpdates.length } : {}),
       ...(firstError
         ? { errorDetails: firstError, message: firstError.raw }
         : {}),
@@ -1316,7 +1324,7 @@ export class RotationService implements OnModuleInit {
         inbounds: diagnostics,
       },
     };
-    if (replacements.length || preservedPositions.length || nextConfigs) {
+    if (replacements.length || preservedUpdates.length || nextConfigs) {
       try {
         await this.inboundRepo.manager.transaction(async (manager) => {
           if (old.length)
@@ -1336,12 +1344,8 @@ export class RotationService implements OnModuleInit {
               },
               { status: InboundStatus.Active },
             );
-          for (const item of preservedPositions)
-            await manager.update(
-              Inbound,
-              { id: item.id },
-              { position: item.position },
-            );
+          for (const { id, ...update } of preservedUpdates)
+            await manager.update(Inbound, { id }, update);
           if (nextConfigs)
             await manager.update(
               Subscription,
@@ -1436,6 +1440,39 @@ export class RotationService implements OnModuleInit {
       : null;
   }
 
+  private async resolveConnectionProfileFlag(
+    config: InboundConfig,
+    subscriptionId: string,
+  ) {
+    if (!isManagedProfileKind(config.type)) return undefined;
+
+    if (config.profileId) {
+      const profile = await this.inboundRepo.manager.findOneBy(ConnectionProfile, {
+        id: config.profileId,
+        kind: config.type,
+      });
+      if (!profile) throw new MissingConnectionProfileError();
+      return profile.flag;
+    }
+
+    if (config.flag || !config.configId) return undefined;
+    const legacyProfile = await this.inboundRepo.manager.findOne(ConnectionProfile, {
+      where: [
+        { configId: config.configId, kind: config.type, subscriptionId },
+        { configId: config.configId, kind: config.type, subscriptionId: IsNull() },
+      ],
+      order: { subscriptionId: { direction: 'DESC', nulls: 'LAST' }, id: 'ASC' },
+    });
+    return legacyProfile?.flag;
+  }
+
+  private async resolveInboundFlag(flag?: string | null, node?: Node) {
+    const configured = flag || node?.flag;
+    if (configured) return configured;
+    const setting = await this.settingRepo.findOne({ where: { key: 'xui_geo_flag' } });
+    return setting?.value || DEFAULT_COUNTRY_FLAG;
+  }
+
   /**
    * Preserves an already active managed profile inbound when rotating a node group
    * if its rotation policy is `preserve_all` OR it binds a fixed numeric port
@@ -1447,7 +1484,7 @@ export class RotationService implements OnModuleInit {
     subscription: Subscription,
     nodeId: string | undefined,
     domains: Domain[],
-  ): Inbound | null {
+  ): { inbound: Inbound; remark: string } | null {
     if (!isManagedProfileKind(config.type) || !config.configId || !nodeId) {
       return null;
     }
@@ -1540,7 +1577,7 @@ export class RotationService implements OnModuleInit {
       }
     }
 
-    return active;
+    return { inbound: active, remark: parsed.remark || config.type };
   }
 
   /**
@@ -2020,6 +2057,7 @@ export class RotationService implements OnModuleInit {
       domains,
       usedPorts,
       generationId,
+      profileFlag,
       realityKeys,
       nodeCertificate,
     } = request;
@@ -2055,11 +2093,7 @@ export class RotationService implements OnModuleInit {
       this.getNodeAddress(node) ||
       hostSetting?.value ||
       'localhost';
-    const flagSetting = await this.settingRepo.findOne({
-      where: { key: 'xui_geo_flag' },
-    });
-    const flag =
-      config.flag || node.flag || flagSetting?.value || '%F0%9F%92%AF';
+    const flag = await this.resolveInboundFlag(config.flag || profileFlag, node);
     const fixedPort = this.fixedInboundPort(config);
     const port = fixedPort ?? (await this.getFreePort(usedPorts));
     usedPorts.add(port);

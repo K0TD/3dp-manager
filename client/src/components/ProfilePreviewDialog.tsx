@@ -29,6 +29,7 @@ export interface ProfilePreviewDialogProps {
   onClose: () => void;
   kind: ManagedProfileKind;
   name?: string;
+  flag?: string | null;
   nodeId?: string;
   port?: string;
   sni?: string;
@@ -41,6 +42,7 @@ export const ProfilePreviewDialog: React.FC<ProfilePreviewDialogProps> = ({
   onClose,
   kind,
   name,
+  flag,
   nodeId,
   port,
   sni,
@@ -68,6 +70,7 @@ export const ProfilePreviewDialog: React.FC<ProfilePreviewDialogProps> = ({
         const res = await api.post<ProfilePreviewResponse>('/profiles/preview', {
           kind,
           name: name?.trim() || undefined,
+          ...(flag === undefined ? {} : { flag }),
           nodeId: nodeId || undefined,
           port: port || 'random',
           sni: sni || undefined,
@@ -85,7 +88,7 @@ export const ProfilePreviewDialog: React.FC<ProfilePreviewDialogProps> = ({
         setLiveChecking(false);
       }
     },
-    [kind, name, nodeId, port, sni, settings],
+    [kind, name, flag, nodeId, port, sni, settings],
   );
 
   useEffect(() => {

@@ -44,6 +44,7 @@ import {
 import api from '../api';
 import { WorkspaceHeader } from '../components/WorkspaceHeader';
 import { ProfilePreviewDialog } from '../components/ProfilePreviewDialog';
+import { CountryFlagSelect } from '../components/CountryFlagSelect';
 import { CLIENT_SNI_PROFILES_CATALOG } from '../utils/sniProfiles';
 import type { NodeRecord } from '../types/node';
 import {
@@ -51,6 +52,7 @@ import {
   ROUTING_INBOUND_TYPES,
   XHTTP_MODE_OPTIONS,
   type ClientFingerprint,
+  type CountryOption,
   type ManagedProfileKind,
   type ManagedProfileSettings,
   type ProfileCompatibilityReport,
@@ -74,6 +76,7 @@ interface ConnectionProfileSnapshot {
   revision: number;
   savedAt: string;
   name: string;
+  flag?: string | null;
   kind: ManagedProfileKind;
   nodeId?: string | null;
   port?: number | null;
@@ -85,6 +88,7 @@ interface ConnectionProfileSnapshot {
 interface ConnectionProfileRecord {
   id: string;
   name: string;
+  flag?: string | null;
   kind: ManagedProfileKind;
   enabled: boolean;
   nodeId?: string | null;
@@ -163,6 +167,7 @@ interface ClientProbeResponse {
 
 interface ProfileFormState {
   name: string;
+  flag: string;
   kind: ManagedProfileKind;
   nodeId: string;
   port: string;
@@ -173,6 +178,7 @@ interface ProfileFormState {
 
 const DEFAULT_FORM: ProfileFormState = {
   name: '',
+  flag: '',
   kind: 'xhttp-stable',
   nodeId: '',
   port: '443',
@@ -189,6 +195,7 @@ function defaultFormForKind(kind: ManagedProfileKind): ProfileFormState {
   if (kind === 'self-sni') {
     return {
       name: '',
+      flag: '',
       kind,
       nodeId: '',
       port: '443',
@@ -209,6 +216,7 @@ function defaultFormForKind(kind: ManagedProfileKind): ProfileFormState {
   if (kind === 'https-fallback') {
     return {
       name: '',
+      flag: '',
       kind,
       nodeId: '',
       port: '20443',
@@ -284,6 +292,7 @@ export default function ProfilesPage() {
   const [nodes, setNodes] = useState<NodeRecord[]>([]);
   const [subscriptions, setSubscriptions] = useState<SubscriptionBrief[]>([]);
   const [domains, setDomains] = useState<DomainItem[]>([]);
+  const [countries, setCountries] = useState<CountryOption[]>([]);
   const [sniRules, setSniRules] = useState<SniProfileRule[]>(
     () => CLIENT_SNI_PROFILES_CATALOG as unknown as SniProfileRule[],
   );
@@ -295,6 +304,7 @@ export default function ProfilesPage() {
   const [previewTarget, setPreviewTarget] = useState<{
     kind: ManagedProfileKind;
     name?: string;
+    flag?: string | null;
     nodeId?: string;
     port?: string;
     sni?: string;
@@ -331,6 +341,7 @@ export default function ProfilesPage() {
         subsRes,
         domainsRes,
         sniProfilesRes,
+        countriesRes,
       ] = await Promise.all([
         api.get<ConnectionProfileRecord[]>('/profiles'),
         api.get<ProfileCatalogEntry[]>('/profiles/catalog'),
@@ -344,10 +355,12 @@ export default function ProfilesPage() {
         api
           .get<{ profiles?: SniProfileRule[] }>('/domains/profiles')
           .catch(() => ({ data: { profiles: [] as SniProfileRule[] } })),
+        api.get<CountryOption[]>('/settings/countries').catch(() => ({ data: [] })),
       ]);
       setProfiles(Array.isArray(profilesRes.data) ? profilesRes.data : []);
       setCatalog(Array.isArray(catalogRes.data) ? catalogRes.data : []);
       setNodes(Array.isArray(nodesRes.data) ? nodesRes.data : []);
+      setCountries(Array.isArray(countriesRes.data) ? countriesRes.data : []);
       setSubscriptions(Array.isArray(subsRes.data) ? subsRes.data : []);
       setDomains(
         Array.isArray(domainsRes.data)
@@ -428,6 +441,7 @@ export default function ProfilesPage() {
     setEditingId(profile.id);
     setForm({
       name: profile.name,
+      flag: profile.flag || '',
       kind: profile.kind,
       nodeId: profile.nodeId || '',
       port: profile.port ? String(profile.port) : '',
@@ -462,8 +476,9 @@ export default function ProfilesPage() {
       }
       const payload = {
         name: form.name.trim(),
+        flag: form.flag || null,
         ...(editingId ? {} : { kind: form.kind }),
-        nodeId: form.nodeId || undefined,
+        nodeId: form.nodeId || (editingId ? null : undefined),
         port: numericPort,
         sni:
           form.kind === 'self-sni' || form.kind === 'https-fallback'
@@ -577,6 +592,7 @@ export default function ProfilesPage() {
     setPreviewTarget({
       kind: profile.kind,
       name: profile.name,
+      flag: profile.flag,
       nodeId: profile.nodeId || undefined,
       port: profile.port ? String(profile.port) : 'random',
       sni: profile.sni || undefined,
@@ -589,6 +605,7 @@ export default function ProfilesPage() {
     setPreviewTarget({
       kind: form.kind,
       name: form.name || form.kind,
+      flag: form.flag || null,
       nodeId: form.nodeId || undefined,
       port: form.port.trim() || 'random',
       sni:
@@ -655,6 +672,7 @@ export default function ProfilesPage() {
       name: profile.name,
       enabled: true,
       profileId: random ? undefined : profile.id,
+      flag: random ? profile.flag || undefined : undefined,
       profileSettings: {
         ...profile.spec,
         rotationPolicy: profile.rotationPolicy,
@@ -753,11 +771,12 @@ export default function ProfilesPage() {
           }
           const previous = findObsoleteProfileConfig(profile, sub);
           if (previous && !replaced.has(previous)) {
+            const nextInbound = buildInboundFromProfile(profile, forceRandom);
             replaced.set(previous, {
-              ...buildInboundFromProfile(profile, forceRandom),
+              ...nextInbound,
               configId: previous.configId,
               relayServerId: previous.relayServerId,
-              flag: previous.flag,
+              flag: previous.flag || nextInbound.flag,
             });
             continue;
           }
@@ -1359,11 +1378,12 @@ export default function ProfilesPage() {
                 label="Тип профиля"
                 onChange={(e) => {
                   const nextKind = e.target.value as ManagedProfileKind;
-                                const next = applyNodeDefaults(
+                  const next = applyNodeDefaults(
                     defaultFormForKind(nextKind),
                     form.nodeId,
                   );
                   next.name = form.name;
+                  next.flag = form.flag;
                   setForm(next);
                 }}
               >
@@ -1398,6 +1418,14 @@ export default function ProfilesPage() {
                 ))}
               </Select>
             </FormControl>
+
+            <CountryFlagSelect
+              countries={countries}
+              value={form.flag}
+              onChange={(flag) => setForm((prev) => ({ ...prev, flag }))}
+              inheritLabel="Как у ноды"
+              inheritedFlag={nodes.find((node) => node.id === form.nodeId)?.flag}
+            />
 
             <Stack direction="row" spacing={1.5}>
               <TextField
@@ -2101,6 +2129,7 @@ export default function ProfilesPage() {
           onClose={() => setPreviewTarget(null)}
           kind={previewTarget.kind}
           name={previewTarget.name}
+          flag={previewTarget.flag}
           nodeId={previewTarget.nodeId}
           port={previewTarget.port}
           sni={previewTarget.sni}

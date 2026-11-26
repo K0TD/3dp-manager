@@ -22,6 +22,7 @@ export interface ConnectionProfileSnapshot {
   revision: number;
   savedAt: string;
   name: string;
+  flag?: string | null;
   kind: ManagedProfileKind;
   nodeId?: string | null;
   port?: number | null;
@@ -37,6 +38,9 @@ export class ConnectionProfile {
 
   @Column({ type: 'varchar', length: 160 })
   name: string;
+
+  @Column({ type: 'text', nullable: true })
+  flag?: string | null;
 
   @Column({ type: 'varchar', length: 32 })
   kind: ManagedProfileKind;
