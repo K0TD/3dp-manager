@@ -777,7 +777,12 @@ export class XuiService {
   async getSubscriptionUsage(
     email: string,
     node?: Node,
-  ): Promise<{ upload: number; download: number; total: number; expire: number }> {
+  ): Promise<{
+    upload: number;
+    download: number;
+    total: number;
+    expire: number;
+  }> {
     return this.authenticatedRequest(node, async (api) => {
       const details = await api.get<unknown>(
         `/panel/api/clients/get/${encodeURIComponent(email)}`,
@@ -830,7 +835,8 @@ export class XuiService {
     node?: Node,
   ): Promise<XuiCreatedInbound | null> {
     const key = node?.id || 'main';
-    if (!client.email) {
+    const clientEmail = client.email;
+    if (!clientEmail) {
       this.lastInboundErrors.set(
         key,
         'Для привязки инбаунда требуется email клиента 3x-ui',
@@ -840,8 +846,9 @@ export class XuiService {
     return this.withMutation(node, async () => {
       const settings = jsonObject(inboundConfig.settings, 'settings');
       const originalClient =
-        asRecord(Array.isArray(settings.clients) ? settings.clients[0] : undefined) ||
-        {};
+        asRecord(
+          Array.isArray(settings.clients) ? settings.clients[0] : undefined,
+        ) || {};
       const emptyConfig: XuiInboundRaw = {
         ...inboundConfig,
         settings: JSON.stringify({ ...settings, clients: [] }),
@@ -856,7 +863,7 @@ export class XuiService {
         const saved = await this.authenticatedRequest(node, async (api) => {
           await this.pace(node);
           const attached = await api.post<unknown>(
-            `/panel/api/clients/${encodeURIComponent(client.email!)}/attach`,
+            `/panel/api/clients/${encodeURIComponent(clientEmail)}/attach`,
             { inboundIds: [created.id] },
           );
           responsePayload(attached.data);
@@ -872,7 +879,7 @@ export class XuiService {
           if (!savedClients.length) {
             const stored = await this.getSubscriptionClient(
               api,
-              client.email!,
+              clientEmail,
               node,
             );
             normalized.settings = JSON.stringify({
@@ -992,7 +999,10 @@ export class XuiService {
           `/panel/api/inbounds/get/${inboundId}`,
         );
         const saved = normalizeInbound(responsePayload(savedResp.data));
-        const savedSettings = jsonObject(saved.settings, 'saved inbound settings');
+        const savedSettings = jsonObject(
+          saved.settings,
+          'saved inbound settings',
+        );
         const savedClients = Array.isArray(savedSettings.clients)
           ? (savedSettings.clients as Array<Record<string, unknown>>)
           : [];

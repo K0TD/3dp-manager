@@ -2205,7 +2205,7 @@ export class RotationService implements OnModuleInit {
     const email = formatClientEmail(subscription.name, uuid);
     const usePanelClient = Boolean(
       request.panelClient &&
-        !NON_PANEL_CLIENT_CONFIG_TYPES.has(config.type || ''),
+      !NON_PANEL_CLIENT_CONFIG_TYPES.has(config.type || ''),
     );
     const effectiveUuid = (usePanelClient && request.panelClient?.id) || uuid;
     const effectiveEmail =
@@ -2400,7 +2400,11 @@ export class RotationService implements OnModuleInit {
       } catch (error) {
         const deleted =
           saved.protocol === 'vless' && hasSeparateClientApi(node)
-            ? await this.xuiService.deleteInbound(result.id, node, effectiveUuid)
+            ? await this.xuiService.deleteInbound(
+                result.id,
+                node,
+                effectiveUuid,
+              )
             : await this.xuiService.deleteInbound(result.id, node);
         if (!deleted)
           this.logger.error(
