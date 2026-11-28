@@ -1,13 +1,14 @@
 import api from '../../api';
-import type { NodePayload, NodeRecord, RoutingPresetSelection, RoutingPresetView } from '../../types/node';
-
-interface NodeCheckResult {
-  success: boolean;
-  version?: string;
-  xrayVersion?: string;
-  capabilities?: NodeRecord['capabilities'];
-  message?: string;
-}
+import type {
+  MigrateNodeAddressPayload,
+  MigrateNodeAddressResult,
+  NodeCheckPayload,
+  NodeCheckResult,
+  NodePayload,
+  NodeRecord,
+  RoutingPresetSelection,
+  RoutingPresetView,
+} from '../../types/node';
 
 export const nodesApi = {
   async routingPresets(id: string) {
@@ -56,9 +57,17 @@ export const nodesApi = {
     return data;
   },
 
-  async checkPayload(payload: NodePayload) {
+  async checkPayload(payload: NodeCheckPayload) {
     const { data } = await api.post<NodeCheckResult>(
       '/nodes/check',
+      payload,
+    );
+    return data;
+  },
+
+  async migrateAddress(id: string, payload: MigrateNodeAddressPayload) {
+    const { data } = await api.post<MigrateNodeAddressResult>(
+      `/nodes/${id}/migrate-address`,
       payload,
     );
     return data;
@@ -67,6 +76,7 @@ export const nodesApi = {
   async detectLocation(url: string) {
     const { data } = await api.post<{
       ip?: string;
+      resolvedIps?: string[];
       host?: string;
       domain?: string;
       flag?: string;

@@ -4,6 +4,7 @@ import {
   IsIP,
   IsOptional,
   IsString,
+  IsUUID,
   MinLength,
   ValidateIf,
 } from 'class-validator';
@@ -54,7 +55,92 @@ export class CreateNodeDto {
   allowInvalidTls?: boolean;
 }
 
-export class UpdateNodeDto extends PartialType(CreateNodeDto) {}
+export class UpdateNodeDto extends PartialType(CreateNodeDto) {
+  @IsBoolean()
+  @IsOptional()
+  syncSubscriptionLinks?: boolean;
+}
+
+export class CheckNodeDto {
+  @IsUUID()
+  @IsOptional()
+  nodeId?: string;
+
+  @IsString()
+  @IsOptional()
+  name?: string;
+
+  @IsString()
+  url: string;
+
+  @IsIP()
+  @IsOptional()
+  ip?: string;
+
+  @IsString()
+  @IsOptional()
+  domain?: string;
+
+  @IsString()
+  @IsOptional()
+  flag?: string;
+
+  @IsEnum(NodeAuthType)
+  authType: NodeAuthType;
+
+  @IsString()
+  @IsOptional()
+  login?: string;
+
+  @IsString()
+  @IsOptional()
+  password?: string;
+
+  @IsString()
+  @IsOptional()
+  token?: string;
+
+  @IsBoolean()
+  @IsOptional()
+  isMain?: boolean;
+
+  @IsBoolean()
+  @IsOptional()
+  allowInvalidTls?: boolean;
+
+  @IsBoolean()
+  @IsOptional()
+  preferDirectIp?: boolean;
+}
+
+export class MigrateNodeAddressDto {
+  @IsString()
+  url: string;
+
+  @IsIP()
+  @IsOptional()
+  ip?: string;
+
+  @IsString()
+  @IsOptional()
+  domain?: string;
+
+  @IsString()
+  @IsOptional()
+  flag?: string;
+
+  @IsBoolean()
+  @IsOptional()
+  allowInvalidTls?: boolean;
+
+  @IsBoolean()
+  @IsOptional()
+  syncSubscriptionLinks?: boolean;
+
+  @IsBoolean()
+  @IsOptional()
+  preferDirectIp?: boolean;
+}
 
 export class NodeConnectionDto {
   @IsString()

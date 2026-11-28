@@ -7,7 +7,16 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Repository } from 'typeorm';
-import { CreateNodeDto, UpdateNodeDto } from './dto/node.dto';
+import {
+  CheckNodeDto,
+  CreateNodeDto,
+  MigrateNodeAddressDto,
+  UpdateNodeDto,
+} from './dto/node.dto';
+import {
+  patchClientProfileJsonAddress,
+  patchInboundLinkHost,
+} from '../inbounds/inbound-endpoint.util';
 import {
   Node,
   NodeAuthType,
@@ -63,11 +72,30 @@ export class NodesService {
     @Optional() private readonly domainsService?: DomainsService,
   ) {}
 
-  findAll() {
-    return this.nodesRepo.find({
-      where: { deletedAt: IsNull() },
-      order: { isMain: 'DESC', createdAt: 'DESC' },
-    });
+  private sanitizeNode(node: Node) {
+    const hasPassword = Boolean(node.password);
+    const hasToken = Boolean(node.token);
+    const copy = { ...node } as Node & {
+      hasPassword?: boolean;
+      hasToken?: boolean;
+    };
+    delete copy.password;
+    delete copy.token;
+    copy.hasPassword = hasPassword;
+    copy.hasToken = hasToken;
+    return copy;
+  }
+
+  async findAll() {
+    const nodes = await this.nodesRepo
+      .createQueryBuilder('node')
+      .addSelect('node.password')
+      .addSelect('node.token')
+      .where('node.deletedAt IS NULL')
+      .orderBy('node.isMain', 'DESC')
+      .addOrderBy('node.createdAt', 'DESC')
+      .getMany();
+    return nodes.map((node) => this.sanitizeNode(node));
   }
 
   async findOneWithSecrets(id: string, includeDeleted = false) {
@@ -100,6 +128,112 @@ export class NodesService {
       .getOne();
   }
 
+  private getNodePublicAddress(
+    node?: Pick<Node, 'domain' | 'ip' | 'host' | 'url'>,
+  ): string | undefined {
+    if (!node) return undefined;
+    if (node.domain?.trim()) return node.domain.trim();
+    if (node.ip?.trim()) return node.ip.trim();
+    if (node.host?.trim()) return node.host.trim();
+    try {
+      return node.url ? new URL(node.url).hostname : undefined;
+    } catch {
+      return node.url;
+    }
+  }
+
+  private async rewriteNodeInboundEndpoints(
+    nodeId: string,
+    newAddress: string,
+  ): Promise<number> {
+    const inbounds = await this.inboundsRepo.find({ where: { nodeId } });
+    const changed: Inbound[] = [];
+
+    for (const inbound of inbounds) {
+      if (
+        inbound.status !== InboundStatus.Active ||
+        inbound.protocol === 'custom' ||
+        ROUTING_INBOUND_TYPES.has(inbound.protocol) ||
+        inbound.relayServerId ||
+        !inbound.link
+      ) {
+        continue;
+      }
+
+      const nextLink = patchInboundLinkHost(inbound.link, newAddress);
+      const nextProfileJson = patchClientProfileJsonAddress(
+        inbound.clientProfileJson,
+        newAddress,
+      );
+      if (
+        nextLink !== inbound.link ||
+        nextProfileJson !== inbound.clientProfileJson
+      ) {
+        inbound.link = nextLink;
+        inbound.clientProfileJson = nextProfileJson;
+        changed.push(inbound);
+      }
+    }
+
+    if (changed.length > 0) {
+      await this.inboundsRepo.save(changed);
+    }
+
+    return changed.length;
+  }
+
+  private async saveNodeWithDomain(
+    node: Node,
+    options?: {
+      clearMainExceptId?: string;
+      autoMainWhenEmpty?: boolean;
+    },
+  ): Promise<Node> {
+    if (typeof this.nodesRepo.manager?.transaction === 'function') {
+      return this.nodesRepo.manager.transaction(async (manager) => {
+        const repo = manager.getRepository(Node);
+        if (
+          options?.autoMainWhenEmpty &&
+          (await repo.count({ where: { deletedAt: IsNull() } })) === 0
+        ) {
+          node.isMain = true;
+        }
+        if (node.isMain && options?.clearMainExceptId !== undefined) {
+          await this.clearMainNode(
+            options.clearMainExceptId || undefined,
+            repo,
+          );
+        } else if (options?.autoMainWhenEmpty && node.isMain) {
+          await this.clearMainNode(undefined, repo);
+        }
+        const saved = await repo.save(node);
+        await this.domainsService?.addHostDomain(
+          saved.domain ?? node.domain,
+          manager,
+        );
+        return saved;
+      });
+    }
+
+    if (
+      options?.autoMainWhenEmpty &&
+      (await this.nodesRepo.count({ where: { deletedAt: IsNull() } })) === 0
+    ) {
+      node.isMain = true;
+    }
+
+    if (options?.clearMainExceptId !== undefined) {
+      await this.clearMainNode(options.clearMainExceptId || undefined);
+      node.isMain = true;
+    } else if (options?.autoMainWhenEmpty && node.isMain) {
+      await this.clearMainNode();
+    }
+
+    const saved = await this.nodesRepo.save(node);
+    await this.domainsService?.addHostDomain(saved.domain ?? node.domain);
+    return saved;
+  }
+
   async create(dto: CreateNodeDto) {
     this.assertCredentials(dto);
     const resolved = await this.resolveNodeLocation(dto.url, dto.flag, dto.ip);
@@ -116,107 +250,167 @@ export class NodesService {
       isMain: dto.isMain ?? false,
     });
 
-    let savedNode: Node;
-    if (typeof this.nodesRepo.manager?.transaction === 'function') {
-      savedNode = await this.nodesRepo.manager.transaction(async (manager) => {
-        const repo = manager.getRepository(Node);
-        if ((await repo.count({ where: { deletedAt: IsNull() } })) === 0) {
-          node.isMain = true;
-        }
-        if (node.isMain) {
-          await this.clearMainNode(undefined, repo);
-        }
-        const saved = await repo.save(node);
-        await this.domainsService?.addHostDomain(
-          saved.domain ?? node.domain,
-          manager,
-        );
-        return saved;
-      });
-    } else {
-      if (
-        (await this.nodesRepo.count({ where: { deletedAt: IsNull() } })) === 0
-      ) {
-        node.isMain = true;
-      }
-
-      if (node.isMain) {
-        await this.clearMainNode();
-      }
-
-      savedNode = await this.nodesRepo.save(node);
-      await this.domainsService?.addHostDomain(savedNode.domain ?? node.domain);
-    }
-
-    return this.refreshNodeProfile(savedNode);
+    const savedNode = await this.saveNodeWithDomain(node, {
+      autoMainWhenEmpty: true,
+    });
+    const refreshed = await this.refreshNodeProfile(savedNode);
+    return this.sanitizeNode(refreshed);
   }
 
   async update(id: string, dto: UpdateNodeDto) {
     const node = await this.findOneWithSecrets(id);
+    const previousUrl = node.url;
+    const previousHost = node.host;
+    const previousIp = node.ip;
+    const previousAddress = this.getNodePublicAddress(node);
     const nextAuthType = dto.authType ?? node.authType;
+
+    const cleanPassword = dto.password?.trim();
+    const cleanToken = dto.token?.trim();
 
     if (nextAuthType === NodeAuthType.Password) {
       const login = dto.login ?? node.login;
-      const password = dto.password ?? node.password;
+      const password = cleanPassword || node.password;
       if (!login || !password) {
         throw new BadRequestException('Login and password are required');
       }
     }
 
     if (nextAuthType === NodeAuthType.Token) {
-      const token = dto.token ?? node.token;
+      const token = cleanToken || node.token;
       if (!token) {
         throw new BadRequestException('Token is required');
       }
     }
 
-    Object.assign(node, dto);
+    const syncSubscriptionLinks = dto.syncSubscriptionLinks !== false;
+    const patch: Partial<Node> = { ...dto };
+    delete (patch as UpdateNodeDto).syncSubscriptionLinks;
+    if (!cleanPassword) {
+      delete patch.password;
+    } else {
+      patch.password = cleanPassword;
+    }
+    if (!cleanToken) {
+      delete patch.token;
+    } else {
+      patch.token = cleanToken;
+    }
+
+    Object.assign(node, patch);
     if (dto.url) {
       node.url = this.normalizeUrl(dto.url);
+      const nextParsed = this.parseUrl(node.url);
+      const preferredIp =
+        dto.ip && (nextParsed.host === previousHost || dto.ip !== previousIp)
+          ? dto.ip
+          : undefined;
       const resolved = await this.resolveNodeLocation(
         dto.url,
         dto.flag ?? node.flag,
-        dto.ip,
+        preferredIp,
       );
       node.host = resolved.host;
-      node.domain = dto.domain?.trim() || resolved.domain;
+      node.domain =
+        dto.domain !== undefined
+          ? dto.domain.trim() || undefined
+          : resolved.domain;
       node.port = resolved.port;
       node.protocol = resolved.protocol;
-      node.ip = resolved.ip;
+      node.ip = resolved.ip ?? dto.ip ?? previousIp;
       node.flag = resolved.flag;
     } else {
-      if (dto.domain !== undefined)
+      if (dto.domain !== undefined) {
         node.domain = dto.domain.trim() || undefined;
+      }
       if (dto.ip) node.ip = dto.ip;
       if (dto.flag) node.flag = dto.flag;
     }
 
-    let savedNode: Node;
-    if (typeof this.nodesRepo.manager?.transaction === 'function') {
-      savedNode = await this.nodesRepo.manager.transaction(async (manager) => {
-        const repo = manager.getRepository(Node);
-        if (dto.isMain) {
-          await this.clearMainNode(id, repo);
-          node.isMain = true;
-        }
-        const saved = await repo.save(node);
-        await this.domainsService?.addHostDomain(
-          saved.domain ?? node.domain,
-          manager,
-        );
-        return saved;
-      });
-    } else {
-      if (dto.isMain) {
-        await this.clearMainNode(id);
-        node.isMain = true;
-      }
-
-      savedNode = await this.nodesRepo.save(node);
-      await this.domainsService?.addHostDomain(savedNode.domain ?? node.domain);
+    const savedNode = await this.saveNodeWithDomain(node, {
+      clearMainExceptId: dto.isMain ? id : undefined,
+    });
+    if (dto.isMain) {
+      node.isMain = true;
     }
 
-    return this.refreshNodeProfile(savedNode);
+    this.xuiService.invalidatePanelAgent?.(previousUrl);
+    this.xuiService.invalidatePanelAgent?.(savedNode.url);
+
+    const nextAddress = this.getNodePublicAddress(savedNode);
+    if (
+      syncSubscriptionLinks &&
+      nextAddress &&
+      previousAddress &&
+      nextAddress !== previousAddress
+    ) {
+      await this.rewriteNodeInboundEndpoints(savedNode.id, nextAddress);
+    }
+
+    const refreshed = await this.refreshNodeProfile(savedNode);
+    return this.sanitizeNode(refreshed);
+  }
+
+  async migrateAddress(id: string, dto: MigrateNodeAddressDto) {
+    const node = await this.findOneWithSecrets(id);
+    const previousUrl = node.url;
+    const previousHost = node.host;
+    const previousIp = node.ip;
+    const previousAddress = this.getNodePublicAddress(node);
+
+    node.url = this.normalizeUrl(dto.url);
+    const nextParsed = this.parseUrl(node.url);
+    const preferredIp =
+      dto.ip && (nextParsed.host === previousHost || dto.ip !== previousIp)
+        ? dto.ip
+        : undefined;
+    const resolved = await this.resolveNodeLocation(
+      dto.url,
+      dto.flag || node.flag,
+      preferredIp,
+    );
+
+    node.host = resolved.host;
+    node.port = resolved.port;
+    node.protocol = resolved.protocol;
+    node.ip = resolved.ip ?? dto.ip ?? previousIp;
+    node.flag = dto.flag || resolved.flag || node.flag;
+    node.domain =
+      dto.domain !== undefined
+        ? dto.domain.trim() || undefined
+        : resolved.domain;
+    if (dto.allowInvalidTls !== undefined) {
+      node.allowInvalidTls = dto.allowInvalidTls;
+    }
+
+    const savedNode = await this.saveNodeWithDomain(node);
+    this.xuiService.invalidatePanelAgent?.(previousUrl);
+    this.xuiService.invalidatePanelAgent?.(savedNode.url);
+
+    const nextAddress = this.getNodePublicAddress(savedNode);
+    const updatedInbounds =
+      dto.syncSubscriptionLinks !== false && nextAddress
+        ? await this.rewriteNodeInboundEndpoints(savedNode.id, nextAddress)
+        : 0;
+    const tunnels = await this.tunnelsRepo.find({
+      where: { nodeId: savedNode.id },
+    });
+    const affectedTunnels = tunnels.length;
+
+    const status = await this.xuiService.checkNodeConnection(savedNode, {
+      freshConnection: true,
+      preferDirectIp: dto.preferDirectIp,
+    });
+    await this.applyHealthResult(savedNode, status);
+
+    return {
+      node: this.sanitizeNode(savedNode),
+      connection: this.connectionSummary(status),
+      updatedInbounds,
+      affectedTunnels,
+      previousAddress,
+      nextAddress,
+    };
   }
 
   async remove(id: string, mode: 'safe' | 'deferred' | 'force' = 'safe') {
@@ -488,7 +682,7 @@ export class NodesService {
     const node = await this.findOneWithSecrets(id);
     await this.clearMainNode(id);
     node.isMain = true;
-    return this.nodesRepo.save(node);
+    return this.sanitizeNode(await this.nodesRepo.save(node));
   }
 
   async checkConnection(id: string) {
@@ -644,10 +838,16 @@ export class NodesService {
       );
     }
 
-    return { success: true, count: synced.length, nodes: synced };
+    return {
+      success: true,
+      count: synced.length,
+      nodes: synced.map((item) => this.sanitizeNode(item)),
+    };
   }
 
-  private assertCredentials(dto: CreateNodeDto) {
+  private assertCredentials(
+    dto: Pick<CreateNodeDto, 'authType' | 'login' | 'password' | 'token'>,
+  ) {
     if (
       dto.authType === NodeAuthType.Password &&
       (!dto.login || !dto.password)
@@ -674,18 +874,47 @@ export class NodesService {
     await qb.execute();
   }
 
-  async checkPayload(dto: CreateNodeDto) {
-    this.assertCredentials(dto);
+  async checkPayload(dto: CheckNodeDto) {
+    const existing = dto.nodeId
+      ? await this.findOneWithSecrets(dto.nodeId)
+      : undefined;
+    const authType = dto.authType ?? existing?.authType;
+    const login = dto.login?.trim() || existing?.login;
+    const password = dto.password?.trim() || existing?.password;
+    const token = dto.token?.trim() || existing?.token;
+    const allowInvalidTls =
+      dto.allowInvalidTls ?? existing?.allowInvalidTls ?? false;
+    const ip = dto.ip?.trim() || existing?.ip;
+
+    this.assertCredentials({
+      authType,
+      login,
+      password,
+      token,
+    });
+
     const node = this.nodesRepo.create({
+      ...(existing || {}),
       ...dto,
+      authType,
+      login,
+      password,
+      token,
+      allowInvalidTls,
+      ip,
       url: this.normalizeUrl(dto.url),
     });
-    const status = await this.xuiService.checkNodeConnection(node);
+    const status = await this.xuiService.checkNodeConnection(node, {
+      freshConnection: true,
+      preferDirectIp: dto.preferDirectIp,
+    });
     return this.connectionSummary(status);
   }
 
   private async refreshNodeProfile(node: Node) {
-    const status = await this.xuiService.checkNodeConnection(node);
+    const status = await this.xuiService.checkNodeConnection(node, {
+      freshConnection: true,
+    });
     await this.applyHealthResult(node, status);
     return node;
   }
@@ -707,6 +936,8 @@ export class NodesService {
       version: status.version,
       xrayVersion: status.xrayVersion,
       capabilities,
+      responseTimeMs: status.responseTimeMs,
+      diagnostics: status.diagnostics,
       message: status.message,
     };
   }
@@ -715,6 +946,7 @@ export class NodesService {
     const resolved = await this.resolveNodeLocation(url);
     return {
       ip: resolved.ip,
+      resolvedIps: resolved.resolvedIps,
       host: resolved.host,
       domain: resolved.domain,
       port: resolved.port,
@@ -732,13 +964,19 @@ export class NodesService {
   ) {
     const normalized = this.normalizeUrl(url);
     const parsed = this.parseUrl(normalized);
-    const ip = preferredIp || (await this.resolveIp(parsed.host));
+    const resolvedIps = await this.resolveHostIps(parsed.host);
+    const ip =
+      preferredIp ||
+      resolvedIps.find((entry) => net.isIPv4(entry)) ||
+      resolvedIps[0] ||
+      (await this.resolveIp(parsed.host));
     const geo = ip ? await this.lookupGeo(ip) : undefined;
 
     return {
       ...parsed,
       domain: getDomainFromHost(parsed.host),
       ip,
+      resolvedIps,
       country: geo?.country,
       countryCode: geo?.countryCode,
       flag: preferredFlag || geo?.flag,
@@ -761,12 +999,51 @@ export class NodesService {
     }
   }
 
+  private async resolveHostIps(host?: string): Promise<string[]> {
+    const clean = host?.trim().replace(/^\[|\]$/g, '');
+    if (!clean || clean === 'localhost') return [];
+    if (net.isIP(clean) !== 0) return [clean];
+    const collected: string[] = [];
+    try {
+      const v4 = await dns.resolve4(clean);
+      collected.push(...v4);
+    } catch {
+      // Fallback below.
+    }
+    try {
+      const lookups = await dns.lookup(clean, { all: true });
+      for (const item of lookups) {
+        if (item.address && !collected.includes(item.address)) {
+          collected.push(item.address);
+        }
+      }
+    } catch {
+      // Keep any IPv4 records already resolved above.
+    }
+    return collected;
+  }
+
   private async resolveIp(host?: string) {
-    if (!host || host === 'localhost') return undefined;
-    if (net.isIP(host) !== 0) return host;
+    const clean = host?.trim().replace(/^\[|\]$/g, '');
+    if (!clean || clean === 'localhost') return undefined;
+    if (net.isIP(clean) !== 0) return clean;
 
     try {
-      const result = await dns.lookup(host);
+      const v4 = await dns.resolve4(clean);
+      if (v4[0]) return v4[0];
+    } catch {
+      // Fallback below.
+    }
+
+    try {
+      const v4Lookup = await dns.lookup(clean, { family: 4 });
+      if (v4Lookup.address) return v4Lookup.address;
+    } catch {
+      // Fallback below.
+    }
+
+    try {
+      const result = await dns.lookup(clean);
       return result.address;
     } catch {
       return undefined;

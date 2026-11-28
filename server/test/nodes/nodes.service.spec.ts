@@ -1,4 +1,11 @@
+import * as dns from 'dns/promises';
 import { IsNull, Repository } from 'typeorm';
+
+jest.mock('dns/promises', () => ({
+  __esModule: true,
+  lookup: jest.fn(() => Promise.resolve([])),
+  resolve4: jest.fn(() => Promise.resolve([])),
+}));
 import { NodesService } from 'src/nodes/nodes.service';
 import { Node, NodeAuthType } from 'src/nodes/entities/node.entity';
 import { DomainsService } from 'src/domains/domains.service';
@@ -13,13 +20,17 @@ import { databaseAvailability } from 'src/database/database-availability';
 import { Logger } from '@nestjs/common';
 
 describe('NodesService', () => {
-  const createNodeRepo = (getOne: jest.Mock) => ({
+  const createNodeRepo = (getOne: jest.Mock, getMany?: jest.Mock) => ({
     createQueryBuilder: jest.fn(() => ({
       addSelect: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
       getOne,
+      getMany: getMany ?? jest.fn().mockResolvedValue([]),
     })),
+    create: jest.fn((data: Record<string, unknown>) => ({ ...data })),
     count: jest.fn(),
     remove: jest.fn(),
     findOne: jest.fn(),
@@ -377,7 +388,7 @@ describe('NodesService', () => {
     };
     subscriptionsRepo.find.mockResolvedValue([subscription]);
     const published: Inbound[] = [];
-    inboundsRepo.find.mockImplementation(async () => published);
+    inboundsRepo.find.mockImplementation(() => Promise.resolve(published));
     let release!: () => void;
     let entered!: () => void;
     const waiting = new Promise<void>((resolve) => {
@@ -588,7 +599,7 @@ describe('NodesService', () => {
     it('adds node domain in transaction on create and update, and skips IP-only nodes', async () => {
       const txRepo = {
         count: jest.fn().mockResolvedValue(0),
-        save: jest.fn(async (entity: Node) => entity),
+        save: jest.fn((entity: Node) => Promise.resolve(entity)),
         createQueryBuilder: jest.fn(() => ({
           update: jest.fn().mockReturnThis(),
           set: jest.fn().mockReturnThis(),
@@ -610,10 +621,10 @@ describe('NodesService', () => {
       } as Node;
       const nodeRepo = {
         ...createNodeRepo(jest.fn().mockResolvedValue(existingNode)),
-        create: jest.fn((data) => ({ id: 'node-1', ...data })),
+        create: jest.fn((data: Partial<Node>) => ({ id: 'node-1', ...data })),
         manager: {
-          transaction: jest.fn(async (work: (mgr: typeof manager) => Promise<unknown>) =>
-            work(manager),
+          transaction: jest.fn(
+            (work: (mgr: typeof manager) => Promise<unknown>) => work(manager),
           ),
         },
       };
@@ -652,6 +663,293 @@ describe('NodesService', () => {
         'updated.example.com',
         manager,
       );
+    });
+  });
+
+  describe('credential preservation, address migration & sanitization', () => {
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('findAll returns sanitized nodes with hasToken/hasPassword and omits secrets', async () => {
+      const getMany = jest.fn().mockResolvedValue([
+        {
+          id: 'n1',
+          name: 'Token Node',
+          authType: NodeAuthType.Token,
+          token: 'super-secret-token',
+        },
+        {
+          id: 'n2',
+          name: 'Password Node',
+          authType: NodeAuthType.Password,
+          login: 'admin',
+          password: 'super-secret-password',
+        },
+      ]);
+      const repo = createNodeRepo(jest.fn(), getMany);
+      const { service } = createService(repo);
+
+      const list = await service.findAll();
+
+      expect(list).toHaveLength(2);
+      expect(list[0]).toMatchObject({
+        id: 'n1',
+        hasToken: true,
+        hasPassword: false,
+      });
+      expect(list[0]).not.toHaveProperty('token');
+      expect(list[0]).not.toHaveProperty('password');
+      expect(list[1]).toMatchObject({
+        id: 'n2',
+        hasToken: false,
+        hasPassword: true,
+      });
+      expect(list[1]).not.toHaveProperty('password');
+    });
+
+    it('update preserves saved secrets when omitted or blank, resolves new IP, invalidates agents, and rewrites direct inbound links', async () => {
+      jest.spyOn(global, 'fetch').mockResolvedValue({
+        json: () => Promise.resolve({ status: 'fail', success: false }),
+      } as Response);
+
+      const existingNode = {
+        id: 'node-1',
+        name: 'Main Node',
+        url: 'https://old.example.com:2053/panel',
+        host: 'old.example.com',
+        domain: 'old.example.com',
+        ip: '198.51.100.1',
+        flag: '🇩🇪',
+        authType: NodeAuthType.Token,
+        token: 'keep-this-token',
+        isMain: true,
+      } as Node;
+
+      const repo = createNodeRepo(jest.fn().mockResolvedValue(existingNode));
+      repo.save.mockImplementation((entity: Node) => Promise.resolve(entity));
+      const { service, inboundsRepo, xuiService } = createService(repo);
+      const invalidatePanelAgent = jest.fn();
+      Object.assign(xuiService, { invalidatePanelAgent });
+
+      const directVless = {
+        id: 1,
+        nodeId: 'node-1',
+        status: 'active',
+        protocol: 'vless',
+        link: 'vless://uuid-1@old.example.com:443?type=tcp#sub1',
+        clientProfileJson: JSON.stringify({
+          kind: 'xhttp-stable',
+          address: 'old.example.com',
+          port: 443,
+        }),
+      } as Inbound;
+      const customInbound = {
+        id: 2,
+        nodeId: 'node-1',
+        status: 'active',
+        protocol: 'custom',
+        link: 'vless://uuid-2@custom.example.com:443#custom',
+      } as Inbound;
+      const relayInbound = {
+        id: 3,
+        nodeId: 'node-1',
+        status: 'active',
+        protocol: 'vless',
+        relayServerId: 9,
+        link: 'vless://uuid-3@relay.example.com:443#relay',
+      } as Inbound;
+      inboundsRepo.find.mockResolvedValue([
+        directVless,
+        customInbound,
+        relayInbound,
+      ]);
+
+      const updated = await service.update('node-1', {
+        url: 'https://203.0.113.55:2053/panel',
+        domain: '',
+        ip: '203.0.113.55',
+        token: '   ',
+      });
+
+      expect(updated.token).toBeUndefined();
+      expect(updated.hasToken).toBe(true);
+      expect(existingNode.token).toBe('keep-this-token');
+      expect(existingNode.domain).toBeUndefined();
+      expect(existingNode.ip).toBe('203.0.113.55');
+      expect(invalidatePanelAgent).toHaveBeenCalledWith(
+        'https://old.example.com:2053/panel',
+      );
+      expect(invalidatePanelAgent).toHaveBeenCalledWith(
+        'https://203.0.113.55:2053',
+      );
+      expect(directVless.link).toBe(
+        'vless://uuid-1@203.0.113.55:443?type=tcp#sub1',
+      );
+      expect(JSON.parse(directVless.clientProfileJson ?? '{}')).toMatchObject({
+        address: '203.0.113.55',
+      });
+      expect(customInbound.link).toBe(
+        'vless://uuid-2@custom.example.com:443#custom',
+      );
+      expect(relayInbound.link).toBe(
+        'vless://uuid-3@relay.example.com:443#relay',
+      );
+      expect(inboundsRepo.save).toHaveBeenCalledWith([directVless]);
+    });
+
+    it('checkPayload merges stored credentials by nodeId and overrides when new secret provided', async () => {
+      const existingNode = {
+        id: 'node-1',
+        name: 'Stored',
+        url: 'https://old.example.com:2053',
+        ip: '198.51.100.1',
+        authType: NodeAuthType.Password,
+        login: 'admin',
+        password: 'stored-password',
+      } as Node;
+      const repo = createNodeRepo(jest.fn().mockResolvedValue(existingNode));
+      const { service, xuiService } = createService(repo);
+      const checkNodeConnection = jest.fn().mockResolvedValue({
+        success: true,
+        version: '3.11.0',
+        xrayVersion: '26.11.9',
+        responseTimeMs: 25,
+      });
+      Object.assign(xuiService, { checkNodeConnection });
+
+      await service.checkPayload({
+        nodeId: 'node-1',
+        url: 'https://203.0.113.99:2053',
+        authType: NodeAuthType.Password,
+        preferDirectIp: true,
+      });
+
+      expect(checkNodeConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: 'https://203.0.113.99:2053',
+          login: 'admin',
+          password: 'stored-password',
+          ip: '198.51.100.1',
+        }),
+        { freshConnection: true, preferDirectIp: true },
+      );
+
+      await service.checkPayload({
+        nodeId: 'node-1',
+        url: 'https://203.0.113.99:2053',
+        authType: NodeAuthType.Password,
+        password: 'override-password',
+      });
+
+      expect(checkNodeConnection).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          password: 'override-password',
+        }),
+        { freshConnection: true, preferDirectIp: undefined },
+      );
+    });
+
+    it('migrateAddress preserves secrets, rewrites inbounds, counts tunnels, and checks fresh connection', async () => {
+      jest.spyOn(global, 'fetch').mockResolvedValue({
+        json: () => Promise.resolve({ status: 'fail', success: false }),
+      } as Response);
+
+      const existingNode = {
+        id: 'node-1',
+        name: 'Blocked Node',
+        url: 'https://blocked.example.com:2053',
+        host: 'blocked.example.com',
+        domain: 'blocked.example.com',
+        ip: '198.51.100.1',
+        flag: '🇳🇱',
+        authType: NodeAuthType.Token,
+        token: 'preserved-api-token',
+      } as Node;
+      const repo = createNodeRepo(jest.fn().mockResolvedValue(existingNode));
+      repo.save.mockImplementation((entity: Node) => Promise.resolve(entity));
+      const { service, inboundsRepo, tunnelsRepo, xuiService } =
+        createService(repo);
+      const invalidatePanelAgent = jest.fn();
+      const checkNodeConnection = jest.fn().mockResolvedValue({
+        success: true,
+        version: '3.11.0',
+        xrayVersion: '26.11.9',
+        responseTimeMs: 38,
+      });
+      Object.assign(xuiService, { invalidatePanelAgent, checkNodeConnection });
+
+      inboundsRepo.find.mockResolvedValue([
+        {
+          id: 10,
+          nodeId: 'node-1',
+          status: 'active',
+          protocol: 'vless',
+          link: 'vless://u@blocked.example.com:443?type=tcp#n',
+          clientProfileJson: JSON.stringify({
+            kind: 'self-sni',
+            address: 'blocked.example.com',
+            port: 443,
+          }),
+        },
+      ]);
+      tunnelsRepo.find.mockResolvedValue([{ id: 5, nodeId: 'node-1' }]);
+
+      const result = await service.migrateAddress('node-1', {
+        url: 'https://203.0.113.88:2053',
+        domain: '',
+        ip: '203.0.113.88',
+        allowInvalidTls: true,
+        syncSubscriptionLinks: true,
+        preferDirectIp: true,
+      });
+
+      expect(result.node.token).toBeUndefined();
+      expect(result.node.hasToken).toBe(true);
+      expect(existingNode.token).toBe('preserved-api-token');
+      expect(result.updatedInbounds).toBe(1);
+      expect(result.affectedTunnels).toBe(1);
+      expect(result.previousAddress).toBe('blocked.example.com');
+      expect(result.nextAddress).toBe('203.0.113.88');
+      expect(invalidatePanelAgent).toHaveBeenCalledTimes(2);
+      expect(checkNodeConnection).toHaveBeenCalledWith(existingNode, {
+        freshConnection: true,
+        preferDirectIp: true,
+      });
+    });
+
+    it('resolves fresh IP via DNS when changing URL hostname even if old IP is still passed', async () => {
+      jest.spyOn(global, 'fetch').mockResolvedValue({
+        json: () => Promise.resolve({ status: 'fail', success: false }),
+      } as Response);
+      jest.spyOn(dns, 'resolve4').mockResolvedValue(['203.0.113.250']);
+      jest
+        .spyOn(dns, 'lookup')
+        .mockResolvedValue([{ address: '203.0.113.250', family: 4 }] as never);
+
+      const existingNode = {
+        id: 'node-1',
+        name: 'DNS Node',
+        url: 'https://old-dns.example.com:2053',
+        host: 'old-dns.example.com',
+        domain: 'old-dns.example.com',
+        ip: '198.51.100.1',
+        flag: '🇩🇪',
+        authType: NodeAuthType.Token,
+        token: 'secret',
+      } as Node;
+      const repo = createNodeRepo(jest.fn().mockResolvedValue(existingNode));
+      repo.save.mockImplementation((entity: Node) => Promise.resolve(entity));
+      const { service } = createService(repo);
+
+      await service.update('node-1', {
+        url: 'https://new-dns.example.com:2053',
+        ip: '198.51.100.1',
+      });
+
+      expect(existingNode.host).toBe('new-dns.example.com');
+      expect(existingNode.domain).toBe('new-dns.example.com');
+      expect(existingNode.ip).toBe('203.0.113.250');
     });
   });
 });

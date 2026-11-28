@@ -36,15 +36,14 @@ import {
 } from './subscription-name';
 import {
   amneziaConfigFromLink,
-  patchAmneziaVpnEndpoint,
   renameAmneziaVpnLink,
 } from '../inbounds/amnezia-vpn-link';
 import {
   isProxyProtocol,
-  patchConnectionHost,
   proxyConnectionFromLink,
   wireguardConfigFromLink,
 } from '../inbounds/connection-profiles';
+import { patchInboundLinkHost } from '../inbounds/inbound-endpoint.util';
 import { buildXrayClientJsonFromSubscriptionInbounds } from '../profiles/profile-config.builder';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 
@@ -396,53 +395,7 @@ export class ClientController {
 
   /** Relay rewriting preserves generated links that cannot be parsed safely. */
   private patchLink(link: string, newHost: string): string {
-    if (link.startsWith('vmess://')) {
-      return this.tryPatchVmessLink(link, newHost);
-    }
-    if (
-      link.startsWith('vless://') ||
-      link.startsWith('trojan://') ||
-      link.startsWith('hy2://')
-    ) {
-      return link.replace(/@.*?:/, `@${newHost}:`);
-    }
-    if (link.startsWith('ss://'))
-      return link.includes('@') ? link.replace(/@.*?:/, `@${newHost}:`) : link;
-    if (link.startsWith('tg://proxy?'))
-      return this.tryPatchTelegramProxyLink(link, newHost);
-    if (link.startsWith('vpn://'))
-      return this.tryPatchAmneziaWgLink(link, newHost);
-    if (/^(wireguard|mixed|http|socks5):\/\//.test(link))
-      return patchConnectionHost(link, newHost);
-
-    return link;
-  }
-
-  private tryPatchVmessLink(link: string, newHost: string): string {
-    try {
-      const encodedConfig = link.substring(8);
-      const vmessConfig = JSON.parse(
-        Buffer.from(encodedConfig, 'base64').toString('utf-8'),
-      ) as { add: string };
-      vmessConfig.add = newHost;
-      return `vmess://${Buffer.from(JSON.stringify(vmessConfig)).toString('base64')}`;
-    } catch {
-      return link;
-    }
-  }
-
-  private tryPatchTelegramProxyLink(link: string, newHost: string): string {
-    try {
-      const proxyUrl = new URL(link);
-      proxyUrl.searchParams.set('server', newHost);
-      return proxyUrl.toString();
-    } catch {
-      return link;
-    }
-  }
-
-  private tryPatchAmneziaWgLink(link: string, newHost: string): string {
-    return patchAmneziaVpnEndpoint(link, newHost);
+    return patchInboundLinkHost(link, newHost);
   }
 
   private buildPreviewData(

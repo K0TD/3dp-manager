@@ -1,3 +1,4 @@
+import * as dns from 'dns/promises';
 import axios from 'axios';
 import { XuiService } from 'src/xui/xui.service';
 import { Node, NodeAuthType } from 'src/nodes/entities/node.entity';
@@ -15,6 +16,11 @@ import {
 } from 'src/xui/xui-contract';
 
 jest.mock('axios');
+jest.mock('dns/promises', () => ({
+  __esModule: true,
+  lookup: jest.fn(async () => []),
+  resolve4: jest.fn(async () => []),
+}));
 
 const inbound = {
   id: 42,
@@ -1110,6 +1116,97 @@ describe('3x-ui API contracts', () => {
       expect(api.post).not.toHaveBeenCalledWith(
         '/panel/api/clients/del/3dp-sub-uuid',
       );
+    });
+  });
+
+  describe('agent invalidation, TLS diagnostics, and direct-IP fallback', () => {
+    it('destroys cached keep-alive agents when invalidatePanelAgent is called', async () => {
+      await service.waitForXray(tokenNode);
+      const firstCallConfig = (axios.create as jest.Mock).mock.calls[0]?.[0] as {
+        httpsAgent?: { destroy: () => void };
+      };
+      expect(firstCallConfig?.httpsAgent).toBeDefined();
+      const destroySpy = jest.spyOn(firstCallConfig.httpsAgent!, 'destroy');
+
+      service.invalidatePanelAgent(tokenNode.url);
+      expect(destroySpy).toHaveBeenCalledTimes(1);
+
+      await service.waitForXray(tokenNode);
+      const secondCallConfig = (axios.create as jest.Mock).mock.calls[1]?.[0] as {
+        httpsAgent?: unknown;
+      };
+      expect(secondCallConfig?.httpsAgent).not.toBe(firstCallConfig.httpsAgent);
+
+      service.invalidatePanelAgent();
+    });
+
+    it('reports actionable diagnostics and Russian hint for TLS certificate errors', async () => {
+      api.get.mockRejectedValue(
+        Object.assign(
+          new Error('Hostname/IP does not match certificate altnames'),
+          { code: 'ERR_TLS_CERT_ALTNAME_INVALID' },
+        ),
+      );
+
+      const result = await service.checkNodeConnection(tokenNode);
+
+      expect(result.success).toBe(false);
+      expect(result.errorType).toBe('network');
+      expect(result.message).toContain('ERR_TLS_CERT_ALTNAME_INVALID');
+      expect(result.diagnostics?.errorCode).toBe('ERR_TLS_CERT_ALTNAME_INVALID');
+      expect(result.diagnostics?.hint).toContain('Разрешить недоверенный TLS-сертификат');
+    });
+
+    it('supports preferDirectIp and automatic direct-IP fallback on stale DNS timeout', async () => {
+      jest.spyOn(dns, 'lookup').mockResolvedValue([
+        { address: '198.51.100.1', family: 4 },
+      ] as never);
+
+      const domainNode = {
+        ...tokenNode,
+        ip: '203.0.113.10',
+      } as Node;
+
+      const directResult = await service.checkNodeConnection(domainNode, {
+        preferDirectIp: true,
+      });
+      expect(directResult.success).toBe(true);
+      expect(directResult.diagnostics?.usedDirectIp).toBe(true);
+      const createdOpts = (axios.create as jest.Mock).mock.calls[0]?.[0] as {
+        httpsAgent?: { options?: { servername?: string; lookup?: unknown } };
+      };
+      expect(createdOpts?.httpsAgent?.options?.servername).toBe('panel.test');
+      expect(typeof createdOpts?.httpsAgent?.options?.lookup).toBe('function');
+
+      (axios.create as jest.Mock).mockClear();
+      const defaultImpl = api.get.getMockImplementation();
+      let firstInboundListAttempt = true;
+      api.get.mockImplementation(async (path: string) => {
+        if (path === '/panel/api/inbounds/list' && firstInboundListAttempt) {
+          firstInboundListAttempt = false;
+          throw Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' });
+        }
+        return defaultImpl(path);
+      });
+
+      const fallbackResult = await service.checkNodeConnection(domainNode);
+      expect(fallbackResult.success).toBe(true);
+      expect(fallbackResult.diagnostics?.usedDirectIp).toBe(true);
+      expect(fallbackResult.diagnostics?.resolvedIps).toEqual(['198.51.100.1']);
+      expect(fallbackResult.diagnostics?.configuredIp).toBe('203.0.113.10');
+    });
+
+    it('fast-fails attachCsrfToken on network timeout without polling all CSRF endpoints', async () => {
+      api.get.mockRejectedValue(
+        Object.assign(new Error('timeout of 8000ms exceeded'), { code: 'ECONNABORTED' }),
+      );
+
+      const result = await service.checkNodeConnection(passwordNode);
+
+      expect(result.success).toBe(false);
+      expect(result.errorType).toBe('network');
+      expect(api.get).toHaveBeenCalledTimes(1);
+      expect(api.get).toHaveBeenCalledWith('/csrf-token');
     });
   });
 });

@@ -9,7 +9,12 @@ import {
   Put,
   Query,
 } from '@nestjs/common';
-import { CreateNodeDto, UpdateNodeDto } from './dto/node.dto';
+import {
+  CheckNodeDto,
+  CreateNodeDto,
+  MigrateNodeAddressDto,
+  UpdateNodeDto,
+} from './dto/node.dto';
 import { NodesService } from './nodes.service';
 import { RoutingPresetsService } from './routing/routing-presets.service';
 import { UpdateRoutingPresetsDto } from './dto/routing-presets.dto';
@@ -45,7 +50,7 @@ export class NodesController {
   }
 
   @Post('check')
-  checkPayload(@Body() dto: CreateNodeDto) {
+  checkPayload(@Body() dto: CheckNodeDto) {
     return this.nodesService.checkPayload(dto);
   }
 
@@ -62,6 +67,14 @@ export class NodesController {
   @Put(':id')
   update(@Param('id') id: string, @Body() dto: UpdateNodeDto) {
     return this.nodesService.update(id, dto);
+  }
+
+  @Post(':id/migrate-address')
+  migrateAddress(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: MigrateNodeAddressDto,
+  ) {
+    return this.nodesService.migrateAddress(id, dto);
   }
 
   @Delete(':id')

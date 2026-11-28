@@ -29,6 +29,16 @@ export interface NodeCapabilities {
   warnings: string[];
 }
 
+export interface NodeConnectionDiagnostics {
+  targetHost?: string;
+  targetPort?: number;
+  resolvedIps?: string[];
+  configuredIp?: string;
+  usedDirectIp?: boolean;
+  errorCode?: string;
+  hint?: string;
+}
+
 export interface NodeRecord {
   id: string;
   name: string;
@@ -41,6 +51,8 @@ export interface NodeRecord {
   protocol?: NodeProtocol;
   authType: NodeAuthType;
   login?: string;
+  hasPassword?: boolean;
+  hasToken?: boolean;
   isMain: boolean;
   version?: string;
   xrayVersion?: string;
@@ -70,4 +82,50 @@ export interface NodePayload {
   token?: string;
   isMain?: boolean;
   allowInvalidTls?: boolean;
+  syncSubscriptionLinks?: boolean;
+}
+
+export interface NodeCheckPayload {
+  nodeId?: string;
+  name?: string;
+  url: string;
+  domain?: string;
+  ip?: string;
+  flag?: string;
+  authType: NodeAuthType;
+  login?: string;
+  password?: string;
+  token?: string;
+  isMain?: boolean;
+  allowInvalidTls?: boolean;
+  preferDirectIp?: boolean;
+}
+
+export interface NodeCheckResult {
+  success: boolean;
+  version?: string;
+  xrayVersion?: string;
+  capabilities?: NodeCapabilities;
+  responseTimeMs?: number;
+  diagnostics?: NodeConnectionDiagnostics;
+  message?: string;
+}
+
+export interface MigrateNodeAddressPayload {
+  url: string;
+  domain?: string;
+  ip?: string;
+  flag?: string;
+  allowInvalidTls?: boolean;
+  syncSubscriptionLinks?: boolean;
+  preferDirectIp?: boolean;
+}
+
+export interface MigrateNodeAddressResult {
+  node: NodeRecord;
+  connection: NodeCheckResult;
+  updatedInbounds: number;
+  affectedTunnels: number;
+  previousAddress?: string;
+  nextAddress?: string;
 }

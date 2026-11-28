@@ -155,4 +155,196 @@ describe('NodesPage', () => {
     });
     expect(mockDelete).not.toHaveBeenCalled();
   });
+
+  it('masks saved secrets in edit dialog and preserves credentials when checking or saving new URL', async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/nodes') {
+        return Promise.resolve({
+          data: [
+            {
+              id: 'node-1',
+              name: 'Main Node',
+              url: 'https://old.example.com:2053',
+              domain: 'old.example.com',
+              ip: '198.51.100.1',
+              flag: '🇩🇪',
+              authType: 'token',
+              hasToken: true,
+              isMain: true,
+              allowInvalidTls: false,
+            },
+          ],
+        });
+      }
+      if (url === '/settings/countries') {
+        return Promise.resolve({
+          data: [{ name: 'Germany', code: 'DE', emoji: '🇩🇪' }],
+        });
+      }
+      return Promise.resolve({ data: {} });
+    });
+    mockPost.mockResolvedValue({
+      data: {
+        success: true,
+        version: '3.11.0',
+        xrayVersion: '26.11.9',
+        responseTimeMs: 45,
+      },
+    });
+    mockPut.mockResolvedValue({ data: { id: 'node-1' } });
+
+    render(
+      <ThemeProvider>
+        <NodesPage />
+      </ThemeProvider>,
+    );
+
+    const editBtn = await screen.findByRole('button', { name: /Редактировать Main Node/ });
+    fireEvent.click(editBtn);
+
+    const tokenInput = screen.getByLabelText(/^Токен/) as HTMLInputElement;
+    expect(tokenInput.value).toBe('••••••••••••••••');
+    expect(tokenInput.type).toBe('password');
+    expect(screen.getByText('Сохранён')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Заменить' })).toBeInTheDocument();
+
+    const urlInput = screen.getByLabelText(/URL панели 3x-ui/);
+    fireEvent.change(urlInput, { target: { value: 'https://203.0.113.55:2053/panel' } });
+
+    expect((screen.getByLabelText(/Домен ноды/) as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText(/IP ноды/) as HTMLInputElement).value).toBe('203.0.113.55');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Проверить подключение' }));
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledWith(
+        '/nodes/check',
+        expect.objectContaining({
+          nodeId: 'node-1',
+          url: 'https://203.0.113.55:2053/panel',
+          ip: '203.0.113.55',
+          authType: 'token',
+        }),
+      );
+    });
+    const checkCall = mockPost.mock.calls.find(([path]) => path === '/nodes/check');
+    expect(checkCall?.[1]).not.toHaveProperty('token', '••••••••••••••••');
+    expect(checkCall?.[1]?.token).toBeUndefined();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+    await waitFor(() => {
+      expect(mockPut).toHaveBeenCalledWith(
+        '/nodes/node-1',
+        expect.objectContaining({
+          url: 'https://203.0.113.55:2053/panel',
+          domain: '',
+          ip: '203.0.113.55',
+          syncSubscriptionLinks: true,
+        }),
+      );
+    });
+    const putCall = mockPut.mock.calls[0];
+    expect(putCall?.[1]?.token).toBeUndefined();
+  });
+
+  it('supports fast address migration dialog without re-entering secrets', async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/nodes') {
+        return Promise.resolve({
+          data: [
+            {
+              id: 'node-1',
+              name: 'Main Node',
+              url: 'https://blocked.example.com:2053',
+              domain: 'blocked.example.com',
+              ip: '198.51.100.1',
+              flag: '🇩🇪',
+              authType: 'password',
+              login: 'admin',
+              hasPassword: true,
+              isMain: true,
+            },
+          ],
+        });
+      }
+      return Promise.resolve({ data: [] });
+    });
+    mockPost.mockImplementation((url: string) => {
+      if (url === '/nodes/check') {
+        return Promise.resolve({
+          data: {
+            success: true,
+            version: '3.11.0',
+            xrayVersion: '26.11.9',
+            responseTimeMs: 32,
+          },
+        });
+      }
+      if (url === '/nodes/node-1/migrate-address') {
+        return Promise.resolve({
+          data: {
+            node: { id: 'node-1', name: 'Main Node' },
+            connection: { success: true, version: '3.11.0', xrayVersion: '26.11.9' },
+            updatedInbounds: 4,
+            affectedTunnels: 0,
+          },
+        });
+      }
+      return Promise.resolve({ data: {} });
+    });
+
+    render(
+      <ThemeProvider>
+        <NodesPage />
+      </ThemeProvider>,
+    );
+
+    const migrateBtn = await screen.findByRole('button', {
+      name: /Быстрая смена адреса Main Node/,
+    });
+    fireEvent.click(migrateBtn);
+
+    expect(
+      await screen.findByText(/Токен\/пароль панели сохраняются автоматически/),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/IP ноды/), {
+      target: { value: '198.51.100.77' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Перейти на прямой IP' }));
+
+    expect((screen.getByLabelText(/Новый URL панели 3x-ui/) as HTMLInputElement).value).toBe(
+      'https://198.51.100.77:2053',
+    );
+    expect(
+      (screen.getByLabelText(/Домен ноды/) as HTMLInputElement).value,
+    ).toBe('');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Проверить новый адрес' }));
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledWith(
+        '/nodes/check',
+        expect.objectContaining({
+          nodeId: 'node-1',
+          url: 'https://198.51.100.77:2053',
+          ip: '198.51.100.77',
+          allowInvalidTls: true,
+        }),
+      );
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Применить и адаптировать' }));
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledWith(
+        '/nodes/node-1/migrate-address',
+        expect.objectContaining({
+          url: 'https://198.51.100.77:2053',
+          domain: '',
+          ip: '198.51.100.77',
+          allowInvalidTls: true,
+          syncSubscriptionLinks: true,
+          preferDirectIp: false,
+        }),
+      );
+    });
+  });
 });

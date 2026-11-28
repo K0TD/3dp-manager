@@ -12,8 +12,10 @@ import axios, {
   AxiosResponse,
   InternalAxiosRequestConfig,
 } from 'axios';
+import * as dns from 'dns/promises';
 import * as http from 'http';
 import * as https from 'https';
+import * as net from 'net';
 import { randomBytes, randomUUID } from 'crypto';
 import { Setting } from '../settings/entities/setting.entity';
 import {
@@ -64,6 +66,15 @@ type RetriableRequestConfig = InternalAxiosRequestConfig & {
 };
 
 export type XuiConnectionError = 'auth' | 'network' | 'api';
+export interface XuiConnectionDiagnostics {
+  targetHost?: string;
+  targetPort?: number;
+  resolvedIps?: string[];
+  configuredIp?: string;
+  usedDirectIp?: boolean;
+  errorCode?: string;
+  hint?: string;
+}
 export interface XuiConnectionStatus {
   success: boolean;
   version?: string;
@@ -78,6 +89,7 @@ export interface XuiConnectionStatus {
   responseTimeMs?: number;
   errorType?: XuiConnectionError;
   message?: string;
+  diagnostics?: XuiConnectionDiagnostics;
 }
 export interface XuiCertificateFiles {
   certificateFile: string;
@@ -117,19 +129,71 @@ export class XuiService {
     return this.lastInboundErrors.get(node?.id || 'main');
   }
 
-  private createApi(baseURL: string, allowInvalidTls = false): AxiosInstance {
-    const cleanBaseURL = baseURL
+  private normalizeBaseUrl(baseURL: string): string {
+    return baseURL
       .trim()
       .replace(/\/(?:panel|xui)(?:\/.*)?$/i, '')
       .replace(/\/+$/, '');
+  }
+
+  /**
+   * Сбрасывает и закрывает кэшированный keep-alive HTTP/HTTPS-агент для указанной ноды
+   * (или для всех нод, если URL не передан).
+   */
+  invalidatePanelAgent(url?: string): void {
+    if (!url) {
+      for (const agent of this.panelAgents.values()) {
+        agent.destroy();
+      }
+      this.panelAgents.clear();
+      return;
+    }
+
+    const clean = this.normalizeBaseUrl(url);
+    let origin: string;
+    try {
+      origin = new URL(clean).origin;
+    } catch {
+      origin = clean;
+    }
+
+    for (const [key, agent] of Array.from(this.panelAgents.entries())) {
+      if (
+        key.startsWith(`http|${origin}|`) ||
+        key.startsWith(`https|${origin}|`)
+      ) {
+        agent.destroy();
+        this.panelAgents.delete(key);
+      }
+    }
+  }
+
+  private createApi(
+    baseURL: string,
+    allowInvalidTls = false,
+    options?: { freshAgent?: boolean; directIp?: string },
+  ): AxiosInstance {
+    const cleanBaseURL = this.normalizeBaseUrl(baseURL);
+    let hostname: string | undefined;
+    try {
+      hostname = new URL(cleanBaseURL).hostname.replace(/^\[|\]$/g, '');
+    } catch {
+      hostname = undefined;
+    }
+    const useFresh = Boolean(options?.freshAgent || options?.directIp);
+
     const api = axios.create({
       baseURL: cleanBaseURL,
       timeout: 8000,
       proxy: false,
       withCredentials: true,
       maxRedirects: 0,
-      httpAgent: this.panelAgent(cleanBaseURL, false, allowInvalidTls),
-      httpsAgent: this.panelAgent(cleanBaseURL, true, allowInvalidTls),
+      httpAgent: useFresh
+        ? this.createFreshAgent(false, allowInvalidTls, options?.directIp, hostname)
+        : this.panelAgent(cleanBaseURL, false, allowInvalidTls),
+      httpsAgent: useFresh
+        ? this.createFreshAgent(true, allowInvalidTls, options?.directIp, hostname)
+        : this.panelAgent(cleanBaseURL, true, allowInvalidTls),
     });
     api.interceptors.request.use((config) => {
       config.signal ??= AbortSignal.timeout(config.timeout || 8000);
@@ -157,10 +221,73 @@ export class XuiService {
           );
           return api.request(config);
         }
+        if (!error.response && !useFresh) {
+          this.invalidatePanelAgent(cleanBaseURL);
+        }
         return Promise.reject(error);
       },
     );
     return api;
+  }
+
+  private createFreshAgent(
+    secure: boolean,
+    allowInvalidTls: boolean,
+    directIp?: string,
+    servername?: string,
+  ): http.Agent {
+    const cleanIp = directIp?.trim().replace(/^\[|\]$/g, '');
+    const family = cleanIp ? net.isIP(cleanIp) : 0;
+    const lookup: http.AgentOptions['lookup'] =
+      family === 4 || family === 6
+        ? ((
+            _hostname: string,
+            options: { all?: boolean } | number | undefined,
+            callback: (
+              err: NodeJS.ErrnoException | null,
+              address: string | Array<{ address: string; family: number }>,
+              family?: number,
+            ) => void,
+          ) => {
+            process.nextTick(() => {
+              if (
+                options &&
+                typeof options === 'object' &&
+                options.all === true
+              ) {
+                callback(null, [{ address: cleanIp!, family }]);
+              } else {
+                callback(null, cleanIp!, family);
+              }
+            });
+          }) as http.AgentOptions['lookup']
+        : undefined;
+
+    const baseOptions: http.AgentOptions = {
+      keepAlive: false,
+      timeout: 8000,
+      autoSelectFamily: true,
+      autoSelectFamilyAttemptTimeout: 500,
+      ...(lookup ? { lookup } : {}),
+    };
+
+    if (!secure) {
+      return new http.Agent(baseOptions);
+    }
+
+    const cleanSni = servername?.trim().replace(/^\[|\]$/g, '');
+    const useSni = Boolean(
+      lookup &&
+        cleanSni &&
+        cleanSni !== 'localhost' &&
+        net.isIP(cleanSni) === 0,
+    );
+    const httpsOptions: https.AgentOptions = {
+      ...baseOptions,
+      rejectUnauthorized: !allowInvalidTls,
+      ...(useSni ? { servername: cleanSni } : {}),
+    };
+    return new https.Agent(httpsOptions);
   }
 
   private panelAgent(
@@ -177,10 +304,12 @@ export class XuiService {
     const key = `${secure ? 'https' : 'http'}|${origin}|${allowInvalidTls}`;
     let agent = this.panelAgents.get(key);
     if (!agent) {
-      const options = {
+      const options: http.AgentOptions = {
         keepAlive: true,
         maxSockets: 1,
         timeout: PANEL_SOCKET_IDLE_MS,
+        autoSelectFamily: true,
+        autoSelectFamilyAttemptTimeout: 500,
       };
       agent = secure
         ? new https.Agent({ ...options, rejectUnauthorized: !allowInvalidTls })
@@ -254,7 +383,10 @@ export class XuiService {
           api.defaults.headers.common['X-CSRF-Token'] = token;
           return token;
         }
-      } catch {
+      } catch (error) {
+        if (!(error as AxiosError)?.response) {
+          throw error;
+        }
         /* Older panels may not expose this CSRF source. */
       }
     }
@@ -284,10 +416,13 @@ export class XuiService {
     await this.attachCsrfToken(api, response);
   }
 
-  private async createAuthenticatedApi(node?: Node): Promise<AxiosInstance> {
+  private async createAuthenticatedApi(
+    node?: Node,
+    options?: { freshAgent?: boolean; directIp?: string },
+  ): Promise<AxiosInstance> {
     if (node) {
       const url = node.url || `${node.protocol}://${node.host}:${node.port}`;
-      const api = this.createApi(url, node.allowInvalidTls === true);
+      const api = this.createApi(url, node.allowInvalidTls === true, options);
       if (node.authType === NodeAuthType.Token) {
         if (!node.token) throw new XuiApiError('API token is missing', 'auth');
         api.defaults.headers.common.Authorization = `Bearer ${node.token}`;
@@ -304,7 +439,7 @@ export class XuiService {
     if (!config.xui_url || !config.xui_login || !config.xui_password) {
       throw new XuiApiError('Panel credentials are missing', 'auth');
     }
-    const api = this.createApi(config.xui_url, true);
+    const api = this.createApi(config.xui_url, true, options);
     await this.authenticatePassword(api, config.xui_login, config.xui_password);
     // Kept for legacy consumers; requests use the instance's own cookies.
     this.sessionService.setFromHeaders(
@@ -313,24 +448,112 @@ export class XuiService {
     return api;
   }
 
-  private async authenticatedRequest<T>(
+  private async runAuthenticatedOnce<T>(
     node: Node | undefined,
     work: (api: AxiosInstance) => Promise<T>,
     initialApi?: AxiosInstance,
+    options?: { freshAgent?: boolean; directIp?: string },
   ): Promise<T> {
-    let api = initialApi || (await this.createAuthenticatedApi(node));
+    let api = initialApi || (await this.createAuthenticatedApi(node, options));
     for (let attempt = 0; ; attempt++) {
       try {
         return await work(api);
       } catch (error) {
         const status = (error as AxiosError).response?.status;
         if (attempt >= 1 || node?.authType === NodeAuthType.Token) throw error;
-        if (status === 401) api = await this.createAuthenticatedApi(node);
-        else if (status === 403) {
+        if (status === 401) {
+          api = await this.createAuthenticatedApi(node, options);
+        } else if (status === 403) {
           const token = await this.attachCsrfToken(api);
           if (!token) throw error;
         } else throw error;
       }
+    }
+  }
+
+  private async authenticatedRequest<T>(
+    node: Node | undefined,
+    work: (api: AxiosInstance) => Promise<T>,
+    initialApi?: AxiosInstance,
+    options?: { freshAgent?: boolean; directIp?: string },
+  ): Promise<T> {
+    try {
+      return await this.runAuthenticatedOnce(node, work, initialApi, options);
+    } catch (error) {
+      const err = error as AxiosError;
+      const configuredIp = node?.ip?.trim().replace(/^\[|\]$/g, '');
+      if (
+        initialApi ||
+        options?.directIp ||
+        err?.response ||
+        error instanceof XuiApiError ||
+        !configuredIp ||
+        net.isIP(configuredIp) === 0
+      ) {
+        throw error;
+      }
+
+      const target = this.parseTargetEndpoint(node);
+      const isDomainHost = Boolean(
+        target.targetHost &&
+          target.targetHost !== 'localhost' &&
+          net.isIP(target.targetHost) === 0,
+      );
+      if (!isDomainHost) throw error;
+
+      const resolvedIps = await this.resolveHostIps(target.targetHost);
+      if (resolvedIps.includes(configuredIp)) throw error;
+
+      return this.runAuthenticatedOnce(node, work, undefined, {
+        ...options,
+        freshAgent: true,
+        directIp: configuredIp,
+      });
+    }
+  }
+
+  private parseTargetEndpoint(node?: Pick<Node, 'url' | 'host' | 'port' | 'protocol'>): {
+    targetHost?: string;
+    targetPort?: number;
+  } {
+    const rawUrl =
+      node?.url ||
+      (node?.host
+        ? `${node.protocol || 'https'}://${node.host}${node.port ? `:${node.port}` : ''}`
+        : undefined);
+    if (!rawUrl) {
+      return {};
+    }
+    try {
+      const normalized = rawUrl.includes('://') ? rawUrl : `https://${rawUrl}`;
+      const parsed = new URL(normalized);
+      const targetHost = parsed.hostname.replace(/^\[|\]$/g, '') || undefined;
+      const targetPort = parsed.port
+        ? Number(parsed.port)
+        : parsed.protocol === 'http:'
+          ? 80
+          : 443;
+      return {
+        targetHost,
+        targetPort: Number.isFinite(targetPort) ? targetPort : undefined,
+      };
+    } catch {
+      return {
+        targetHost: node?.host?.replace(/^\[|\]$/g, '') || undefined,
+        targetPort: node?.port,
+      };
+    }
+  }
+
+  private async resolveHostIps(hostname?: string): Promise<string[]> {
+    const clean = hostname?.trim().replace(/^\[|\]$/g, '');
+    if (!clean || clean === 'localhost') return [];
+    if (net.isIP(clean) !== 0) return [clean];
+    try {
+      const records = await dns.lookup(clean, { all: true });
+      return Array.from(new Set(records.map((entry) => entry.address).filter(Boolean)));
+    } catch {
+      return [];
     }
   }
 
@@ -344,6 +567,82 @@ export class XuiService {
     }
   }
 
+  private extractNetworkOrTlsCode(error: unknown): {
+    code?: string;
+    isTls: boolean;
+    isTimeout: boolean;
+  } {
+    const err = error as AxiosError<{ msg?: string }>;
+    const rawCode = typeof err.code === 'string' ? err.code : '';
+    const msg = typeof err.message === 'string' ? err.message : '';
+    const knownPattern =
+      /\b(ERR_TLS_CERT_ALTNAME_INVALID|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE|CERT_HAS_EXPIRED|CERT_NOT_YET_VALID|ERR_SSL_WRONG_VERSION_NUMBER|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNABORTED|EHOSTUNREACH|ENETUNREACH|EPROTO)\b/;
+    const code = knownPattern.test(rawCode)
+      ? rawCode
+      : msg.match(knownPattern)?.[1];
+    const isTls =
+      /^(ERR_TLS_CERT_ALTNAME_INVALID|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE|CERT_HAS_EXPIRED|CERT_NOT_YET_VALID|ERR_SSL_WRONG_VERSION_NUMBER|EPROTO)$/.test(
+        code || '',
+      ) || /certificate|self[- ]signed|altnames|wrong version number|ssl/i.test(msg);
+    const isTimeout =
+      /timeout|aborted|cancel/i.test(msg) ||
+      /ETIMEDOUT|ECONNABORTED/.test(code || '');
+    return { code, isTls, isTimeout };
+  }
+
+  private extractErrorDiagnostics(
+    error: unknown,
+    target: { targetHost?: string; targetPort?: number },
+    resolvedIps: string[],
+    configuredIp?: string,
+    usedDirectIp?: boolean,
+  ): XuiConnectionDiagnostics {
+    const err = error as AxiosError<{ msg?: string }>;
+    const status = err.response?.status;
+    const { code, isTls, isTimeout } = this.extractNetworkOrTlsCode(error);
+    const targetAddr =
+      (usedDirectIp ? configuredIp : resolvedIps[0]) ||
+      configuredIp ||
+      target.targetHost;
+    const mismatchNote =
+      configuredIp && resolvedIps.length > 0 && !resolvedIps.includes(configuredIp)
+        ? ` (DNS возвращает ${resolvedIps.join(', ')}, а в настройках ноды указан IP ${configuredIp})`
+        : '';
+
+    let hint: string | undefined;
+    if (isTls) {
+      hint =
+        'Включите «Разрешить недоверенный TLS-сертификат» или проверьте домен и сертификат панели.';
+    } else if (
+      (error instanceof XuiApiError && error.kind === 'auth') ||
+      status === 401 ||
+      status === 403
+    ) {
+      hint = 'Проверьте API-токен или логин/пароль панели.';
+    } else if (status === 404) {
+      hint = 'Проверьте путь панели (basePath) в URL.';
+    } else if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+      hint =
+        'Домен не резолвится в DNS. Проверьте DNS-запись или переключите URL на прямой IP панели.';
+    } else if (code === 'ECONNREFUSED') {
+      hint = `Порт ${target.targetPort || 'панели'} закрыт или панель 3x-ui не отвечает по адресу ${targetAddr || 'ноды'}${mismatchNote}.`;
+    } else if (isTimeout) {
+      hint = `Таймаут подключения к ${targetAddr || 'ноде'}${target.targetPort ? `:${target.targetPort}` : ''}${mismatchNote}. Проверьте новый IP/порт в URL, файрвол сервера или прямой IP.`;
+    } else if (mismatchNote) {
+      hint = `Проверьте соответствие DNS и IP ноды${mismatchNote}.`;
+    }
+
+    return {
+      targetHost: target.targetHost,
+      targetPort: target.targetPort,
+      resolvedIps: resolvedIps.length ? resolvedIps : undefined,
+      configuredIp,
+      usedDirectIp,
+      errorCode: code || (status ? `HTTP_${status}` : undefined),
+      hint,
+    };
+  }
+
   private errorMessage(error: unknown): string {
     if (error instanceof XuiApiError) return error.message;
     const err = error as AxiosError<{ msg?: string }>;
@@ -351,17 +650,12 @@ export class XuiService {
       return err.response.data?.msg
         ? `3x-ui returned HTTP ${err.response.status}: ${safePanelMessage(err.response.data.msg, 16384)}`
         : `3x-ui returned HTTP ${err.response.status}`;
-    const code =
-      /^(ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNABORTED)$/.test(
-        err.code || '',
-      )
-        ? err.code
-        : err.message?.match(
-            /\b(ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNABORTED)\b/,
-          )?.[1];
+    const { code, isTls, isTimeout } = this.extractNetworkOrTlsCode(error);
     const networkCode = code ? ` (${code})` : '';
-    return /timeout|aborted|cancel/i.test(err.message || '') ||
-      /ETIMEDOUT|ECONNABORTED/.test(code || '')
+    if (isTls) {
+      return `TLS certificate error${networkCode}`;
+    }
+    return isTimeout
       ? `Connection timed out${networkCode}`
       : `Node is unreachable${networkCode}`;
   }
@@ -1593,65 +1887,130 @@ export class XuiService {
       : null;
   }
 
-  async checkNodeConnection(node: Node): Promise<XuiConnectionStatus> {
+  async checkNodeConnection(
+    node: Node,
+    options?: { freshConnection?: boolean; preferDirectIp?: boolean },
+  ): Promise<XuiConnectionStatus> {
     const started = Date.now();
+    const target = this.parseTargetEndpoint(node);
+    const resolvedIps = await this.resolveHostIps(target.targetHost);
+    const configuredIp = node.ip?.trim().replace(/^\[|\]$/g, '') || undefined;
+    const validConfiguredIp =
+      configuredIp && net.isIP(configuredIp) !== 0 ? configuredIp : undefined;
+    const isDomainHost = Boolean(
+      target.targetHost &&
+        target.targetHost !== 'localhost' &&
+        net.isIP(target.targetHost) === 0,
+    );
+
+    const probeOnce = async (apiOptions: {
+      freshAgent: boolean;
+      directIp?: string;
+    }) =>
+      this.runAuthenticatedOnce(
+        node,
+        async (api) => {
+          const list = await api.get<unknown>('/panel/api/inbounds/list');
+          if (!Array.isArray(responsePayload(list.data)))
+            throw new XuiApiError('Invalid inbound list');
+          const [status, update, certificate] = await Promise.all([
+            this.optionalGet(api, '/panel/api/server/status'),
+            this.optionalGet(api, '/panel/api/server/getPanelUpdateInfo'),
+            this.optionalGet(api, '/panel/api/server/getWebCertFiles'),
+          ]);
+          const payload = asRecord(asRecord(status?.data)?.obj);
+          const xray = asRecord(payload?.xray);
+          const mem = asRecord(payload?.mem);
+          const disk = asRecord(payload?.disk);
+          const toPercent = (rec: Record<string, unknown> | undefined) => {
+            const current = Number(rec?.current);
+            const total = Number(rec?.total);
+            if (
+              !Number.isFinite(current) ||
+              !Number.isFinite(total) ||
+              total <= 0
+            ) {
+              return undefined;
+            }
+            return Math.min(100, Math.max(0, (current / total) * 100));
+          };
+          const rawCpu = Number(payload?.cpu);
+          const cpuPercent = Number.isFinite(rawCpu)
+            ? Math.min(100, Math.max(0, rawCpu))
+            : undefined;
+          const files = this.parseCertificateFiles(
+            asRecord(certificate?.data)?.obj,
+          );
+          const version: unknown =
+            payload?.panelVersion ||
+            asRecord(asRecord(update?.data)?.obj)?.currentVersion ||
+            list.headers?.['x-ui-version'] ||
+            list.headers?.['x-3x-ui-version'];
+          return {
+            version: typeof version === 'string' ? version : undefined,
+            xrayVersion:
+              typeof xray?.version === 'string' ? xray.version : undefined,
+            xrayState: typeof xray?.state === 'string' ? xray.state : undefined,
+            xrayError: xray?.errorMsg
+              ? safePanelMessage(xray.errorMsg)
+              : undefined,
+            cpuPercent,
+            memPercent: toPercent(mem),
+            diskPercent: toPercent(disk),
+            webCertificateFile: files?.certificateFile,
+            webKeyFile: files?.keyFile,
+          };
+        },
+        undefined,
+        apiOptions,
+      );
+
+    let usedDirectIp = Boolean(
+      options?.preferDirectIp && validConfiguredIp && isDomainHost,
+    );
     try {
-      const profile = await this.authenticatedRequest(node, async (api) => {
-        const list = await api.get<unknown>('/panel/api/inbounds/list');
-        if (!Array.isArray(responsePayload(list.data)))
-          throw new XuiApiError('Invalid inbound list');
-        const [status, update, certificate] = await Promise.all([
-          this.optionalGet(api, '/panel/api/server/status'),
-          this.optionalGet(api, '/panel/api/server/getPanelUpdateInfo'),
-          this.optionalGet(api, '/panel/api/server/getWebCertFiles'),
-        ]);
-        const payload = asRecord(asRecord(status?.data)?.obj);
-        const xray = asRecord(payload?.xray);
-        const mem = asRecord(payload?.mem);
-        const disk = asRecord(payload?.disk);
-        const toPercent = (rec: Record<string, unknown> | undefined) => {
-          const current = Number(rec?.current);
-          const total = Number(rec?.total);
-          if (
-            !Number.isFinite(current) ||
-            !Number.isFinite(total) ||
-            total <= 0
-          ) {
-            return undefined;
-          }
-          return Math.min(100, Math.max(0, (current / total) * 100));
-        };
-        const rawCpu = Number(payload?.cpu);
-        const cpuPercent = Number.isFinite(rawCpu)
-          ? Math.min(100, Math.max(0, rawCpu))
-          : undefined;
-        const files = this.parseCertificateFiles(
-          asRecord(certificate?.data)?.obj,
-        );
-        const version: unknown =
-          payload?.panelVersion ||
-          asRecord(asRecord(update?.data)?.obj)?.currentVersion ||
-          list.headers?.['x-ui-version'] ||
-          list.headers?.['x-3x-ui-version'];
-        return {
-          version: typeof version === 'string' ? version : undefined,
-          xrayVersion:
-            typeof xray?.version === 'string' ? xray.version : undefined,
-          xrayState: typeof xray?.state === 'string' ? xray.state : undefined,
-          xrayError: xray?.errorMsg
-            ? safePanelMessage(xray.errorMsg)
-            : undefined,
-          cpuPercent,
-          memPercent: toPercent(mem),
-          diskPercent: toPercent(disk),
-          webCertificateFile: files?.certificateFile,
-          webKeyFile: files?.keyFile,
-        };
-      });
+      let profile: Awaited<ReturnType<typeof probeOnce>>;
+      try {
+        profile = await probeOnce({
+          freshAgent: options?.freshConnection !== false,
+          ...(usedDirectIp ? { directIp: validConfiguredIp } : {}),
+        });
+      } catch (error) {
+        const status = (error as AxiosError).response?.status;
+        if (
+          !usedDirectIp &&
+          !status &&
+          !(error instanceof XuiApiError) &&
+          validConfiguredIp &&
+          isDomainHost &&
+          !resolvedIps.includes(validConfiguredIp)
+        ) {
+          usedDirectIp = true;
+          profile = await probeOnce({
+            freshAgent: true,
+            directIp: validConfiguredIp,
+          });
+        } else {
+          throw error;
+        }
+      }
+
       return {
         success: true,
         ...profile,
         responseTimeMs: Date.now() - started,
+        diagnostics: {
+          targetHost: target.targetHost,
+          targetPort: target.targetPort,
+          resolvedIps: resolvedIps.length ? resolvedIps : undefined,
+          configuredIp: validConfiguredIp,
+          usedDirectIp,
+          ...(usedDirectIp
+            ? {
+                hint: 'Подключение выполнено напрямую по IP ноды (в обход DNS).',
+              }
+            : {}),
+        },
       };
     } catch (error) {
       const status = (error as AxiosError).response?.status;
@@ -1667,6 +2026,13 @@ export class XuiService {
                 ? 'api'
                 : 'network',
         message: this.errorMessage(error),
+        diagnostics: this.extractErrorDiagnostics(
+          error,
+          target,
+          resolvedIps,
+          validConfiguredIp,
+          usedDirectIp,
+        ),
       };
     }
   }
