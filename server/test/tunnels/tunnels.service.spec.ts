@@ -109,6 +109,54 @@ describe('TunnelsService', () => {
         nodeId: node.id,
       });
     });
+
+    it('нормализует и сохраняет настраиваемые TCP/UDP порты', async () => {
+      const dto = {
+        name: 'Relay Custom Ports',
+        ip: '192.168.1.2',
+        sshPort: 22,
+        username: 'root',
+        tcpPorts: ' 443, 8443 , 20000:20500, 9000:9000 ',
+        udpPorts: '',
+      };
+      const node = { id: 'node-1', isMain: true };
+      mockNodeRepo.findOne.mockResolvedValue(node);
+      mockTunnelRepo.create.mockImplementation((value) => value);
+      mockTunnelRepo.save.mockImplementation(async (value) => ({ id: 2, ...value }));
+
+      const result = await service.create(dto);
+
+      expect(result).toMatchObject({
+        tcpPorts: '443,8443,20000:20500,9000',
+        udpPorts: '',
+      });
+    });
+
+    it('отклоняет некорректные или полностью пустые списки портов', async () => {
+      const base = {
+        name: 'Relay Bad Ports',
+        ip: '192.168.1.3',
+        sshPort: 22,
+        username: 'root',
+      };
+      mockNodeRepo.findOne.mockResolvedValue({ id: 'node-1', isMain: true });
+
+      await expect(
+        service.create({ ...base, tcpPorts: '70000' }),
+      ).rejects.toThrow(HttpException);
+
+      await expect(
+        service.create({ ...base, tcpPorts: '500:400' }),
+      ).rejects.toThrow(HttpException);
+
+      await expect(
+        service.create({ ...base, tcpPorts: '443;rm -rf /' }),
+      ).rejects.toThrow(HttpException);
+
+      await expect(
+        service.create({ ...base, tcpPorts: '', udpPorts: '' }),
+      ).rejects.toThrow('Укажите хотя бы один порт TCP или UDP');
+    });
   });
 
   describe('findAll', () => {
@@ -174,9 +222,47 @@ describe('TunnelsService', () => {
         success: true,
         output: 'Script executed successfully',
       });
-      expect(sshService.executeCommand).toHaveBeenCalled();
+      expect(sshService.executeCommand).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.stringContaining('ORIGIN_IP="10.0.0.1"'),
+        180000,
+      );
+      expect(sshService.executeCommand).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.not.stringContaining('FORWARDING_TCP_PORTS='),
+        180000,
+      );
       expect(tunnelRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ isInstalled: true }),
+      );
+    });
+
+    it('передаёт FORWARDING_TCP_PORTS и FORWARDING_UDP_PORTS при установке кастомных портов', async () => {
+      const customTunnel = {
+        ...mockTunnel,
+        tcpPorts: '443,10000:10100',
+        udpPorts: '',
+      };
+      mockTunnelRepo.createQueryBuilder.mockReturnValue({
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(customTunnel),
+      });
+      mockSettingRepo.findOne.mockResolvedValue({
+        key: 'xui_ip',
+        value: '10.0.0.1',
+      });
+      mockSshService.executeCommand.mockResolvedValue('ok');
+      mockTunnelRepo.save.mockResolvedValue({ ...customTunnel, isInstalled: true });
+
+      await service.installScript(1);
+
+      expect(sshService.executeCommand).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.stringContaining(
+          'FORWARDING_TCP_PORTS="443,10000:10100" FORWARDING_UDP_PORTS="" ORIGIN_IP="10.0.0.1"',
+        ),
+        180000,
       );
     });
 

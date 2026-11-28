@@ -120,6 +120,28 @@ describe('TunnelsPage', () => {
     expect(await screen.findByText('Перенаправление установлено')).toBeInTheDocument()
   })
 
+  it('validates custom forwarding port specs and submits them when provided', async () => {
+    arrange()
+    await openForm()
+    fireEvent.change(screen.getByLabelText(/^Название/), { target: { value: 'Relay Custom' } })
+    fireEvent.change(screen.getByLabelText(/^IP или домен relay сервера/), { target: { value: 'relay.example.com' } })
+    fireEvent.change(screen.getByLabelText(/^SSH пароль/), { target: { value: 'secret' } })
+    fireEvent.change(screen.getByLabelText(/^TCP порты/), { target: { value: '70000' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }))
+
+    expect(await screen.findByText('Укажите порты или диапазоны через запятую (1-65535)')).toBeInTheDocument()
+    expect(mockPost).not.toHaveBeenCalled()
+
+    fireEvent.change(screen.getByLabelText(/^TCP порты/), { target: { value: '443,10000:10500' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }))
+
+    await waitFor(() => expect(mockPost).toHaveBeenCalledWith('/tunnels', expect.objectContaining({
+      name: 'Relay Custom',
+      tcpPorts: '443,10000:10500',
+      udpPorts: '',
+    })))
+  })
+
   it('deletes the database record and passes the forwarding choice', async () => {
     arrange([{ id: 4, name: 'Relay', ip: '1.2.3.4', sshPort: 22, username: 'root', isInstalled: true }])
     fireEvent.click((await screen.findByTestId('icon-Delete')).closest('button')!)

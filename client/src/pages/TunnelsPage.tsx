@@ -41,6 +41,8 @@ interface Tunnel {
   domain?: string;
   sshPort: number;
   username: string;
+  tcpPorts?: string | null;
+  udpPorts?: string | null;
   isInstalled: boolean;
   nodeId?: string;
   node?: NodeRecord;
@@ -55,6 +57,22 @@ const emptyForm = {
   password: '',
   privateKey: '',
   domain: '',
+  tcpPorts: '',
+  udpPorts: '',
+};
+
+const isValidForwardingPortSpec = (raw: string) => {
+  const trimmed = raw.trim();
+  if (!trimmed) return true;
+  if (trimmed.length > 255 || /[\r\n]/.test(trimmed)) return false;
+  return trimmed.split(',').every((item) => {
+    const token = item.trim();
+    const match = token.match(/^(\d{1,5})(?:\s*:\s*(\d{1,5}))?$/);
+    if (!match) return false;
+    const first = Number(match[1]);
+    const last = match[2] !== undefined ? Number(match[2]) : first;
+    return first >= 1 && first <= last && last <= 65535;
+  });
 };
 
 export default function TunnelsPage() {
@@ -121,6 +139,12 @@ export default function TunnelsPage() {
     if (!form.username.trim()) errors.username = 'Введите SSH пользователя';
     if (authMethod === 'password' && !form.password) errors.password = 'Введите SSH пароль';
     if (authMethod === 'key' && !form.privateKey.trim()) errors.privateKey = 'Введите SSH ключ';
+    if (!isValidForwardingPortSpec(form.tcpPorts)) {
+      errors.tcpPorts = 'Укажите порты или диапазоны через запятую (1-65535)';
+    }
+    if (!isValidForwardingPortSpec(form.udpPorts)) {
+      errors.udpPorts = 'Укажите порты или диапазоны через запятую (1-65535)';
+    }
 
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
@@ -152,11 +176,17 @@ export default function TunnelsPage() {
       return;
     }
 
+    const { tcpPorts: rawTcpPorts, udpPorts: rawUdpPorts, ...baseForm } = form;
+    const tcpPorts = rawTcpPorts.trim();
+    const udpPorts = rawUdpPorts.trim();
+    const hasCustomPorts = Boolean(tcpPorts || udpPorts);
+
     const payload = {
-      ...form,
+      ...baseForm,
       nodeId: form.nodeId || mainNode?.id,
       password: authMethod === 'password' ? form.password : undefined,
       privateKey: authMethod === 'key' ? form.privateKey : undefined,
+      ...(hasCustomPorts ? { tcpPorts, udpPorts } : {}),
     };
 
     try {
@@ -252,6 +282,14 @@ export default function TunnelsPage() {
                     <Dns fontSize="small" color="action" />
                     {tunnel.domain || tunnel.ip}
                   </Box>
+                  {(tunnel.tcpPorts != null || tunnel.udpPorts != null) && (
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      {[
+                        tunnel.tcpPorts ? `TCP: ${tunnel.tcpPorts}` : 'TCP: выкл',
+                        tunnel.udpPorts ? `UDP: ${tunnel.udpPorts}` : 'UDP: выкл',
+                      ].join(' · ')}
+                    </Typography>
+                  )}
                 </TableCell>
                 <TableCell>
                   {tunnel.isInstalled ? (
@@ -307,6 +345,28 @@ export default function TunnelsPage() {
           <Box sx={{ display: 'flex', gap: 2 }}>
             <TextField margin="dense" label="SSH порт" required type="number" fullWidth value={form.sshPort} onChange={handleChange('sshPort')} error={!!formErrors.sshPort} helperText={formErrors.sshPort} />
             <TextField margin="dense" label="SSH пользователь" required fullWidth value={form.username} onChange={handleChange('username')} error={!!formErrors.username} helperText={formErrors.username} />
+          </Box>
+          <Box sx={{ display: 'flex', gap: 2 }}>
+            <TextField
+              margin="dense"
+              label="TCP порты"
+              placeholder="443,8443,10000:60000"
+              fullWidth
+              value={form.tcpPorts}
+              onChange={handleChange('tcpPorts')}
+              error={!!formErrors.tcpPorts}
+              helperText={formErrors.tcpPorts || 'По умолчанию: 443,8443,10000:60000'}
+            />
+            <TextField
+              margin="dense"
+              label="UDP порты"
+              placeholder="443,8443,10000:60000"
+              fullWidth
+              value={form.udpPorts}
+              onChange={handleChange('udpPorts')}
+              error={!!formErrors.udpPorts}
+              helperText={formErrors.udpPorts || 'По умолчанию: 443,8443,10000:60000'}
+            />
           </Box>
           <FormControl component="fieldset" sx={{ mt: 2, mb: 1 }}>
             <RadioGroup row value={authMethod} onChange={(e) => setAuthMethod(e.target.value as 'password' | 'key')}>

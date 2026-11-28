@@ -39,6 +39,12 @@ export class Tunnel {
   @Column({ type: 'simple-array', nullable: true })
   ports?: number[];
 
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  tcpPorts?: string | null;
+
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  udpPorts?: string | null;
+
   @Column({ default: false })
   isInstalled: boolean;
 }

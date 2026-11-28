@@ -7,6 +7,10 @@ import { Setting } from '../settings/entities/setting.entity';
 import { Node } from '../nodes/entities/node.entity';
 import { Subscription } from '../subscriptions/entities/subscription.entity';
 import { CreateTunnelDto } from './dto/create-tunnel.dto';
+import {
+  isEnvSafePortSpec,
+  normalizeForwardingPortSpec,
+} from './forwarding-ports';
 import * as net from 'net';
 import * as dns from 'dns/promises';
 
@@ -34,11 +38,39 @@ export class TunnelsService {
       throw new HttpException('Node not found', HttpStatus.BAD_REQUEST);
     }
 
+    let tcpPorts: string | undefined;
+    let udpPorts: string | undefined;
+    try {
+      tcpPorts = normalizeForwardingPortSpec(createTunnelDto.tcpPorts);
+      udpPorts = normalizeForwardingPortSpec(createTunnelDto.udpPorts);
+    } catch (error) {
+      throw new HttpException(
+        error instanceof Error
+          ? error.message
+          : 'Некорректные порты перенаправления',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const hasCustomPorts = tcpPorts !== undefined || udpPorts !== undefined;
+    if (hasCustomPorts && !tcpPorts && !udpPorts) {
+      throw new HttpException(
+        'Укажите хотя бы один порт TCP или UDP',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
     const tunnelPayload = {
       ...createTunnelDto,
       ip: address.ip,
       node,
       nodeId: node.id,
+      ...(hasCustomPorts
+        ? {
+            tcpPorts: tcpPorts ?? '',
+            udpPorts: udpPorts ?? '',
+          }
+        : {}),
     };
 
     const domain = createTunnelDto.domain || address.domain;
@@ -120,11 +152,39 @@ export class TunnelsService {
       this.getNodeAddress(targetNode) ||
       hostSetting?.value;
 
+    let envArgs = `ORIGIN_IP="${mainServerIp}"`;
+    if (tunnel.tcpPorts != null || tunnel.udpPorts != null) {
+      let tcp = '';
+      let udp = '';
+      try {
+        tcp = normalizeForwardingPortSpec(tunnel.tcpPorts ?? '') ?? '';
+        udp = normalizeForwardingPortSpec(tunnel.udpPorts ?? '') ?? '';
+      } catch (error) {
+        throw new HttpException(
+          error instanceof Error
+            ? error.message
+            : 'Некорректные порты перенаправления',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      if (
+        !isEnvSafePortSpec(tcp) ||
+        !isEnvSafePortSpec(udp) ||
+        (!tcp && !udp)
+      ) {
+        throw new HttpException(
+          'Укажите хотя бы один порт TCP или UDP',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      envArgs = `FORWARDING_TCP_PORTS="${tcp}" FORWARDING_UDP_PORTS="${udp}" ${envArgs}`;
+    }
+
     this.logger.debug(
       `Начинаем установку редиректа на ${tunnel.ip} -> ${mainServerIp}`,
     );
 
-    const command = `sudo ORIGIN_IP="${mainServerIp}" bash -c "$(curl -sSL https://raw.githubusercontent.com/k0td/3dp-manager/main/forwarding_install.sh)"`;
+    const command = `sudo ${envArgs} bash -c "$(curl -sSL https://raw.githubusercontent.com/k0td/3dp-manager/main/forwarding_install.sh)"`;
 
     try {
       const output = await this.sshService.executeCommand(

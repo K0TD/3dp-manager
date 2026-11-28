@@ -30,12 +30,17 @@ else
 fi
 
 echo "--- Удаление разрешающих правил портов ---"
-ufw delete allow 443/tcp
-ufw delete allow 443/udp
-ufw delete allow 8443/tcp
-ufw delete allow 8443/udp
-ufw delete allow 10000:60000/tcp
-ufw delete allow 10000:60000/udp
+if [[ -f /etc/3dp-manager-forwarding-ports ]]; then
+    while IFS= read -r entry; do
+        [[ -n $entry ]] || continue
+        ufw delete allow "$entry" || true
+    done < /etc/3dp-manager-forwarding-ports
+    rm -f /etc/3dp-manager-forwarding-ports
+else
+    for entry in 443/tcp 443/udp 8443/tcp 8443/udp 10000:60000/tcp 10000:60000/udp; do
+        ufw delete allow "$entry" || true
+    done
+fi
 
 echo "--- Возврат политики FORWARD по умолчанию (DROP) ---"
 sed -i 's/DEFAULT_FORWARD_POLICY="ACCEPT"/DEFAULT_FORWARD_POLICY="DROP"/' /etc/default/ufw
