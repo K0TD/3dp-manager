@@ -92,7 +92,10 @@ export interface XuiCreatedInbound {
 }
 
 export function hasSeparateClientApi(node?: Pick<Node, 'version'>): boolean {
-  const version = node?.version?.trim().match(/^v?(\d+)\./i);
+  const raw = node?.version?.trim();
+  if (!raw) return false;
+  if (/^dev\+/i.test(raw)) return true;
+  const version = raw.match(/(?:^|\s)v?(\d+)\.\d+/i);
   return Boolean(version && Number(version[1]) >= 3);
 }
 

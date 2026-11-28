@@ -1320,6 +1320,12 @@ export const InboundsEditor: React.FC<InboundsEditorProps> = ({
                             </MenuItem>
                           ))}
                         </Select>
+                        {profileSettings.fingerprint &&
+                          !['chrome', 'firefox', 'safari'].includes(profileSettings.fingerprint) && (
+                            <FormHelperText sx={{ color: 'warning.main' }}>
+                              Для Xray 26.9.9+ REALITY рекомендуются chrome, firefox или safari.
+                            </FormHelperText>
+                          )}
                       </FormControl>
 
                       <FormControl size="small" sx={{ width: '100%', minWidth: 0 }}>

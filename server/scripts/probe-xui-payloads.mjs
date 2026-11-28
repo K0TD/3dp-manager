@@ -38,7 +38,7 @@ const realitySettings = (sni, keys, shortIds) => ({
   shortIds,
   settings: {
     publicKey: keys.publicKey,
-    fingerprint: 'random',
+    fingerprint: 'chrome',
     serverName: '',
     spiderX: '/',
   },

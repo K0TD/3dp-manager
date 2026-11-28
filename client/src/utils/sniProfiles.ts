@@ -74,7 +74,7 @@ export const CLIENT_SNI_PROFILES_CATALOG: readonly SniCatalogProfile[] = [
     id: 'microsoft',
     name: 'Microsoft & Azure Edge',
     category: 'Microsoft',
-    description: 'Маскировка под CDN обновлений Windows и фронтенды Azure/Office. Браузерный стек Edge, пути WSUS.',
+    description: 'Маскировка под CDN обновлений Windows и фронтенды Azure/Office. Chromium/Chrome uTLS (совместимо с Xray 26.9+ REALITY), пути WSUS.',
     recommendedDomains: [
       'c.s-microsoft.com',
       'www.microsoft.com',
@@ -84,7 +84,7 @@ export const CLIENT_SNI_PROFILES_CATALOG: readonly SniCatalogProfile[] = [
     suffix: ['.microsoft.com', '.live.com', '.azure.com', '.msedge.net'],
     profile: {
       serverNames: ['c.s-microsoft.com', 'www.microsoft.com'],
-      fingerprint: 'edge',
+      fingerprint: 'chrome',
       spiderX: '/content/',
       xhttpPath: '/msdownload/update/',
       xPaddingBytes: '400-1200',
@@ -110,13 +110,13 @@ export const CLIENT_SNI_PROFILES_CATALOG: readonly SniCatalogProfile[] = [
     id: 'samsung',
     name: 'Samsung OTA & Cloud Assets',
     category: 'Samsung',
-    description: 'Маскировка под мобильный трафик обновлений Samsung и статику Galaxy Store. Стек Android.',
+    description: 'Маскировка под мобильный трафик обновлений Samsung и статику Galaxy Store. Chrome uTLS (совместимо с Xray 26.9+ REALITY).',
     recommendedDomains: ['www.samsung.com', 'samsungotacdn.com'],
     exact: ['www.samsung.com', 'samsungotacdn.com'],
     suffix: ['.samsung.com', '.samsungotacdn.com'],
     profile: {
       serverNames: ['www.samsung.com'],
-      fingerprint: 'android',
+      fingerprint: 'chrome',
       spiderX: '/assets/',
       xhttpPath: '/sec/assets/',
       xPaddingBytes: '300-1000',

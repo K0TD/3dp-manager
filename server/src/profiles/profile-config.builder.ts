@@ -803,12 +803,14 @@ export function parseVlessLinkToXrayOutbound(
     const streamSettings: Record<string, unknown> = { network, security };
 
     if (security === 'reality') {
+      const pqv = p.get('pqv');
       streamSettings.realitySettings = {
         serverName: p.get('sni') || '',
         fingerprint: p.get('fp') || 'chrome',
         publicKey: p.get('pbk') || '',
         shortId: p.get('sid') || '',
         spiderX: p.get('spx') || '/',
+        ...(pqv ? { mldsa65Verify: pqv } : {}),
       };
     } else if (security === 'tls') {
       const alpn = (p.get('alpn') || '')
@@ -850,6 +852,7 @@ export function parseVlessLinkToXrayOutbound(
       streamSettings.grpcSettings = {
         serviceName: p.get('serviceName') || 'grpc',
         ...(p.get('authority') ? { authority: p.get('authority') } : {}),
+        ...(p.get('mode') === 'multi' ? { multiMode: true } : {}),
       };
     }
 

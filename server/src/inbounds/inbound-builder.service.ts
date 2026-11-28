@@ -464,7 +464,6 @@ export class InboundBuilderService {
           uplinkChunkSize: 0,
           noGRPCHeader: false,
           xmux: {
-            maxConcurrency: '16-32',
             maxConnections: '4-8',
             cMaxReuseTimes: '0',
             hMaxRequestTimes: '300-600',
@@ -825,7 +824,7 @@ export class InboundBuilderService {
       transportSettings: {
         wsSettings: {
           path: '/',
-          headers: { Host: params.serverName },
+          host: params.serverName,
           acceptProxyProtocol: false,
           heartbeatPeriod: 0,
         },
@@ -964,6 +963,7 @@ export class InboundBuilderService {
             id: uuid,
             flow: '',
             email: email ?? uuid,
+            security: 'auto',
             enable: true,
             limitIp: 0,
             totalGB: 0,
@@ -1381,7 +1381,7 @@ export class InboundBuilderService {
     const params = new URLSearchParams();
 
     params.set('type', network);
-    params.set('encryption', 'none');
+    params.set('encryption', settings.encryption || 'none');
     params.set('security', security);
 
     if (security === 'reality') {
@@ -1389,11 +1389,15 @@ export class InboundBuilderService {
       if (!r) return '';
       const sniDomain = r.serverNames?.[0] || '';
       const profile = resolveSniProfile(sniDomain);
-      params.set('pbk', r.settings?.publicKey || '');
+      params.set('pbk', r.settings?.publicKey || r.publicKey || '');
       params.set('fp', r.settings?.fingerprint || profile.fingerprint);
       params.set('sni', sniDomain);
       params.set('sid', r.shortIds?.[0] || '');
       params.set('spx', r.settings?.spiderX || profile.spiderX);
+      const pqv = r.settings?.mldsa65Verify || r.mldsa65Verify;
+      if (pqv) {
+        params.set('pqv', pqv);
+      }
 
       if (network === 'tcp') {
         const client = settings.clients?.[0];
@@ -1401,25 +1405,32 @@ export class InboundBuilderService {
           params.set('flow', client.flow);
         }
       }
-
-      if (network === 'grpc') {
-        const g =
-          (
-            stream as {
-              grpcSettings?: { serviceName?: string; authority?: string };
-            }
-          ).grpcSettings || {};
-        params.set('serviceName', g.serviceName || 'grpc');
-        params.set('authority', g.authority || r.serverNames?.[0] || '');
-      }
     }
 
     if (security === 'tls') {
       params.set('sni', stream.tlsSettings?.serverName || '');
       params.set('fp', 'chrome');
+      if (stream.tlsSettings?.alpn?.length) {
+        params.set('alpn', stream.tlsSettings.alpn.join(','));
+      }
       if (network === 'tcp') {
         const flow = settings.clients?.[0]?.flow;
         if (flow) params.set('flow', flow);
+      }
+    }
+
+    if (network === 'grpc') {
+      const g = stream.grpcSettings;
+      params.set('serviceName', g?.serviceName || 'grpc');
+      params.set(
+        'authority',
+        g?.authority ||
+          stream.realitySettings?.serverNames?.[0] ||
+          stream.tlsSettings?.serverName ||
+          '',
+      );
+      if (g?.multiMode === true) {
+        params.set('mode', 'multi');
       }
     }
 
@@ -1464,6 +1475,14 @@ export class InboundBuilderService {
 
   private buildVmessLink(inbound: XuiInboundRaw, sni: string, uuid: string) {
     const stream = JSON.parse(inbound.streamSettings) as XuiStreamSettings;
+    const settings = JSON.parse(inbound.settings) as XuiInboundSettings;
+    const rawSecurity = (settings.clients?.[0]?.security || '')
+      .trim()
+      .toLowerCase();
+    const scy =
+      !rawSecurity || rawSecurity === 'none' || rawSecurity === 'zero'
+        ? 'auto'
+        : rawSecurity;
 
     const vmessObj = {
       add: sni,
@@ -1476,7 +1495,7 @@ export class InboundBuilderService {
       path: '/',
       port: inbound.port.toString(),
       ps: decodeURIComponent(this.flag) + ' ' + (inbound.remark || ''),
-      scy: '',
+      scy,
       sni: '',
       tls: stream.security || 'none',
       type: 'none',
@@ -1519,12 +1538,16 @@ export class InboundBuilderService {
     const params = new URLSearchParams({
       type: stream.network || 'tcp',
       security: 'reality',
-      pbk: reality.settings?.publicKey || '',
+      pbk: reality.settings?.publicKey || reality.publicKey || '',
       fp: reality.settings?.fingerprint || profile.fingerprint,
       sni: sniDomain,
       sid: reality.shortIds?.[0] || '',
       spx: reality.settings?.spiderX || profile.spiderX,
     });
+    const pqv = reality.settings?.mldsa65Verify || reality.mldsa65Verify;
+    if (pqv) {
+      params.set('pqv', pqv);
+    }
     return `trojan://${encodeURIComponent(password)}@${this.urlHost(sni)}:${inbound.port}?${params}#${this.flag}%20${encodeURIComponent(inbound.remark || '')}`;
   }
 

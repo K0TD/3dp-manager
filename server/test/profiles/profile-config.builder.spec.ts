@@ -103,7 +103,7 @@ describe('profile-config.builder (XHTTP Stable)', () => {
       expect(parsedUrl.searchParams.get('type')).toBe('xhttp');
       expect(parsedUrl.searchParams.get('security')).toBe('reality');
       expect(parsedUrl.searchParams.get('mode')).toBe(mode);
-      expect(parsedUrl.searchParams.get('fp')).toBe('edge');
+      expect(parsedUrl.searchParams.get('fp')).toBe('chrome');
       expect(parsedUrl.searchParams.get('path')).toBe('/msdownload/update/');
       expect(parsedUrl.searchParams.get('host')).toBe('www.microsoft.com');
       expect(bundle.clientConfig.spiderX).toBe('/content/');

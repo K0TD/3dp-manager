@@ -155,7 +155,7 @@ describe('ConnectionProfilesService', () => {
       where: { isEnabled: true }, order: { name: 'ASC' },
     });
     expect(preview.clientPreview.clientConfig).toMatchObject({
-      sni: 'www.samsung.com', fingerprint: 'android', spiderX: '/assets/',
+      sni: 'www.samsung.com', fingerprint: 'chrome', spiderX: '/assets/',
       xhttp: { path: '/sec/assets/', host: 'www.samsung.com' },
     });
   });

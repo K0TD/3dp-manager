@@ -1546,7 +1546,7 @@ describe('RotationService resilient generations', () => {
         subscription: { inboundsConfig: [{ ...config, configId: 'owner-config' }] },
         clientProfileJson: JSON.stringify({
           sni: 'www.samsung.com',
-          fingerprint: 'android',
+          fingerprint: 'chrome',
           spiderX: '/assets/',
           xhttp: { host: 'www.samsung.com', path: '/sec/assets/', mode: 'auto' },
         }),

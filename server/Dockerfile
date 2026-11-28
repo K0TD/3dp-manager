@@ -27,11 +27,11 @@ RUN git init . \
     && git checkout --detach FETCH_HEAD
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /out/RealiTLScanner-linux-64 .
 
-FROM golang:1.24-alpine AS xray-builder
+FROM golang:1.27-alpine AS xray-builder
 
 ARG XRAY_REPO=https://github.com/XTLS/Xray-core.git
-# Pin to an immutable release tag supporting XHTTP (stream-one/XMUX), REALITY, Vision, and TLS.
-ARG XRAY_REF=v25.3.6
+# Pin to an immutable release tag matching Xray 26.x+ (REALITY X25519MLKEM768/Chrome 155+, XHTTP, Hysteria2, MPTCP-disabled & updated RootCAs).
+ARG XRAY_REF=v26.11.9
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 

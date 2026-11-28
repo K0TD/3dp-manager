@@ -457,7 +457,7 @@ describe('InboundBuilderService', () => {
 
       expect(streamSettings.wsSettings).toMatchObject({
         path: '/',
-        headers: { Host: 'tls.example.com' },
+        host: 'tls.example.com',
       });
       expect(link).toContain('type=ws');
       expect(link).toContain('security=tls');
@@ -487,6 +487,7 @@ describe('InboundBuilderService', () => {
       expect(settings.clients[0]).not.toHaveProperty('tgId');
       expect(settings.clients[0].alterId).toBe(0);
       expect(typeof settings.clients[0].alterId).toBe('number');
+      expect(settings.clients[0].security).toBe('auto');
     });
   });
 

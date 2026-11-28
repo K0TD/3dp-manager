@@ -118,11 +118,23 @@ export function outboundFromLink(link: string): Record<string, any> {
       path: p.get('path'),
       host: p.get('host'),
       mode: p.get('mode') || 'auto',
+      ...(p.has('extra') ? { extra: JSON.parse(p.get('extra')!) } : {}),
     };
   if (url.protocol === 'hy2:') {
     stream.network = 'hysteria';
     stream.hysteriaSettings = { version: 2, auth: credential };
-    if (p.has('fm')) stream.finalmask = JSON.parse(p.get('fm')!);
+    if (p.has('fm')) {
+      stream.finalmask = JSON.parse(p.get('fm')!);
+    } else if (p.get('obfs') && p.get('obfs-password')) {
+      stream.finalmask = {
+        udp: [
+          {
+            type: p.get('obfs'),
+            settings: { password: p.get('obfs-password') },
+          },
+        ],
+      };
+    }
     return {
       protocol: 'hysteria',
       settings: { version: 2, address, port },
@@ -308,6 +320,8 @@ async function main() {
       builder.buildVlessTlsTcp({ port, uuid, serverName, ...cert }),
     'vless-ws-tls': (port, uuid) =>
       builder.buildVlessTlsWs({ port, uuid, serverName, ...cert }),
+    'vless-xhttp-tls': (port, uuid) =>
+      builder.buildVlessTlsXhttp({ port, uuid, serverName, ...cert }),
     'vmess-tcp': (port, uuid) => builder.buildVmessTcp({ port, uuid }),
     'shadowsocks-tcp': (port, uuid) =>
       builder.buildShadowsocksTcp({ port, uuid }),

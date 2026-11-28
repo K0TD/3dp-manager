@@ -43,9 +43,11 @@ class SocksProbeError extends Error {
   }
 }
 
-export function classifyXraySignal(diagnostic: string): ClientProbeSignal | undefined {
+export function classifyXraySignal(
+  diagnostic: string,
+): ClientProbeSignal | undefined {
   if (
-    /invalid user|reality.*(?:reject|invalid|verify|authentication)/i.test(
+    /invalid user|received real certificate|reality.*(?:reject|invalid|verify|authentication|minClientVer|handshake|failed)/i.test(
       diagnostic,
     )
   )

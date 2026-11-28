@@ -1953,6 +1953,10 @@ export class RotationService implements OnModuleInit {
         throw new Error(
           'VLESS WS без TLS несовместим с клиентом Xray 26.9.9+; выберите VLESS WS TLS',
         );
+      if (config.type === 'vless-xhttp-get')
+        throw new Error(
+          'VLESS XHTTP GET без TLS/REALITY несовместим с клиентом Xray 26.9.9+; используйте XHTTP Stable, VLESS XHTTP Reality или VLESS XHTTP TLS',
+        );
       throw new Error(
         `Конфигурация ${config.type} несовместима с профилем ноды «${node.name}» ` +
           `(3x-ui: ${node.version || 'не определена'}, Xray: ${node.xrayVersion || 'не определена'})`,

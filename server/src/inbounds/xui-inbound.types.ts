@@ -19,6 +19,7 @@ export interface XuiInboundSettings {
     secret?: string;
     email?: string;
     flow?: string;
+    security?: string;
     enable?: boolean;
     limitIp?: number;
     totalGB?: number;
@@ -54,12 +55,15 @@ export interface XuiStreamSettings {
     dest: string;
     serverNames: string[];
     privateKey: string;
+    publicKey?: string;
+    mldsa65Verify?: string;
     shortIds: string[];
     settings?: {
       publicKey: string;
       fingerprint: string;
       serverName?: string;
       spiderX?: string;
+      mldsa65Verify?: string;
     };
   };
   wsSettings?: {
@@ -72,6 +76,7 @@ export interface XuiStreamSettings {
   grpcSettings?: {
     serviceName: string;
     authority?: string;
+    multiMode?: boolean;
   };
   xhttpSettings?: {
     [key: string]: unknown;

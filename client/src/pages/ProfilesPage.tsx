@@ -13,6 +13,7 @@ import {
   DialogTitle,
   FormControl,
   FormControlLabel,
+  FormHelperText,
   IconButton,
   InputLabel,
   List,
@@ -1877,6 +1878,13 @@ export default function ProfilesPage() {
                   </MenuItem>
                 ))}
               </Select>
+              {form.kind === 'self-sni' &&
+                form.spec.fingerprint &&
+                !['chrome', 'firefox', 'safari'].includes(form.spec.fingerprint) && (
+                  <FormHelperText sx={{ color: 'warning.main' }}>
+                    Для Xray 26.9.9+ REALITY рекомендуются chrome, firefox или safari.
+                  </FormHelperText>
+                )}
             </FormControl>
             )}
 

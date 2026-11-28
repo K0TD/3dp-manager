@@ -40,6 +40,11 @@ export function buildNodeCapabilities(
       'VLESS WS без TLS несовместим с клиентом Xray 26.9.9+; используйте VLESS WS TLS',
     );
   }
+  if (!supportsInboundType('vless-xhttp-get', input)) {
+    warnings.push(
+      'VLESS XHTTP GET без TLS/REALITY несовместим с клиентом Xray 26.9.9+; используйте XHTTP Stable, VLESS XHTTP Reality или VLESS XHTTP TLS',
+    );
+  }
 
   if (!input.panelVersion) {
     warnings.push('Версия 3x-ui не определена; новые протоколы отключены');
@@ -64,7 +69,7 @@ export function supportsInboundType(
   type: InboundType,
   input: NodeCapabilityInput,
 ): boolean {
-  if (type === 'vless-ws') {
+  if (type === 'vless-ws' || type === 'vless-xhttp-get') {
     return !versionAtLeast(input.xrayVersion, ENCRYPTED_VLESS_CLIENT_VERSION);
   }
   if (type === 'amneziawg') {

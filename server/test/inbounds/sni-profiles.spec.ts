@@ -24,7 +24,7 @@ describe('resolveSniProfile', () => {
 
   it('resolves exact Microsoft static CDN profile', () => {
     const profile = resolveSniProfile('c.s-microsoft.com');
-    expect(profile.fingerprint).toBe('edge');
+    expect(profile.fingerprint).toBe('chrome');
     expect(profile.spiderX).toBe('/content/');
     expect(profile.xhttpPath).toBe('/msdownload/update/');
     expect(profile.serverNames).toContain('c.s-microsoft.com');
@@ -32,7 +32,7 @@ describe('resolveSniProfile', () => {
 
   it('resolves exact Samsung profile', () => {
     const profile = resolveSniProfile('www.samsung.com');
-    expect(profile.fingerprint).toBe('android');
+    expect(profile.fingerprint).toBe('chrome');
     expect(profile.spiderX).toBe('/assets/');
     expect(profile.xhttpPath).toBe('/sec/assets/');
   });
@@ -53,7 +53,7 @@ describe('resolveSniProfile', () => {
 
   it('resolves wildcard / suffix match for subdomains of Microsoft', () => {
     const profile = resolveSniProfile('portal.azure.com');
-    expect(profile.fingerprint).toBe('edge');
+    expect(profile.fingerprint).toBe('chrome');
     expect(profile.spiderX).toBe('/content/');
     expect(profile.serverNames).toEqual(['portal.azure.com']);
   });

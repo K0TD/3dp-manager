@@ -1,4 +1,5 @@
 import { isExcludedSniDomain } from '../domains/sni-exclusions';
+import { resolveSniProfile } from '../inbounds/sni-profiles';
 import {
   CLIENT_FINGERPRINTS,
   MANAGED_PROFILE_KINDS,
@@ -18,6 +19,42 @@ import {
 export const XHTTP_MIN_XRAY_VERSION = [24, 11, 30] as const;
 export const XHTTP_XMUX_MIN_XRAY_VERSION = [25, 1, 30] as const;
 export const SELF_SNI_MIN_XRAY_VERSION = [1, 8, 0] as const;
+export const REALITY_SAFE_FINGERPRINTS = [
+  'chrome',
+  'firefox',
+  'safari',
+] as const;
+export const REALITY_STRICT_FP_XRAY_VERSION = [26, 9, 9] as const;
+
+/**
+ * Проверяет совместимость TLS fingerprint с требованиями REALITY (включая X25519MLKEM768 в Xray 26.9.9+).
+ */
+export function evaluateRealityFingerprintCheck(
+  fingerprint: string,
+  xrayVersion: string | undefined,
+): ProfileCompatibilityItem | null {
+  if ((REALITY_SAFE_FINGERPRINTS as readonly string[]).includes(fingerprint)) {
+    return null;
+  }
+
+  const alwaysBroken = fingerprint === 'android' || fingerprint === '360';
+  const strictXray26 = isVersionAtLeast(
+    xrayVersion,
+    REALITY_STRICT_FP_XRAY_VERSION,
+  );
+  if (!alwaysBroken && !strictXray26) {
+    return null;
+  }
+
+  return {
+    code: 'REALITY_FINGERPRINT_INCOMPATIBLE',
+    severity: 'warning',
+    title: 'Несовместимый TLS fingerprint для REALITY',
+    message:
+      `Fingerprint «${fingerprint}» не проходит X25519MLKEM768/REALITY handshake в Xray 26.9.9+. ` +
+      'Рекомендуется использовать chrome, firefox или safari.',
+  };
+}
 
 const HOSTNAME_PATTERN =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
@@ -647,6 +684,15 @@ export function evaluateProfileCompatibility(
         message: `SNI «${input.sni}» не является корректным доменным именем.`,
       });
     }
+    if (input.sni && input.sni !== 'random') {
+      const fpCheck = evaluateRealityFingerprintCheck(
+        resolveSniProfile(input.sni).fingerprint,
+        xrayVersion,
+      );
+      if (fpCheck) {
+        checks.push(fpCheck);
+      }
+    }
   } else if (input.kind === 'self-sni') {
     const domain =
       normalized.domain ||
@@ -701,6 +747,14 @@ export function evaluateProfileCompatibility(
         title: 'Версия Xray совместима',
         message: `Xray ${xrayVersion} поддерживает VLESS + RAW + REALITY + Vision.`,
       });
+    }
+
+    const fpCheck = evaluateRealityFingerprintCheck(
+      normalized.fingerprint || 'chrome',
+      xrayVersion,
+    );
+    if (fpCheck) {
+      checks.push(fpCheck);
     }
 
     if (normalized.webServer === 'caddy' && (normalized.xver ?? 0) > 0) {
