@@ -852,6 +852,266 @@ describe('3x-ui API contracts', () => {
       expect(api.post).toHaveBeenCalledTimes(3);
     });
   });
+
+  describe('subscription client binding and usage', () => {
+    const v3Node = { ...tokenNode, version: '3.8.5' } as Node;
+
+    it('resolves existing clients by email or numeric ID (wrapped and flat lists) and rejects 2.x nodes', async () => {
+      const legacyNode = { ...tokenNode, version: '2.9.4' } as Node;
+      await expect(
+        service.prepareSubscriptionClient('alice', false, legacyNode),
+      ).rejects.toThrow('3x-ui 3.x');
+
+      // By numeric ID with wrapped { client: { id, email } } response
+      api.get
+        .mockResolvedValueOnce({
+          data: {
+            success: true,
+            obj: [{ client: { id: 7, email: 'alice' } }],
+          },
+        })
+        .mockResolvedValueOnce({
+          data: {
+            success: true,
+            obj: {
+              client: { id: 7, uuid: 'uuid-alice', email: 'alice', enable: true },
+            },
+          },
+        });
+
+      const resolvedWrapped = await service.prepareSubscriptionClient(
+        '7',
+        false,
+        v3Node,
+      );
+      expect(resolvedWrapped).toMatchObject({ id: 'uuid-alice', email: 'alice' });
+
+      // By numeric ID with flat { id, email } response
+      api.get
+        .mockResolvedValueOnce({
+          data: {
+            success: true,
+            obj: [{ id: 8, email: 'bob' }],
+          },
+        })
+        .mockResolvedValueOnce({
+          data: {
+            success: true,
+            obj: {
+              client: { id: 8, uuid: 'uuid-bob', email: 'bob', enable: true },
+            },
+          },
+        });
+
+      const resolvedFlat = await service.prepareSubscriptionClient(
+        '8',
+        false,
+        v3Node,
+      );
+      expect(resolvedFlat).toMatchObject({ id: 'uuid-bob', email: 'bob' });
+    });
+
+    it('auto-creates an unattached client via /panel/api/clients/import', async () => {
+      api.post.mockResolvedValueOnce({ data: { success: true } });
+      api.get.mockResolvedValueOnce({
+        data: {
+          success: true,
+          obj: {
+            client: { uuid: 'uuid-auto', email: '3dp-sub-1', enable: true },
+          },
+        },
+      });
+
+      const client = await service.prepareSubscriptionClient(
+        '3dp-sub-1',
+        true,
+        v3Node,
+      );
+
+      expect(api.post).toHaveBeenCalledWith(
+        '/panel/api/clients/import',
+        expect.objectContaining({ data: expect.any(String) }),
+      );
+      expect(client).toMatchObject({ id: 'uuid-auto', email: '3dp-sub-1' });
+    });
+
+    it('fetches usage from traffic endpoint and falls back to usedTraffic', async () => {
+      api.get
+        .mockResolvedValueOnce({
+          data: {
+            success: true,
+            obj: {
+              client: { totalGB: 1024, expiryTime: 1800000000500 },
+              usedTraffic: 500,
+            },
+          },
+        })
+        .mockResolvedValueOnce({
+          data: { success: true, obj: { up: 100, down: 400 } },
+        });
+
+      await expect(
+        service.getSubscriptionUsage('alice', v3Node),
+      ).resolves.toEqual({
+        upload: 100,
+        download: 400,
+        total: 1024,
+        expire: 1800000000,
+      });
+
+      api.get
+        .mockResolvedValueOnce({
+          data: {
+            success: true,
+            obj: {
+              client: { totalGB: 2048, expiryTime: 0 },
+              usedTraffic: 750,
+            },
+          },
+        })
+        .mockRejectedValueOnce({ response: { status: 404 } });
+
+      await expect(
+        service.getSubscriptionUsage('alice', v3Node),
+      ).resolves.toEqual({
+        upload: 0,
+        download: 750,
+        total: 2048,
+        expire: 0,
+      });
+    });
+
+    it('creates an empty inbound, attaches the subscription client, and rolls back if attach fails', async () => {
+      const boundClient = {
+        id: 'uuid-alice',
+        email: 'alice',
+        enable: true,
+      };
+      const attachedInbound = {
+        ...inbound,
+        settings: { clients: [boundClient], decryption: 'none' },
+      };
+      api.post.mockResolvedValue({ data: { success: true, obj: 42 } });
+      api.get
+        .mockResolvedValueOnce({
+          data: {
+            success: true,
+            obj: { ...inbound, settings: { clients: [], decryption: 'none' } },
+          },
+        })
+        .mockResolvedValueOnce({
+          data: { success: true, obj: attachedInbound },
+        });
+
+      const created = await service.addInboundForClient(
+        normalizeInbound(inbound),
+        boundClient,
+        v3Node,
+      );
+
+      expect(created?.id).toBe(42);
+      expect(api.post).toHaveBeenNthCalledWith(
+        1,
+        '/panel/api/inbounds/add',
+        expect.objectContaining({
+          settings: JSON.stringify({ clients: [], decryption: 'none' }),
+        }),
+      );
+      expect(api.post).toHaveBeenNthCalledWith(
+        2,
+        '/panel/api/clients/alice/attach',
+        { inboundIds: [42] },
+      );
+
+      // Failure on attach deletes the newly created inbound and returns null
+      api.post.mockClear();
+      api.post
+        .mockResolvedValueOnce({ data: { success: true, obj: 42 } })
+        .mockResolvedValueOnce({ data: { success: false, msg: 'attach failed' } })
+        .mockResolvedValueOnce({ data: { success: true } });
+      api.get.mockResolvedValueOnce({
+        data: {
+          success: true,
+          obj: { ...inbound, settings: { clients: [], decryption: 'none' } },
+        },
+      });
+
+      await expect(
+        service.addInboundForClient(
+          normalizeInbound(inbound),
+          boundClient,
+          v3Node,
+        ),
+      ).resolves.toBeNull();
+      expect(api.post).toHaveBeenCalledWith('/panel/api/inbounds/del/42');
+    });
+
+    it('attaches existing client to a shared inbound and detaches without deleting 3dp-* subscription clients', async () => {
+      const sharedClient = {
+        id: 'uuid-sub-client',
+        email: '3dp-sub-uuid',
+        enable: true,
+      };
+      const updated = {
+        ...inbound,
+        settings: {
+          ...inbound.settings,
+          clients: [...inbound.settings.clients, sharedClient],
+        },
+      };
+      api.get
+        .mockResolvedValueOnce({ data: { success: true, obj: inbound } })
+        .mockResolvedValueOnce({ data: { success: true, obj: updated } });
+      api.post.mockResolvedValueOnce({ data: { success: true } });
+
+      const attached = await service.attachExistingClientToInbound(
+        42,
+        sharedClient,
+        v3Node,
+      );
+      expect(attached?.id).toBe(42);
+      expect(api.post).toHaveBeenCalledWith(
+        '/panel/api/clients/3dp-sub-uuid/attach',
+        { inboundIds: [42] },
+      );
+
+      // Deleting the owned inbound detaches the 3dp-* client instead of deleting it
+      api.post.mockClear();
+      api.get
+        .mockResolvedValueOnce({
+          data: {
+            success: true,
+            obj: {
+              ...inbound,
+              settings: { clients: [sharedClient], decryption: 'none' },
+            },
+          },
+        })
+        .mockResolvedValueOnce({
+          data: {
+            success: true,
+            obj: {
+              client: { uuid: 'uuid-sub-client', email: '3dp-sub-uuid' },
+              inboundIds: [42],
+              externalLinks: [],
+            },
+          },
+        });
+      api.post.mockResolvedValue({ data: { success: true } });
+
+      await expect(
+        service.deleteInbound(42, v3Node, 'uuid-sub-client'),
+      ).resolves.toBe(true);
+      expect(api.post).toHaveBeenCalledWith('/panel/api/inbounds/del/42');
+      expect(api.post).toHaveBeenCalledWith(
+        '/panel/api/clients/3dp-sub-uuid/detach',
+        { inboundIds: [42] },
+      );
+      expect(api.post).not.toHaveBeenCalledWith(
+        '/panel/api/clients/del/3dp-sub-uuid',
+      );
+    });
+  });
 });
 
 describe('wire normalization', () => {

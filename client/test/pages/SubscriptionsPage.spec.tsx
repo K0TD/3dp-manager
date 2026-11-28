@@ -1442,5 +1442,54 @@ describe('SubscriptionsPage', () => {
         ]),
       })))
     })
+
+    it('отображает clientId в таблице и отправляет ручной clientId или clientAutoCreate при создании', async () => {
+      setupMockGet({
+        subscriptions: [
+          {
+            id: 'sub-client',
+            name: 'Bound Sub',
+            uuid: 'bound-uuid',
+            clientId: 'alice-client',
+            inbounds: [],
+          },
+        ],
+      })
+      mockPost.mockResolvedValue({ data: { id: 'created-client-sub' } })
+      renderSubscriptionsPage()
+
+      expect(await screen.findByText('Клиент: alice-client')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByText('Создать'))
+      fireEvent.change(await screen.findByLabelText('Имя подписки'), { target: { value: 'With Client' } })
+      fireEvent.change(screen.getByLabelText('ID клиента 3x-ui (необязательно)'), { target: { value: 'alice' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }))
+
+      await waitFor(() => expect(mockPost).toHaveBeenCalledWith('/subscriptions', expect.objectContaining({
+        name: 'With Client',
+        clientId: 'alice',
+        clientAutoCreate: false,
+      })))
+    })
+
+    it('отправляет clientAutoCreate: true и очищает ручной clientId при выборе автосоздания', async () => {
+      setupMockGet()
+      mockPost.mockResolvedValue({ data: { id: 'created-auto-sub' } })
+      renderSubscriptionsPage()
+
+      fireEvent.click(await screen.findByText('Создать'))
+      fireEvent.change(await screen.findByLabelText('Имя подписки'), { target: { value: 'Auto Client' } })
+      const clientInput = screen.getByLabelText('ID клиента 3x-ui (необязательно)')
+      fireEvent.change(clientInput, { target: { value: 'manual-id' } })
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Создать единого клиента 3x-ui автоматически' }))
+      expect(clientInput).toHaveValue('')
+      fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }))
+
+      await waitFor(() => expect(mockPost).toHaveBeenCalledWith('/subscriptions', expect.objectContaining({
+        name: 'Auto Client',
+        clientId: '',
+        clientAutoCreate: true,
+      })))
+    })
   })
 })

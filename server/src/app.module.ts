@@ -53,6 +53,7 @@ import { ReconcileSniDomains1860000000000 } from './migrations/1860000000000-rec
 
 import { AddSubscriptionDisplayOrder1870000000000 } from './migrations/1870000000000-add-subscription-display-order';
 import { AddTunnelForwardingPorts1890000000000 } from './migrations/1890000000000-add-tunnel-forwarding-ports';
+import { AddSubscriptionClientAndUsage1900000000000 } from './migrations/1900000000000-add-subscription-client-and-usage';
 
 const dbPoolLogger = new Logger('DatabasePool');
 
@@ -102,6 +103,7 @@ const dbPoolLogger = new Logger('DatabasePool');
         AddSubscriptionDisplayOrder1870000000000,
         AddConnectionProfileFlag1880000000000,
         AddTunnelForwardingPorts1890000000000,
+        AddSubscriptionClientAndUsage1900000000000,
       ],
       synchronize: process.env.DB_SYNCHRONIZE === 'true',
       migrationsRun: process.env.DB_MIGRATIONS_RUN !== 'false',

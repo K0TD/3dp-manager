@@ -12,6 +12,7 @@ import { ClientController } from 'src/client/client.controller';
 import { Subscription } from 'src/subscriptions/entities/subscription.entity';
 import { Tunnel } from 'src/tunnels/entities/tunnel.entity';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import { SubscriptionsService } from 'src/subscriptions/subscriptions.service';
 import * as QRCode from 'qrcode';
 import { generateSubscriptionHtmlWithQr } from 'src/client/templates/subscription.template';
 import { amneziaConfigFromLink } from 'src/inbounds/amnezia-vpn-link';
@@ -45,6 +46,10 @@ describe('ClientController', () => {
     set: jest.fn(),
   };
 
+  const mockSubscriptionsService = {
+    syncClientUsage: jest.fn(),
+  };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [ClientController],
@@ -60,6 +65,10 @@ describe('ClientController', () => {
         {
           provide: CACHE_MANAGER,
           useValue: mockCacheManager,
+        },
+        {
+          provide: SubscriptionsService,
+          useValue: mockSubscriptionsService,
         },
       ],
     }).compile();
@@ -873,5 +882,62 @@ describe('ClientController', () => {
 
       expect(patchedConfig).toContain('Endpoint = relay.example.com:51820');
     });
+  });
+
+  describe('subscription-userinfo header', () => {
+    it.each(['direct', 'relay'])(
+      'fetches, caches and sends subscription-userinfo for %s feed and falls back to stored usage on error',
+      async (route) => {
+        const sub = {
+          uuid: 'sub-usage',
+          name: 'Usage Sub',
+          clientId: 'alice',
+          clientUsage: { upload: 1, download: 2, total: 100, expire: 1700000000 },
+          isEnabled: true,
+          inboundsConfig: [],
+          inbounds: [],
+        };
+        mockSubRepo.findOne.mockResolvedValue(sub);
+        mockTunnelRepo.findOne.mockResolvedValue({ id: 1, ip: 'relay.test' });
+        mockCacheManager.get.mockResolvedValueOnce(null);
+        mockSubscriptionsService.syncClientUsage.mockResolvedValueOnce({
+          upload: 10,
+          download: 20,
+          total: 500,
+          expire: 1900000000,
+        });
+
+        const req = { headers: {}, query: {} } as any;
+        const res = { setHeader: jest.fn(), send: jest.fn() } as any;
+
+        if (route === 'direct') await controller.getSubscription('sub-usage', req, res);
+        else await controller.getRelaySubscription('sub-usage', '1', req, res);
+
+        expect(mockSubscriptionsService.syncClientUsage).toHaveBeenCalledWith(sub);
+        expect(mockCacheManager.set).toHaveBeenCalledWith(
+          expect.stringContaining('usage_sub-usage_alice_'),
+          { upload: 10, download: 20, total: 500, expire: 1900000000 },
+          30000,
+        );
+        expect(res.setHeader).toHaveBeenCalledWith(
+          'subscription-userinfo',
+          'upload=10; download=20; total=500; expire=1900000000',
+        );
+
+        // On failure, fall back to saved clientUsage
+        res.setHeader.mockClear();
+        mockCacheManager.get.mockResolvedValueOnce(null);
+        mockSubscriptionsService.syncClientUsage.mockRejectedValueOnce(
+          new Error('node offline'),
+        );
+        if (route === 'direct') await controller.getSubscription('sub-usage', req, res);
+        else await controller.getRelaySubscription('sub-usage', '1', req, res);
+
+        expect(res.setHeader).toHaveBeenCalledWith(
+          'subscription-userinfo',
+          'upload=1; download=2; total=100; expire=1700000000',
+        );
+      },
+    );
   });
 });

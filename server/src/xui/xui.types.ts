@@ -25,6 +25,7 @@ export type { XuiInboundRaw } from '../inbounds/xui-inbound.types';
 
 export interface XuiInboundClient {
   id?: string;
+  uuid?: string;
   flow?: string;
   email?: string;
   limitIp?: number;
@@ -35,6 +36,7 @@ export interface XuiInboundClient {
   subId?: string;
   reset?: number;
   password?: string;
+  auth?: string;
 }
 
 export interface XuiRealitySettings {

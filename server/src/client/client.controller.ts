@@ -8,6 +8,7 @@ import {
   Req,
   Inject,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -45,6 +46,7 @@ import {
   wireguardConfigFromLink,
 } from '../inbounds/connection-profiles';
 import { buildXrayClientJsonFromSubscriptionInbounds } from '../profiles/profile-config.builder';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 
 @Controller()
 export class ClientController {
@@ -56,6 +58,7 @@ export class ClientController {
     @InjectRepository(Tunnel)
     private tunnelRepo: Repository<Tunnel>,
     @Inject(CACHE_MANAGER) private cacheManager: Cache,
+    @Optional() private readonly subscriptionsService?: SubscriptionsService,
   ) {}
 
   @Public()
@@ -68,14 +71,14 @@ export class ClientController {
   ) {
     const sub = await this.subRepo.findOne({
       where: { uuid },
-      relations: ['inbounds'],
+      relations: ['inbounds', 'node'],
     });
 
     if (!sub || !sub.isEnabled) {
       throw new HttpException('Subscription not found', HttpStatus.NOT_FOUND);
     }
     res.setHeader('Cache-Control', 'no-store');
-    this.setSubscriptionMetadata(sub, res);
+    await this.setSubscriptionMetadata(sub, res);
 
     const activeInbounds = sortInboundsByPosition(sub.inbounds || []).filter(
       (inbound) => inbound.status === InboundStatus.Active,
@@ -161,14 +164,14 @@ export class ClientController {
 
     const sub = await this.subRepo.findOne({
       where: { uuid },
-      relations: ['inbounds'],
+      relations: ['inbounds', 'node'],
     });
 
     if (!sub || !sub.isEnabled) {
       throw new HttpException('Subscription not found', HttpStatus.NOT_FOUND);
     }
     res.setHeader('Cache-Control', 'no-store');
-    this.setSubscriptionMetadata(sub, res);
+    await this.setSubscriptionMetadata(sub, res);
 
     const activeRelayInbounds = sortInboundsByPosition(
       sub.inbounds || [],
@@ -247,7 +250,7 @@ export class ClientController {
     }
   }
 
-  private setSubscriptionMetadata(sub: Subscription, res: Response) {
+  private async setSubscriptionMetadata(sub: Subscription, res: Response) {
     const encode = (value: string) =>
       `base64:${Buffer.from(value, 'utf8').toString('base64')}`;
     res.setHeader('profile-title', encode(sub.name || 'Подписка'));
@@ -259,6 +262,32 @@ export class ClientController {
         'profile-web-page-url',
         this.encodeHeaderUrl(sub.websiteUrl),
       );
+    let usage = sub.clientUsage ?? undefined;
+    if (sub.clientId && this.subscriptionsService) {
+      const key = `usage_${sub.uuid}_${sub.clientId}_${JSON.stringify(sub.inboundsConfig)}`;
+      try {
+        usage =
+          (await this.cacheManager.get<
+            NonNullable<Subscription['clientUsage']>
+          >(key)) ?? undefined;
+        if (!usage) {
+          usage =
+            (await this.subscriptionsService.syncClientUsage(sub)) ?? undefined;
+          if (usage) await this.cacheManager.set(key, usage, 30000);
+        }
+      } catch {
+        usage = sub.clientUsage ?? undefined;
+        this.logger.warn(
+          'Не удалось обновить статистику клиента; используются сохранённые данные',
+        );
+      }
+    }
+    if (usage) {
+      res.setHeader(
+        'subscription-userinfo',
+        `upload=${usage.upload}; download=${usage.download}; total=${usage.total}; expire=${usage.expire}`,
+      );
+    }
   }
 
   private encodeHeaderUrl(value: string): string {

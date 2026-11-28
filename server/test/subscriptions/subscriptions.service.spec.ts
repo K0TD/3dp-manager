@@ -32,6 +32,7 @@ describe('SubscriptionsService', () => {
     findOne: jest.fn(),
     create: jest.fn(),
     save: jest.fn(),
+    update: jest.fn(),
     delete: jest.fn(),
     remove: jest.fn(),
     count: jest.fn(),
@@ -63,6 +64,8 @@ describe('SubscriptionsService', () => {
 
   const mockXuiService = {
     deleteInbound: jest.fn(),
+    prepareSubscriptionClient: jest.fn(),
+    getSubscriptionUsage: jest.fn(),
   };
   const mockRotationService = { provisionPersistentInbounds: jest.fn() };
 
@@ -945,6 +948,146 @@ describe('SubscriptionsService', () => {
           ],
         }),
       ).rejects.toThrow(/Конфликт порта 8443/);
+    });
+  });
+
+  describe('3x-ui client binding and usage sync', () => {
+    it('keeps default creation backwards-compatible without calling panel client APIs', async () => {
+      mockSubRepo.create.mockImplementation((value) => value);
+      mockSubRepo.save.mockImplementation(async (value) => value);
+
+      const created = await service.create({ name: 'Standard Sub' });
+
+      expect(created.clientId).toBeUndefined();
+      expect(created.clientAutoCreate).toBeUndefined();
+      expect(mockXuiService.prepareSubscriptionClient).not.toHaveBeenCalled();
+      expect(mockXuiService.getSubscriptionUsage).not.toHaveBeenCalled();
+    });
+
+    it('creates and updates subscription with explicit clientId and aggregates usage across nodes', async () => {
+      mockSubRepo.create.mockImplementation((value) => value);
+      mockSubRepo.save.mockImplementation(async (value) => value);
+      const node1 = {
+        id: 'node-1',
+        name: 'N1',
+        version: '3.8.5',
+        xrayVersion: '26.7.11',
+        webCertificateFile: '/cert/fullchain.pem',
+        webKeyFile: '/cert/privkey.pem',
+      } as Node;
+      const node2 = {
+        id: 'node-2',
+        name: 'N2',
+        version: '3.8.5',
+        xrayVersion: '26.7.11',
+        webCertificateFile: '/cert/fullchain.pem',
+        webKeyFile: '/cert/privkey.pem',
+      } as Node;
+      const nodesById = new Map([
+        ['node-1', node1],
+        ['node-2', node2],
+      ]);
+      mockNodeRepo.findOne.mockImplementation(
+        async ({ where }: { where: { id: string } }) => nodesById.get(where.id) || null,
+      );
+      mockNodeRepo.createQueryBuilder
+        .mockReturnValueOnce({
+          addSelect: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          getOne: jest.fn().mockResolvedValue(node1),
+        })
+        .mockReturnValueOnce({
+          addSelect: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          getOne: jest.fn().mockResolvedValue(node2),
+        });
+      mockXuiService.prepareSubscriptionClient.mockResolvedValue({
+        id: 'uuid-alice',
+        email: 'alice',
+      });
+      mockXuiService.getSubscriptionUsage
+        .mockResolvedValueOnce({
+          upload: 100,
+          download: 200,
+          total: 5000,
+          expire: 1900000000,
+        })
+        .mockResolvedValueOnce({
+          upload: 50,
+          download: 150,
+          total: 3000,
+          expire: 1800000000,
+        });
+
+      const created = await service.create({
+        name: 'Client Sub',
+        clientId: ' alice ',
+        inboundsConfig: [
+          { type: 'vless-tcp-reality', nodeId: 'node-1', port: 'random', sni: 'ya.ru' },
+          { type: 'hysteria2-udp', nodeId: 'node-2', port: 'random' },
+        ],
+      });
+
+      expect(created.clientId).toBe('alice');
+      expect(created.clientAutoCreate).toBe(false);
+      expect(created.clientUsage).toEqual({
+        upload: 150,
+        download: 350,
+        total: 8000,
+        expire: 1800000000,
+      });
+
+      // Clearing clientId resets clientAutoCreate and clientUsage
+      mockSubRepo.findOne.mockResolvedValue({ ...created, inbounds: [] });
+      const updated = await service.update(created.id, { clientId: '' });
+      expect(updated?.clientId).toBeNull();
+      expect(updated?.clientAutoCreate).toBe(false);
+      expect(updated?.clientUsage).toBeNull();
+    });
+
+    it('generates 3dp-* clientId when clientAutoCreate is true and syncs usage on demand', async () => {
+      mockSubRepo.create.mockImplementation((value) => value);
+      mockSubRepo.save.mockImplementation(async (value) => value);
+      const mainNode = { id: 'main', isMain: true, version: '3.8.5' } as Node;
+      mockNodeRepo.createQueryBuilder.mockReturnValue({
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(mainNode),
+      });
+      mockXuiService.prepareSubscriptionClient.mockImplementation(
+        async (email: string) => ({ id: 'uuid-gen', email }),
+      );
+      mockXuiService.getSubscriptionUsage.mockResolvedValue({
+        upload: 10,
+        download: 20,
+        total: 0,
+        expire: 0,
+      });
+
+      const created = await service.create({
+        name: 'Auto Client',
+        clientAutoCreate: true,
+      });
+
+      expect(created.clientId).toMatch(/^3dp-/);
+      expect(created.clientAutoCreate).toBe(true);
+      expect(mockXuiService.prepareSubscriptionClient).toHaveBeenCalledWith(
+        created.clientId,
+        true,
+        mainNode,
+      );
+
+      // Runtime syncClientUsage updates stored usage without auto-creating again
+      await service.syncClientUsage(created, false);
+      expect(mockXuiService.prepareSubscriptionClient).toHaveBeenLastCalledWith(
+        created.clientId,
+        false,
+        mainNode,
+      );
+      expect(mockSubRepo.update).toHaveBeenCalledWith(
+        { id: created.id, clientId: created.clientId },
+        { clientUsage: { upload: 10, download: 20, total: 0, expire: 0 } },
+      );
     });
   });
 });

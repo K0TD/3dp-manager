@@ -28,6 +28,7 @@ import {
   XuiService,
 } from '../xui/xui.service';
 import { InboundBuilderService } from '../inbounds/inbound-builder.service';
+import { XuiInboundClient } from '../xui/xui.types';
 import {
   XuiInboundRaw,
   XuiStreamSettings,
@@ -91,6 +92,22 @@ import { ConnectionProfile } from '../profiles/entities/connection-profile.entit
 
 type InboundConfig = NonNullable<Subscription['inboundsConfig']>[number];
 
+const PANEL_CLIENT_PROTOCOLS = new Set([
+  'vless',
+  'vmess',
+  'trojan',
+  'shadowsocks',
+  'hysteria',
+  'hysteria2',
+]);
+
+const NON_PANEL_CLIENT_CONFIG_TYPES = new Set<string>([
+  'custom',
+  'mtproto-faketls',
+  ...ROUTING_INBOUND_TYPES,
+  ...PERSISTENT_INBOUND_TYPES,
+]);
+
 export function inboundConfigVersion(config: InboundConfig) {
   return createHash('sha256').update(JSON.stringify(config)).digest('hex');
 }
@@ -110,6 +127,7 @@ interface CreateInboundRequest {
   profileFlag?: string | null;
   realityKeys?: { privateKey: string; publicKey: string } | null;
   nodeCertificate?: XuiCertificateFiles;
+  panelClient?: XuiInboundClient;
   diagnostics?: RotationInboundDiagnostic[];
   onStaged?: (inbound: Inbound) => void;
 }
@@ -1008,6 +1026,7 @@ export class RotationService implements OnModuleInit {
     let rolledBack = false;
     let certificate: Promise<XuiCertificateFiles | null> | undefined;
     let keys: ReturnType<XuiService['getNewX25519Cert']> | undefined;
+    let panelClientPromise: Promise<XuiInboundClient> | undefined;
     const generationId = uuidv4();
 
     for (const positionedConfig of configs) {
@@ -1080,6 +1099,20 @@ export class RotationService implements OnModuleInit {
           await (nodeCheck ??= Promise.resolve(
             this.xuiService.assertXrayHealthy(node),
           ));
+        let panelClient: XuiInboundClient | undefined;
+        if (
+          subscription.clientId &&
+          node &&
+          !NON_PANEL_CLIENT_CONFIG_TYPES.has(config.type || '') &&
+          typeof this.xuiService.prepareSubscriptionClient === 'function'
+        ) {
+          panelClient = await (panelClientPromise ??=
+            this.xuiService.prepareSubscriptionClient(
+              subscription.clientId,
+              subscription.clientAutoCreate === true,
+              node,
+            ));
+        }
         const preservable =
           !operation?.target?.patch &&
           this.findPreservableManagedInbound(
@@ -1087,6 +1120,7 @@ export class RotationService implements OnModuleInit {
             subscription,
             node?.id,
             domains,
+            panelClient,
           );
         if (preservable) {
           const { inbound, remark } = preservable;
@@ -1144,6 +1178,7 @@ export class RotationService implements OnModuleInit {
           profileFlag,
           realityKeys,
           nodeCertificate,
+          panelClient,
           diagnostics,
           onStaged: (inbound) => {
             candidate = inbound;
@@ -1545,6 +1580,7 @@ export class RotationService implements OnModuleInit {
     subscription: Subscription,
     nodeId: string | undefined,
     domains: Domain[],
+    panelClient?: XuiInboundClient,
   ): { inbound: Inbound; remark: string } | null {
     if (!isManagedProfileKind(config.type) || !config.configId || !nodeId) {
       return null;
@@ -1578,6 +1614,7 @@ export class RotationService implements OnModuleInit {
       return null;
     }
     if (parsed.kind !== config.type) return null;
+    if (panelClient?.id && parsed.uuid !== panelClient.id) return null;
 
     const desiredDomain =
       config.type === 'xhttp-stable'
@@ -2166,6 +2203,13 @@ export class RotationService implements OnModuleInit {
     usedPorts.add(port);
     const uuid = uuidv4();
     const email = formatClientEmail(subscription.name, uuid);
+    const usePanelClient = Boolean(
+      request.panelClient &&
+        !NON_PANEL_CLIENT_CONFIG_TYPES.has(config.type || ''),
+    );
+    const effectiveUuid = (usePanelClient && request.panelClient?.id) || uuid;
+    const effectiveEmail =
+      (usePanelClient && request.panelClient?.email) || email;
     let sni = this.resolveInboundSni(config, domains, subscription);
 
     const resolvedTls = requiresPanelTlsCertificate(config)
@@ -2175,8 +2219,8 @@ export class RotationService implements OnModuleInit {
       config.type === 'hysteria2-udp'
         ? this.inboundBuilder.buildHysteria2Inbound({
             port,
-            uuid,
-            email,
+            uuid: effectiveUuid,
+            email: effectiveEmail,
             ...resolvedTls,
           })
         : config.type === 'amneziawg'
@@ -2184,14 +2228,17 @@ export class RotationService implements OnModuleInit {
           : this.buildPanelInbound({
               config,
               port,
-              uuid,
-              email,
+              uuid: effectiveUuid,
+              email: effectiveEmail,
               sni,
               realityKeys,
               tls: resolvedTls,
             });
     if (!built) throw new Error(`Неизвестный тип inbound: ${config.type}`);
     if (config.name?.trim()) built.remark = config.name.trim();
+    const attachPanelClient = Boolean(
+      usePanelClient && PANEL_CLIENT_PROTOCOLS.has(built.protocol),
+    );
     const diagnostic = {
       ...inboundDiagnostic(built),
       configId: config.configId,
@@ -2233,8 +2280,8 @@ export class RotationService implements OnModuleInit {
           built = this.buildPanelInbound({
             config,
             port: shared.port,
-            uuid,
-            email,
+            uuid: effectiveUuid,
+            email: effectiveEmail,
             sni,
             realityKeys,
             tls: resolvedTls,
@@ -2242,9 +2289,9 @@ export class RotationService implements OnModuleInit {
           if (!built) throw new Error('Не удалось подготовить общий инбаунд');
         }
         const clientEntry = {
-          id: uuid,
+          id: effectiveUuid,
           flow: config.type === 'self-sni' ? 'xtls-rprx-vision' : '',
-          email,
+          email: effectiveEmail,
           enable: true,
           limitIp: 0,
           totalGB: 0,
@@ -2262,25 +2309,36 @@ export class RotationService implements OnModuleInit {
           protocol: expected.protocol,
           remark: expected.remark,
           link: '',
-          clientId: uuid,
+          clientId: effectiveUuid,
         });
         request.onStaged?.(staged);
         try {
-          result = await this.xuiService.addInboundClient(
-            shared.xuiId,
-            clientEntry,
-            node,
-            (current) => {
-              if (config.type === 'https-fallback')
-                return this.matchesFallbackListener(expected, current);
-              if (config.type === 'xhttp-stable')
-                return this.matchesXhttpStableListener(expected, current, sni);
-              return (
-                current.protocol === expected.protocol &&
-                current.port === expected.port
-              );
-            },
-          );
+          const matchesListener = (current: XuiInboundRaw) => {
+            if (config.type === 'https-fallback')
+              return this.matchesFallbackListener(expected, current);
+            if (config.type === 'xhttp-stable')
+              return this.matchesXhttpStableListener(expected, current, sni);
+            return (
+              current.protocol === expected.protocol &&
+              current.port === expected.port
+            );
+          };
+          result =
+            attachPanelClient &&
+            request.panelClient &&
+            typeof this.xuiService.attachExistingClientToInbound === 'function'
+              ? await this.xuiService.attachExistingClientToInbound(
+                  shared.xuiId,
+                  request.panelClient,
+                  node,
+                  matchesListener,
+                )
+              : await this.xuiService.addInboundClient(
+                  shared.xuiId,
+                  clientEntry,
+                  node,
+                  matchesListener,
+                );
           if (!result) {
             throw new Error(
               this.xuiService.getLastInboundError(node) ||
@@ -2301,7 +2359,17 @@ export class RotationService implements OnModuleInit {
       }
     }
     if (!result) {
-      result = await this.xuiService.addInbound(built, node);
+      const createPanelInbound = () =>
+        attachPanelClient &&
+        request.panelClient &&
+        typeof this.xuiService.addInboundForClient === 'function'
+          ? this.xuiService.addInboundForClient(
+              built,
+              request.panelClient,
+              node,
+            )
+          : this.xuiService.addInbound(built, node);
+      result = await createPanelInbound();
       for (let attempt = 1; !result && randomPort && attempt < 3; attempt++) {
         if (!isPortConflict(this.xuiService.getLastInboundError(node))) break;
         built.port = await this.getFreePort(usedPorts);
@@ -2310,7 +2378,7 @@ export class RotationService implements OnModuleInit {
         if (this.nodeDeletion.isDeleting(node.id)) {
           throw new Error(`Нода «${node.name}» удаляется`);
         }
-        result = await this.xuiService.addInbound(built, node);
+        result = await createPanelInbound();
       }
     }
     if (!result) return null;
@@ -2327,12 +2395,12 @@ export class RotationService implements OnModuleInit {
             saved.protocol === 'hysteria' ? 'hysteria2' : saved.protocol,
           remark: saved.remark,
           link: '',
-          ownedVlessId: saved.protocol === 'vless' ? uuid : undefined,
+          ownedVlessId: saved.protocol === 'vless' ? effectiveUuid : undefined,
         });
       } catch (error) {
         const deleted =
           saved.protocol === 'vless' && hasSeparateClientApi(node)
-            ? await this.xuiService.deleteInbound(result.id, node, uuid)
+            ? await this.xuiService.deleteInbound(result.id, node, effectiveUuid)
             : await this.xuiService.deleteInbound(result.id, node);
         if (!deleted)
           this.logger.error(
@@ -2362,6 +2430,8 @@ export class RotationService implements OnModuleInit {
         config.type === 'self-sni' ||
         config.type === 'https-fallback'
       ) {
+        const clientOverride =
+          attachedToShared || attachPanelClient ? effectiveUuid : undefined;
         const bundle =
           config.type === 'xhttp-stable'
             ? this.inboundBuilder.buildXhttpStableClientBundle(
@@ -2369,7 +2439,7 @@ export class RotationService implements OnModuleInit {
                 targetAddress,
                 flag,
                 config.profileSettings,
-                attachedToShared ? uuid : undefined,
+                clientOverride,
               )
             : config.type === 'self-sni'
               ? this.inboundBuilder.buildSelfSniClientBundle(
@@ -2377,7 +2447,7 @@ export class RotationService implements OnModuleInit {
                   targetAddress,
                   flag,
                   config.profileSettings,
-                  attachedToShared ? uuid : undefined,
+                  clientOverride,
                 )
               : this.inboundBuilder.buildHttpsFallbackClientBundle(
                   saved,
@@ -2389,7 +2459,7 @@ export class RotationService implements OnModuleInit {
                   flag,
                   config.profileSettings,
                   sni || resolvedTls?.serverName,
-                  attachedToShared ? uuid : undefined,
+                  clientOverride,
                 );
         if (!bundle) {
           throw new Error(

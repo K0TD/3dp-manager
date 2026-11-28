@@ -3026,4 +3026,106 @@ describe('RotationService resilient generations', () => {
       expect(xuiService.deleteInbound).not.toHaveBeenCalled();
     });
   });
+
+  describe('3x-ui subscription client binding during rotation', () => {
+    it('binds panel-client protocols to the subscription client and skips non-client protocols', async () => {
+      const node = { id: 'node-1', name: 'V3', version: '3.8.5', flag: '%F0%9F%87%A9%F0%9F%87%AA' } as Node;
+      const panelClient = { id: 'client-uuid-1', email: 'alice', enable: true };
+      const prepareSubscriptionClient = jest.fn().mockResolvedValue(panelClient);
+      const addInboundForClient = jest.fn().mockImplementation(async (built) => ({
+        id: 101,
+        inbound: {
+          ...built,
+          id: 101,
+          port: built.port || 23456,
+          settings: JSON.stringify({ clients: [panelClient], decryption: 'none' }),
+        },
+      }));
+      Object.assign(xuiService, { prepareSubscriptionClient, addInboundForClient });
+
+      try {
+        xuiService.assertXrayHealthy.mockResolvedValue(undefined);
+        xuiService.getNewX25519Cert.mockResolvedValue({
+          privateKey: 'priv',
+          publicKey: 'pub',
+        });
+        xuiService.addInbound.mockImplementation(async (built) => ({
+          id: 202,
+          inbound: { ...built, id: 202 },
+        }));
+        inboundBuilder.buildVlessRealityTcp.mockImplementation((params) => ({
+          enable: true,
+          port: params.port,
+          protocol: 'vless',
+          remark: 'vless-tcp-reality',
+          settings: JSON.stringify({ clients: [{ id: params.uuid, email: params.email }] }),
+          streamSettings: JSON.stringify({ network: 'tcp', security: 'reality' }),
+        }));
+        (inboundBuilder as any).buildProxyInbound = jest
+          .fn()
+          .mockImplementation((params) => ({
+            enable: true,
+            port: params.port,
+            protocol: params.protocol,
+            remark: 'mixed',
+            settings: JSON.stringify({
+              auth: 'password',
+              accounts: [{ user: 'u', pass: 'p' }],
+            }),
+            streamSettings: JSON.stringify({ network: 'tcp', security: 'none' }),
+          }));
+        inboundBuilder.buildInboundLink.mockImplementation((saved) =>
+          saved.protocol === 'vless'
+            ? 'vless://client-uuid-1@node.test:23456#DE'
+            : 'mixed://u:p@node.test:23457',
+        );
+        inboundRepo.save.mockImplementation(async (entity) => ({ id: 1, ...entity }));
+        (inboundRepo as any).create = jest.fn((entity) => entity);
+
+        const sub = {
+          id: 'sub-client-1',
+          name: 'Client Bound',
+          clientId: 'alice',
+          clientAutoCreate: false,
+          inboundsConfig: [
+            { configId: 'cfg-vless', type: 'vless-tcp-reality', port: 23456, sni: 'ya.ru', nodeId: 'node-1' },
+            { configId: 'cfg-mixed', type: 'mixed', port: 23457, nodeId: 'node-1' },
+          ],
+          inbounds: [],
+        } as unknown as Subscription;
+
+        const groupResult = await (service as any).rotateNodeGroup(
+          sub,
+          node.id,
+          {
+            node,
+            configs: [
+              { config: sub.inboundsConfig[0], position: 0 },
+              { config: sub.inboundsConfig[1], position: 1 },
+            ],
+          },
+          [{ name: 'ya.ru', isEnabled: true } as Domain],
+        );
+
+        expect(groupResult.status).toBe('succeeded');
+        expect(prepareSubscriptionClient).toHaveBeenCalledTimes(1);
+        expect(prepareSubscriptionClient).toHaveBeenCalledWith('alice', false, node);
+        expect(addInboundForClient).toHaveBeenCalledTimes(1);
+        expect(addInboundForClient).toHaveBeenCalledWith(
+          expect.objectContaining({ protocol: 'vless' }),
+          panelClient,
+          node,
+        );
+        expect(xuiService.addInbound).toHaveBeenCalledTimes(1);
+        expect(xuiService.addInbound).toHaveBeenCalledWith(
+          expect.objectContaining({ protocol: 'mixed' }),
+          node,
+        );
+      } finally {
+        delete (xuiService as any).prepareSubscriptionClient;
+        delete (xuiService as any).addInboundForClient;
+        delete (inboundBuilder as any).buildProxyInbound;
+      }
+    });
+  });
 });

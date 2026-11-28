@@ -10,6 +10,7 @@ import {
   DialogContent,
   DialogTitle,
   Divider,
+  FormControlLabel,
   IconButton,
   List,
   ListItemButton,
@@ -81,6 +82,14 @@ interface Subscription {
   id: string;
   name: string;
   uuid: string;
+  clientId?: string | null;
+  clientAutoCreate?: boolean;
+  clientUsage?: {
+    upload: number;
+    download: number;
+    total: number;
+    expire: number;
+  } | null;
   note?: string;
   supportUrl?: string;
   websiteUrl?: string;
@@ -165,6 +174,8 @@ export default function SubscriptionsPage() {
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState('');
+  const [clientId, setClientId] = useState('');
+  const [clientAutoCreate, setClientAutoCreate] = useState(false);
   const [note, setNote] = useState('');
   const [supportUrl, setSupportUrl] = useState('');
   const [websiteUrl, setWebsiteUrl] = useState('');
@@ -364,6 +375,8 @@ export default function SubscriptionsPage() {
   const handleOpenCreate = () => {
     setEditingId(null);
     setName('');
+    setClientId('');
+    setClientAutoCreate(false);
     setNote('');
     setSupportUrl('');
     setWebsiteUrl('');
@@ -391,6 +404,8 @@ export default function SubscriptionsPage() {
   const handleOpenEdit = (sub: Subscription) => {
     setEditingId(sub.id);
     setName(sub.name);
+    setClientId(sub.clientId || '');
+    setClientAutoCreate(Boolean(sub.clientAutoCreate));
     setNote(sub.note || '');
     setSupportUrl(sub.supportUrl || '');
     setWebsiteUrl(sub.websiteUrl || '');
@@ -692,8 +707,24 @@ export default function SubscriptionsPage() {
       return;
     }
 
+    const editingSub = editingId
+      ? subs.find((item) => item.id === editingId)
+      : undefined;
+    const trimmedClientId = clientId.trim();
+    const shouldSendClient =
+      Boolean(trimmedClientId) ||
+      clientAutoCreate ||
+      Boolean(editingSub?.clientId) ||
+      Boolean(editingSub?.clientAutoCreate);
+
     const payload = {
       name,
+      ...(shouldSendClient
+        ? {
+            clientId: trimmedClientId,
+            clientAutoCreate,
+          }
+        : {}),
       note: note.trim(),
       supportUrl: supportUrl.trim(),
       websiteUrl: websiteUrl.trim(),
@@ -1310,7 +1341,25 @@ export default function SubscriptionsPage() {
                     </IconButton>
                   </Stack>
                 </TableCell>
-                <TableCell sx={{ fontWeight: 700 }}>{sub.name}</TableCell>
+                <TableCell sx={{ fontWeight: 700 }}>
+                  {sub.name}
+                  {sub.clientId && (
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
+                      display="block"
+                      noWrap
+                      title={sub.clientId}
+                      sx={{
+                        fontFamily: 'monospace',
+                        fontWeight: 400,
+                        maxWidth: 260,
+                      }}
+                    >
+                      Клиент: {sub.clientId}
+                    </Typography>
+                  )}
+                </TableCell>
                 <TableCell>
                   <Typography
                     variant="body2"
@@ -1474,7 +1523,46 @@ export default function SubscriptionsPage() {
             fullWidth
             value={name}
             onChange={(e) => setName(e.target.value)}
-            sx={{ mb: 2 }}
+            sx={{ mb: 1.5 }}
+          />
+          <TextField
+            margin="dense"
+            label="ID клиента 3x-ui (необязательно)"
+            fullWidth
+            value={clientId}
+            onChange={(e) => {
+              const value = e.target.value;
+              setClientId(value);
+              if (value.trim()) setClientAutoCreate(false);
+            }}
+            helperText="ID или email клиента из раздела Clients (3x-ui 3.x) для переиспользования и выдачи статистики трафика/срока в подписке."
+            sx={{ mb: 0.5 }}
+          />
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={clientAutoCreate}
+                onChange={(e) => {
+                  const checked = e.target.checked;
+                  setClientAutoCreate(checked);
+                  if (checked) {
+                    setClientId('');
+                  } else {
+                    const editingSub = editingId
+                      ? subs.find((item) => item.id === editingId)
+                      : undefined;
+                    if (
+                      editingSub?.clientAutoCreate &&
+                      clientId === (editingSub.clientId || '')
+                    ) {
+                      setClientId('');
+                    }
+                  }
+                }}
+              />
+            }
+            label="Создать единого клиента 3x-ui автоматически"
+            sx={{ mb: 1.5 }}
           />
           <TextField
             margin="dense"

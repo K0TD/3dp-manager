@@ -32,6 +32,20 @@ export class Subscription {
   @Column({ unique: true })
   uuid: string;
 
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  clientId?: string | null;
+
+  @Column({ default: false })
+  clientAutoCreate?: boolean;
+
+  @Column({ type: 'simple-json', nullable: true })
+  clientUsage?: {
+    upload: number;
+    download: number;
+    total: number;
+    expire: number;
+  } | null;
+
   @Column({ default: true })
   isEnabled: boolean;
 

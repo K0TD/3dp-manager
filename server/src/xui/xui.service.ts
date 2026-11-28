@@ -14,9 +14,14 @@ import axios, {
 } from 'axios';
 import * as http from 'http';
 import * as https from 'https';
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { Setting } from '../settings/entities/setting.entity';
-import { XuiCertResult, XuiInboundRaw, XuiDiscoveredNode } from './xui.types';
+import {
+  XuiCertResult,
+  XuiInboundClient,
+  XuiInboundRaw,
+  XuiDiscoveredNode,
+} from './xui.types';
 import { SessionService } from '../session/session.service';
 import { Node, NodeAuthType } from '../nodes/entities/node.entity';
 import { isSafeAbsoluteRemotePath } from '../inbounds/tls-config';
@@ -419,8 +424,10 @@ export class XuiService {
     );
     await this.wait(waitMs);
     if (this.lastMutation.size >= 1000) {
-      const oldest = this.lastMutation.keys().next();
-      if (!oldest.done) this.lastMutation.delete(oldest.value);
+      for (const oldestKey of this.lastMutation.keys()) {
+        this.lastMutation.delete(oldestKey);
+        break;
+      }
     }
     this.lastMutation.set(key, Date.now());
   }
@@ -459,46 +466,55 @@ export class XuiService {
     inboundConfig: XuiInboundRaw,
     node?: Node,
   ): Promise<XuiCreatedInbound | null> {
-    return this.withMutation(node, () => {
-      if (!node || !this.routingStore)
-        return this.createInbound(inboundConfig, node);
-      return this.routingStore.withLock(node.id, async () => {
-        const current = await this.routingStore.node(node.id);
-        const state = current.routingPresets || emptyRoutingState();
-        if (state.pending)
-          throw new ConflictException(
-            'Применение маршрутизации ноды не завершено. Проверьте быстрые настройки.',
-          );
-        const prepared =
-          hasPresets(state) && supportsSniffing(inboundConfig)
-            ? prepareSniffing(inboundConfig)
-            : undefined;
-        const result = await this.createInbound(
-          prepared?.inbound || inboundConfig,
-          current,
+    return this.withMutation(node, () =>
+      this.createInboundWithRouting(inboundConfig, node),
+    );
+  }
+
+  private async createInboundWithRouting(
+    inboundConfig: XuiInboundRaw,
+    node?: Node,
+    options?: { allowEmptyClients?: boolean },
+  ): Promise<XuiCreatedInbound | null> {
+    if (!node || !this.routingStore)
+      return this.createInbound(inboundConfig, node, options);
+    return this.routingStore.withLock(node.id, async () => {
+      const current = await this.routingStore!.node(node.id);
+      const state = current.routingPresets || emptyRoutingState();
+      if (state.pending)
+        throw new ConflictException(
+          'Применение маршрутизации ноды не завершено. Проверьте быстрые настройки.',
         );
-        if (result && prepared) {
-          const savedSniffing = sniffingObject(result.inbound);
-          const expectedSniffing = sniffingObject(prepared.inbound);
-          if (
-            ['enabled', 'routeOnly', 'metadataOnly', 'destOverride'].some(
-              (field) => !equal(savedSniffing[field], expectedSniffing[field]),
-            )
-          ) {
-            result.verificationError =
-              '3x-ui не сохранила sniffing нового inbound';
-          }
-          state.sniffing[String(result.id)] = prepared.change;
-          try {
-            await this.routingStore.save(node.id, state);
-          } catch {
-            // Return the created identity so rotation's existing cleanup can remove it.
-            result.verificationError =
-              'Не удалось сохранить исходный sniffing для нового inbound';
-          }
+      const prepared =
+        hasPresets(state) && supportsSniffing(inboundConfig)
+          ? prepareSniffing(inboundConfig)
+          : undefined;
+      const result = await this.createInbound(
+        prepared?.inbound || inboundConfig,
+        current,
+        options,
+      );
+      if (result && prepared) {
+        const savedSniffing = sniffingObject(result.inbound);
+        const expectedSniffing = sniffingObject(prepared.inbound);
+        if (
+          ['enabled', 'routeOnly', 'metadataOnly', 'destOverride'].some(
+            (field) => !equal(savedSniffing[field], expectedSniffing[field]),
+          )
+        ) {
+          result.verificationError =
+            '3x-ui не сохранила sniffing нового inbound';
         }
-        return result;
-      });
+        state.sniffing[String(result.id)] = prepared.change;
+        try {
+          await this.routingStore!.save(node.id, state);
+        } catch {
+          // Return the created identity so rotation's existing cleanup can remove it.
+          result.verificationError =
+            'Не удалось сохранить исходный sniffing для нового inbound';
+        }
+      }
+      return result;
     });
   }
 
@@ -644,6 +660,369 @@ export class XuiService {
       const response = await api.get<unknown>(`/panel/api/inbounds/get/${id}`);
       return normalizeInbound(responsePayload(response.data));
     });
+  }
+
+  async prepareSubscriptionClient(
+    clientRef: string,
+    autoCreate: boolean,
+    node?: Node,
+  ): Promise<XuiInboundClient> {
+    if (node?.version && !hasSeparateClientApi(node)) {
+      throw new Error(
+        `Привязка клиента 3x-ui поддерживается на 3x-ui 3.x и выше (нода «${node.name}»: ${node.version})`,
+      );
+    }
+    const run = () =>
+      this.authenticatedRequest(node, async (api) => {
+        let email = clientRef.trim();
+        if (!email) {
+          throw new Error('Не указан идентификатор клиента 3x-ui');
+        }
+        if (!autoCreate && /^\d+$/.test(email)) {
+          const list = await api.get<unknown>('/panel/api/clients/list');
+          const rows = responsePayload(list.data);
+          if (!Array.isArray(rows)) {
+            throw new Error(
+              `Не удалось получить список клиентов на ноде ${node?.name || 'по умолчанию'}`,
+            );
+          }
+          let matchedEmail: string | undefined;
+          for (const row of rows) {
+            const record = asRecord(row);
+            const clientObj = asRecord(record?.client) ?? record;
+            if (
+              clientObj &&
+              (typeof clientObj.id === 'number' ||
+                typeof clientObj.id === 'string') &&
+              String(clientObj.id) === email &&
+              typeof clientObj.email === 'string' &&
+              clientObj.email
+            ) {
+              matchedEmail = clientObj.email;
+              break;
+            }
+          }
+          if (!matchedEmail) {
+            throw new Error(
+              `Клиент ${email} не найден на ноде ${node?.name || 'по умолчанию'}`,
+            );
+          }
+          email = matchedEmail;
+        }
+        if (autoCreate) {
+          await this.pace(node);
+          // Import supports unattached clients, unlike /clients/add which requires an inbound.
+          const imported = await api.post<unknown>(
+            '/panel/api/clients/import',
+            {
+              data: JSON.stringify([
+                {
+                  client: {
+                    email,
+                    id: randomUUID(),
+                    password: randomBytes(32).toString('base64'),
+                    auth: randomUUID(),
+                    subId: email,
+                    enable: true,
+                    flow: '',
+                    totalGB: 0,
+                    expiryTime: 0,
+                    limitIp: 0,
+                  },
+                  inboundIds: [],
+                },
+              ]),
+            },
+          );
+          if (asRecord(imported.data)?.success !== true) {
+            throw new Error(
+              `Не удалось создать клиента на ноде ${node?.name || 'по умолчанию'}`,
+            );
+          }
+        }
+        return this.getSubscriptionClient(api, email, node);
+      });
+    return autoCreate ? this.withMutation(node, run) : run();
+  }
+
+  private async getSubscriptionClient(
+    api: AxiosInstance,
+    email: string,
+    node?: Node,
+  ): Promise<XuiInboundClient> {
+    const res = await api.get<unknown>(
+      `/panel/api/clients/get/${encodeURIComponent(email)}`,
+    );
+    const body = asRecord(res.data);
+    const payload = body?.success === true ? asRecord(body.obj) : undefined;
+    const rawClient = asRecord(payload?.client) ?? payload;
+    if (!rawClient || rawClient.email !== email) {
+      throw new Error(
+        `Клиент ${email} не найден на ноде ${node?.name || 'по умолчанию'}`,
+      );
+    }
+    const id =
+      typeof rawClient.uuid === 'string' && rawClient.uuid
+        ? rawClient.uuid
+        : typeof rawClient.id === 'string'
+          ? rawClient.id
+          : undefined;
+    return {
+      ...(rawClient as unknown as XuiInboundClient),
+      id,
+      email,
+    };
+  }
+
+  async getSubscriptionUsage(
+    email: string,
+    node?: Node,
+  ): Promise<{ upload: number; download: number; total: number; expire: number }> {
+    return this.authenticatedRequest(node, async (api) => {
+      const details = await api.get<unknown>(
+        `/panel/api/clients/get/${encodeURIComponent(email)}`,
+      );
+      const detailsBody = asRecord(details.data);
+      const payload =
+        detailsBody?.success === true ? asRecord(detailsBody.obj) : undefined;
+      const client = asRecord(payload?.client) ?? payload;
+      if (!client) {
+        throw new Error('Не удалось получить данные клиента');
+      }
+
+      let trafficObj: Record<string, unknown> | undefined;
+      let trafficOk = false;
+      try {
+        const traffic = await api.get<unknown>(
+          `/panel/api/clients/traffic/${encodeURIComponent(email)}`,
+        );
+        const trafficBody = asRecord(traffic.data);
+        if (trafficBody?.success === true) {
+          trafficOk = true;
+          trafficObj = asRecord(trafficBody.obj);
+        }
+      } catch (error) {
+        const status = (error as AxiosError)?.response?.status;
+        if (status === 401 || status === 403) throw error;
+      }
+
+      const count = (value: unknown) =>
+        typeof value === 'number' && Number.isFinite(value)
+          ? Math.max(0, Math.floor(value))
+          : 0;
+      return {
+        upload: trafficOk ? count(trafficObj?.up) : 0,
+        download: trafficOk
+          ? count(trafficObj?.down)
+          : count(payload?.usedTraffic),
+        total: count(client.totalGB),
+        expire:
+          typeof client.expiryTime === 'number' && client.expiryTime > 0
+            ? Math.floor(client.expiryTime / 1000)
+            : 0,
+      };
+    });
+  }
+
+  async addInboundForClient(
+    inboundConfig: XuiInboundRaw,
+    client: XuiInboundClient,
+    node?: Node,
+  ): Promise<XuiCreatedInbound | null> {
+    const key = node?.id || 'main';
+    if (!client.email) {
+      this.lastInboundErrors.set(
+        key,
+        'Для привязки инбаунда требуется email клиента 3x-ui',
+      );
+      return null;
+    }
+    return this.withMutation(node, async () => {
+      const settings = jsonObject(inboundConfig.settings, 'settings');
+      const originalClient =
+        asRecord(Array.isArray(settings.clients) ? settings.clients[0] : undefined) ||
+        {};
+      const emptyConfig: XuiInboundRaw = {
+        ...inboundConfig,
+        settings: JSON.stringify({ ...settings, clients: [] }),
+      };
+      const created = await this.createInboundWithRouting(emptyConfig, node, {
+        allowEmptyClients: true,
+      });
+      if (!created) return null;
+      if (created.verificationError) return created;
+
+      try {
+        const saved = await this.authenticatedRequest(node, async (api) => {
+          await this.pace(node);
+          const attached = await api.post<unknown>(
+            `/panel/api/clients/${encodeURIComponent(client.email!)}/attach`,
+            { inboundIds: [created.id] },
+          );
+          responsePayload(attached.data);
+
+          const readback = await api.get<unknown>(
+            `/panel/api/inbounds/get/${created.id}`,
+          );
+          const normalized = normalizeInbound(responsePayload(readback.data));
+          const savedSettings = jsonObject(normalized.settings, 'settings');
+          const savedClients = Array.isArray(savedSettings.clients)
+            ? (savedSettings.clients as Array<Record<string, unknown>>)
+            : [];
+          if (!savedClients.length) {
+            const stored = await this.getSubscriptionClient(
+              api,
+              client.email!,
+              node,
+            );
+            normalized.settings = JSON.stringify({
+              ...savedSettings,
+              clients: [{ ...originalClient, ...stored }],
+            });
+          }
+          verifyInboundAccess(normalized);
+          const parsedClients = jsonObject(normalized.settings, 'settings')
+            .clients as Array<Record<string, unknown>>;
+          if (
+            !parsedClients.some(
+              (item) =>
+                item.enable !== false &&
+                (item.email === client.email ||
+                  (client.id && item.id === client.id)),
+            )
+          ) {
+            throw new XuiApiError(
+              `3x-ui не подтвердила привязку клиента к inbound ${created.id}`,
+            );
+          }
+          return normalized;
+        });
+        return { id: created.id, inbound: saved };
+      } catch (error) {
+        const message = this.errorMessage(error);
+        this.lastInboundErrors.set(key, message);
+        this.logger.warn(
+          `Client attach to inbound ${created.id} (${node?.name || 'main'}): ${message}`,
+        );
+        const cleaned = await this.removeInbound(created.id, node);
+        if (cleaned && node && this.routingStore) {
+          await this.routingStore.forgetInbound(node.id, created.id);
+        }
+        if (cleaned) return null;
+        return { ...created, verificationError: message };
+      }
+    });
+  }
+
+  async attachExistingClientToInbound(
+    inboundId: number,
+    client: XuiInboundClient,
+    node?: Node,
+    matchesInbound?: (inbound: XuiInboundRaw) => boolean,
+  ): Promise<XuiCreatedInbound | null> {
+    if (!inboundId || inboundId <= 0 || !client.email) return null;
+    return this.withMutation(node, () => {
+      const run = () =>
+        this.attachClientToSharedInbound(
+          inboundId,
+          client,
+          node,
+          matchesInbound,
+        );
+      if (!node || !this.routingStore) return run();
+      return this.routingStore.withLock(node.id, run);
+    });
+  }
+
+  private async attachClientToSharedInbound(
+    inboundId: number,
+    client: XuiInboundClient,
+    node?: Node,
+    matchesInbound?: (inbound: XuiInboundRaw) => boolean,
+  ): Promise<XuiCreatedInbound | null> {
+    const key = node?.id || 'main';
+    this.lastInboundErrors.delete(key);
+    const email = client.email || '';
+    const clientId = client.id || '';
+    let accepted: XuiInboundRaw | undefined;
+    try {
+      return await this.authenticatedRequest(node, async (api) => {
+        const currentResp = await api.get<unknown>(
+          `/panel/api/inbounds/get/${inboundId}`,
+        );
+        const current = normalizeInbound(responsePayload(currentResp.data));
+        if (current.id !== inboundId) {
+          throw new XuiApiError('3x-ui вернула другой инбаунд');
+        }
+        if (!current.enable) {
+          throw new XuiApiError(
+            `Общий inbound ${inboundId} отключён на панели 3x-ui`,
+          );
+        }
+        if (matchesInbound && !matchesInbound(current)) {
+          throw new XuiApiError(
+            'Параметры общего инбаунда изменились на панели 3x-ui',
+          );
+        }
+
+        const { clients } = jsonObject(current.settings, 'inbound settings');
+        if (
+          Array.isArray(clients) &&
+          clients.some((rawItem) => {
+            const item = asRecord(rawItem);
+            return (
+              item?.enable !== false &&
+              item?.email === email &&
+              (!clientId || item.id === clientId)
+            );
+          })
+        ) {
+          return { id: inboundId, inbound: current };
+        }
+
+        accepted = current;
+        await this.pace(node);
+        const attached = await api.post<unknown>(
+          `/panel/api/clients/${encodeURIComponent(email)}/attach`,
+          { inboundIds: [inboundId] },
+        );
+        responsePayload(attached.data);
+
+        const savedResp = await api.get<unknown>(
+          `/panel/api/inbounds/get/${inboundId}`,
+        );
+        const saved = normalizeInbound(responsePayload(savedResp.data));
+        const savedSettings = jsonObject(saved.settings, 'saved inbound settings');
+        const savedClients = Array.isArray(savedSettings.clients)
+          ? (savedSettings.clients as Array<Record<string, unknown>>)
+          : [];
+        if (
+          saved.id !== inboundId ||
+          saved.enable !== true ||
+          saved.protocol !== current.protocol ||
+          !savedClients.some(
+            (item) =>
+              item?.enable !== false &&
+              item.email === email &&
+              (!clientId || item.id === clientId),
+          )
+        ) {
+          throw new XuiApiError(
+            `3x-ui не подтвердила привязку клиента к общему inbound ${inboundId}`,
+          );
+        }
+        return { id: inboundId, inbound: saved };
+      });
+    } catch (error) {
+      const message = this.errorMessage(error);
+      this.lastInboundErrors.set(key, message);
+      this.logger.warn(
+        `Shared inbound client attach (${node?.name || 'main'}, inbound ${inboundId}): ${message}`,
+      );
+      return accepted
+        ? { id: inboundId, inbound: accepted, verificationError: message }
+        : null;
+    }
   }
 
   async addInboundClient(
@@ -981,7 +1360,9 @@ export class XuiService {
     const attachments = row?.inboundIds === null ? [] : row?.inboundIds;
     if (!Array.isArray(attachments)) return false;
     const shortId = formatClientEmail(null, clientId);
-    const managedEmail = email === shortId || email.endsWith(`-${shortId}`);
+    const managedEmail =
+      !email.startsWith('3dp-') &&
+      (email === shortId || email.endsWith(`-${shortId}`));
     const emptyExternalLinks =
       row?.externalLinks === null ||
       (Array.isArray(row?.externalLinks) && row.externalLinks.length === 0);

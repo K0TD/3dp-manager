@@ -182,6 +182,15 @@ export class CreateSubscriptionDto {
   @IsString()
   name: string;
 
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  clientId?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  clientAutoCreate?: boolean;
+
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => InboundConfigDto)

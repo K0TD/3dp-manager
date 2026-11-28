@@ -144,6 +144,13 @@ export class SubscriptionsService {
 
   async create(dto: CreateSubscriptionDto) {
     await this.validateInboundsConfig(dto.inboundsConfig);
+    const trimmedClientId = dto.clientId?.trim() || '';
+    const clientAutoCreate = !trimmedClientId && dto.clientAutoCreate === true;
+    const clientId = trimmedClientId
+      ? trimmedClientId
+      : clientAutoCreate
+        ? `3dp-${uuidv4()}`
+        : undefined;
     const sub = this.subRepo.create({
       id: uuidv4(),
       name: dto.name,
@@ -151,16 +158,93 @@ export class SubscriptionsService {
       supportUrl: dto.supportUrl,
       websiteUrl: dto.websiteUrl,
       uuid: uuidv4(),
+      ...(clientId ? { clientId, clientAutoCreate } : {}),
       inboundsConfig: this.withConfigIds(dto.inboundsConfig || []),
       isAutoRotationEnabled: dto.isAutoRotationEnabled ?? true,
       node: await this.resolveNode(dto.nodeId),
       relayServer: await this.resolveRelay(dto.relayServerId),
     });
 
+    if (sub.clientId) {
+      try {
+        await this.syncClientUsage(sub, true);
+      } catch (error) {
+        throw new BadRequestException(
+          error instanceof Error
+            ? error.message
+            : 'Не удалось подготовить клиента на выбранных нодах. Проверьте ID клиента и доступность 3x-ui.',
+        );
+      }
+    }
+
     return this.subscriptionLock.run(sub.id, async () => {
       const saved = await this.subRepo.save(sub);
       return this.provisionPersistentInbounds(saved);
     });
+  }
+
+  async syncClientUsage(sub: Subscription, creating = false) {
+    if (!sub.clientId) return sub.clientUsage ?? null;
+    const nonClientTypes = new Set<string>([
+      'custom',
+      'mtproto-faketls',
+      ...ROUTING_INBOUND_TYPES,
+      ...PERSISTENT_INBOUND_TYPES,
+    ]);
+    const configs: Array<{ nodeId?: string }> = (
+      sub.inboundsConfig || []
+    ).filter((config) => !nonClientTypes.has(config.type || ''));
+    if (!configs.length) configs.push({});
+
+    const seen = new Set<string>();
+    const usages: Array<NonNullable<Subscription['clientUsage']>> = [];
+    for (const config of configs) {
+      const nodeId = config.nodeId || sub.nodeId || sub.node?.id;
+      const node = nodeId
+        ? await this.resolveNode(nodeId)
+        : await this.nodeRepo
+            .createQueryBuilder('node')
+            .addSelect('node.password')
+            .addSelect('node.token')
+            .where('node.isMain = :isMain AND node.deletedAt IS NULL', {
+              isMain: true,
+            })
+            .getOne();
+      const key = node?.id || node?.url || 'default';
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const client = await this.xuiService.prepareSubscriptionClient(
+        sub.clientId,
+        creating && sub.clientAutoCreate === true,
+        node || undefined,
+      );
+      usages.push(
+        await this.xuiService.getSubscriptionUsage(
+          client.email || sub.clientId,
+          node || undefined,
+        ),
+      );
+    }
+
+    const expires = usages
+      .map((usage) => usage.expire)
+      .filter((expire) => expire > 0);
+    sub.clientUsage = {
+      upload: usages.reduce((sum, usage) => sum + usage.upload, 0),
+      download: usages.reduce((sum, usage) => sum + usage.download, 0),
+      total: usages.some((usage) => usage.total === 0)
+        ? 0
+        : usages.reduce((sum, usage) => sum + usage.total, 0),
+      expire: expires.length ? Math.min(...expires) : 0,
+    };
+    if (!creating && sub.id) {
+      await this.subRepo.update(
+        { id: sub.id, clientId: sub.clientId },
+        { clientUsage: sub.clientUsage },
+      );
+    }
+    return sub.clientUsage;
   }
 
   async update(id: string, dto: UpdateSubscriptionDto) {
@@ -210,6 +294,50 @@ export class SubscriptionsService {
     if ('relayServerId' in dto) {
       sub.relayServer = await this.resolveRelay(dto.relayServerId);
       sub.relayServerId = dto.relayServerId;
+    }
+
+    let clientChanged = false;
+    if (dto.clientId !== undefined || dto.clientAutoCreate !== undefined) {
+      const trimmed =
+        dto.clientId !== undefined ? dto.clientId.trim() : sub.clientId || '';
+      if (dto.clientId !== undefined && trimmed !== (sub.clientId || '')) {
+        if (trimmed) {
+          sub.clientId = trimmed;
+          sub.clientAutoCreate = false;
+        } else if (dto.clientAutoCreate === true) {
+          sub.clientId = `3dp-${uuidv4()}`;
+          sub.clientAutoCreate = true;
+        } else {
+          sub.clientId = null;
+          sub.clientAutoCreate = false;
+        }
+        sub.clientUsage = null;
+        clientChanged = true;
+      } else if (dto.clientAutoCreate !== undefined) {
+        if (dto.clientAutoCreate === true && !sub.clientId) {
+          sub.clientId = `3dp-${uuidv4()}`;
+          sub.clientAutoCreate = true;
+          sub.clientUsage = null;
+          clientChanged = true;
+        } else if (dto.clientAutoCreate === false && sub.clientAutoCreate) {
+          sub.clientId = null;
+          sub.clientAutoCreate = false;
+          sub.clientUsage = null;
+          clientChanged = true;
+        }
+      }
+    }
+
+    if (clientChanged && sub.clientId) {
+      try {
+        await this.syncClientUsage(sub, true);
+      } catch (error) {
+        throw new BadRequestException(
+          error instanceof Error
+            ? error.message
+            : 'Не удалось подготовить клиента на выбранных нодах. Проверьте ID клиента и доступность 3x-ui.',
+        );
+      }
     }
 
     if (!nextConfigs) return this.subRepo.save(sub);
