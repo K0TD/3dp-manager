@@ -10,13 +10,13 @@ A fork of [denpiligrim/3dp-manager](https://github.com/denpiligrim/3dp-manager),
 
 ## Features
 
-- **Nodes** (**Ноды**) — multiple 3x-ui panels (login/password or token, CSRF), automatic IP/country detection, 3x-ui and Xray version checks.
-- **Subscriptions** (**Подписки**) — permanent URL `/bus/<UUID>`, per-connection choice of node, relay, port, SNI, flag and order.
+- **Nodes** (**Ноды**) — multiple 3x-ui panels (login/password or token, CSRF), automatic IP/country detection, 3x-ui and Xray version checks, automatic addition of node domains to SNI.
+- **Subscriptions** (**Подписки**) — permanent URL `/bus/<UUID>`, per-connection choice of node, relay, port, SNI, flag and order; optional 3x-ui 3.x client binding with traffic/expiry stats (`subscription-userinfo`).
 - **Rotation** — independent per node: a failure on one node doesn't affect the others, the working generation is kept until it is successfully replaced, and old ones are cleaned up in the background.
 - **Protocols** — VLESS (Reality / TLS / WS / XHTTP / gRPC / XHTTP GET), VMess, Trojan, Shadowsocks, Hysteria2, MTProto FakeTLS, WireGuard, AmneziaWG, HTTP/SOCKS/mixed, external links.
 - **Connection profiles** — Self-SNI, HTTPS Fallback (direct TLS or Nginx/Caddy), SNI profiles with fingerprint, verification via xray-core, canary rotation with automatic rollback.
 - **Routing** — node presets (blocking RU domains/IPs, IP-detection services, Google over IPv4) and Happ / INCY client profiles.
-- **Relay** — intermediate servers, with forwarding installed over SSH right from the interface.
+- **Relay** — intermediate servers with forwarding installed over SSH from the interface, configurable TCP/UDP ports, and automatic addition of relay domains to SNI.
 - **Other** — subscription metadata (note, support, website), API tokens for automation, panel migration in a single archive, safe/deferred/forced node deletion.
 
 ## Requirements
@@ -79,6 +79,8 @@ On the intermediate server (`IP_ADDRESS` is the node's IP):
 ```bash
 sudo ORIGIN_IP="IP_ADDRESS" bash -c "$(curl -sSL https://raw.githubusercontent.com/k0td/3dp-manager/main/forwarding_install.sh)"
 ```
+
+Optionally set `FORWARDING_TCP_PORTS` and `FORWARDING_UDP_PORTS` (defaults to `443,8443,10000:60000`; an empty value disables that protocol).
 
 Removal (afterwards run `ufw reload` and `reboot`):
 

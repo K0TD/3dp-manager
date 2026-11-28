@@ -10,13 +10,13 @@
 
 ## Mümkinçilikler
 
-- **Node-lar** (**Ноды**) — birnäçe 3x-ui paneli (login/parol ýa-da token, CSRF), IP/ýurt awtomatiki kesgitlemek, 3x-ui we Xray wersiýalaryny barlamak.
-- **Abunalar** (**Подписки**) — hemişelik URL `/bus/<UUID>`, her birikme üçin node, relay, port, SNI, baýdak we tertip saýlamak.
+- **Node-lar** (**Ноды**) — birnäçe 3x-ui paneli (login/parol ýa-da token, CSRF), IP/ýurt awtomatiki kesgitlemek, 3x-ui we Xray wersiýalaryny barlamak, node domenini SNI sanawyna awtomatiki goşmak.
+- **Abunalar** (**Подписки**) — hemişelik URL `/bus/<UUID>`, her birikme üçin node, relay, port, SNI, baýdak we tertip saýlamak; islege görä 3x-ui 3.x müşderisini baglamak we trafik/möhlet statistikasyny bermek (`subscription-userinfo`).
 - **Rotasiýa** — her node üçin aýratyn: bir node-yň näsazlygy beýlekilere täsir etmeýär, işleýän nesil üstünlikli çalşylýança saklanýar, köne nesiller fonda arassalanýar.
 - **Protokollar** — VLESS (Reality / TLS / WS / XHTTP / gRPC / XHTTP GET), VMess, Trojan, Shadowsocks, Hysteria2, MTProto FakeTLS, WireGuard, AmneziaWG, HTTP/SOCKS/mixed, daşarky salgylar.
 - **Birikme profilleri** — Self-SNI, HTTPS Fallback (göni TLS ýa-da Nginx/Caddy), fingerprint bilen SNI profilleri, xray-core arkaly barlag, awtomatiki yzyna gaýtarmak bilen canary-rotasiýa.
 - **Marşrutlaşdyrma** — node-lar üçin taýýar sazlamalar (RU domenlerini/IP-lerini, IP kesgitleýän hyzmatlary blokirlemek, Google-y IPv4 arkaly) we Happ / INCY müşderi profilleri.
-- **Relay** — interfeýsiň özünden SSH arkaly ugrukdyrma gurnalýan aralyk serwerler.
+- **Relay** — interfeýsiň özünden SSH arkaly ugrukdyrma gurnalýan aralyk serwerler, sazlanýan TCP/UDP portlary, relay domenini SNI sanawyna awtomatiki goşmak.
 - **Beýlekiler** — abuna metamaglumatlary (bellik, goldaw, saýt), awtomatlaşdyrma üçin API tokenleri, paneli bir arhiw bilen göçürmek, node-lary howpsuz/gijikdirilen/mejbury pozmak.
 
 ## Talaplar
@@ -79,6 +79,8 @@ Aralyk serwerde (`IP_ADDRESS` — node-yň IP-si):
 ```bash
 sudo ORIGIN_IP="IP_ADDRESS" bash -c "$(curl -sSL https://raw.githubusercontent.com/k0td/3dp-manager/main/forwarding_install.sh)"
 ```
+
+Zerur bolanda `FORWARDING_TCP_PORTS` we `FORWARDING_UDP_PORTS` üýtgeýjilerini beriň (deslapky baha `443,8443,10000:60000`; boş baha degişli protokoly öçürýär).
 
 Aýyrmak (soňra — `ufw reload` we `reboot`):
 

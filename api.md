@@ -132,6 +132,8 @@
 ```json
 {
   "name": "My Subscription",
+  "clientId": "alice",
+  "clientAutoCreate": false,
   "note": "Поддержка по ссылке",
   "supportUrl": "tg://resolve?domain=support",
   "websiteUrl": "https://example.com",
@@ -160,6 +162,8 @@
 В конфигурацию можно включить до 20 подключений; элементы `happ-routing` и `incy-routing` в этот лимит не входят. Для routing передайте `routingProfile`: JSON-объект в строке, base64 или ссылку Happ/INCY. INCY также принимает HTTP(S) URL профиля. Профили проверяются при создании и обновлении, не создают inbound в панели и выдаются первыми в `/bus`. `vless-xhttp-get` создаёт XHTTP `packet-up` с uplink GET, без TLS/SNI; дополнительные настройки XHTTP попадают в параметр ссылки `extra`.
 
 `note` — не более 200 символов; `supportUrl` принимает HTTP, HTTPS или TG, `websiteUrl` — HTTP или HTTPS (до 2048 символов). Для очистки поля передайте пустую строку.
+
+Опционально можно привязать единого клиента 3x-ui 3.x: передайте `clientId` (существующий ID или email из Clients на выбранных нодах) либо `clientAutoCreate: true` для автоматического создания клиента `3dp-<UUID>`. Для очистки привязки передайте `clientId: ""`. Привязка применяется к протоколам таблицы Clients (`vless`, `vmess`, `trojan`, `shadowsocks`, `hysteria`, `hysteria2`).
 
 Пример конфигураций routing и XHTTP GET:
 
@@ -506,7 +510,9 @@
   "sshPort": 22,
   "username": "root",
   "password": "ssh_password",
-  "domain": "relay.example.com"
+  "domain": "relay.example.com",
+  "tcpPorts": "443,8443,10000:60000",
+  "udpPorts": "443,8443,10000:60000"
 }
 ```
 
@@ -725,7 +731,7 @@ GET /bus/abc-123-def
 - `format` (опционально): `wireguard` | `amneziawg` для скачивания конфигурации; обычные Base64 или HTML выбираются по User-Agent.
 - `index`: номер конфигурации выбранного формата с нуля (для `wireguard`/`amneziawg`).
 
-Для обоих `/bus` эндпоинтов заголовок `profile-title` содержит `base64:` + имя в UTF-8/base64; при наличии `note` таким же образом отдаётся `announce`, а `supportUrl` и `websiteUrl` передаются в `support-url` и `profile-web-page-url`. В Base64-содержимом включённые Happ/INCY routing-линии предшествуют ссылкам подключений; при использовании relay эти линии не переписываются.
+Для обоих `/bus` эндпоинтов заголовок `profile-title` содержит `base64:` + имя в UTF-8/base64; при наличии `note` таким же образом отдаётся `announce`, а `supportUrl` и `websiteUrl` передаются в `support-url` и `profile-web-page-url`. При наличии `clientId` передаётся `subscription-userinfo` (`upload=...; download=...; total=...; expire=...`) со статистикой клиента (кэш 30 с, при сбое панели используются сохранённые данные `clientUsage`). В Base64-содержимом включённые Happ/INCY routing-линии предшествуют ссылкам подключений; при использовании relay эти линии не переписываются.
 
 `format=wireguard&index=0` скачивает первый профиль WireGuard `.conf`. HTML показывает QR-коды и настройки HTTP/SOCKS/mixed. Эти подключения исключены из обычной Base64-выдачи. Ответы подписки используют `Cache-Control: no-store`.
 
@@ -780,6 +786,14 @@ GET /bus/abc-123-def/1
   id: string;
   uuid: string;
   name: string;
+  clientId?: string | null;
+  clientAutoCreate?: boolean;
+  clientUsage?: {
+    upload: number;
+    download: number;
+    total: number;
+    expire: number;
+  } | null;
   note?: string;
   supportUrl?: string;
   websiteUrl?: string;
@@ -836,6 +850,8 @@ GET /bus/abc-123-def/1
   sshPort: number;
   username: string;
   domain?: string;
+  tcpPorts?: string | null;
+  udpPorts?: string | null;
   isInstalled: boolean;
 }
 ```
@@ -979,6 +995,7 @@ http://<host>:<port>/bus/<uuid>
 - **Base64-кодировка** используется для подписок (стандарт v2ray)
 - **Полный клиентский Xray JSON** доступен по `GET /bus/:uuid?format=xray-json` и `GET /bus/:uuid/:tunnelId?format=xray-json` (без приватных ключей сервера)
 - **Авто-ротация** выполняется по интервалу из настроек (`rotationIntervalMinutes`)
+- **Ограничение нагрузки на 3x-ui**: `PANEL_MUTATION_INTERVAL_MS` (пауза между изменениями на одной панели, по умолчанию `300`, диапазон `100–5000` мс) и `ROTATION_SUBSCRIPTION_PAUSE_MS` (пауза между подписками при ротации, по умолчанию `500`, диапазон `100–10000` мс)
 - **Scanner** (RealiTLScanner) — Go-бинарник, встраивается в backend-контейнер
 
 ---

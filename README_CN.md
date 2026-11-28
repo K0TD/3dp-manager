@@ -10,13 +10,13 @@
 
 ## 功能
 
-- **节点**（**Ноды**）— 支持多个 3x-ui 面板（用户名/密码或令牌、CSRF），自动识别 IP/国家，检查 3x-ui 和 Xray 版本。
-- **订阅**（**Подписки**）— 固定 URL `/bus/<UUID>`，可为每个连接选择节点、relay、端口、SNI、旗帜和顺序。
+- **节点**（**Ноды**）— 支持多个 3x-ui 面板（用户名/密码或令牌、CSRF），自动识别 IP/国家，检查 3x-ui 和 Xray 版本，自动将节点域名添加到 SNI 列表。
+- **订阅**（**Подписки**）— 固定 URL `/bus/<UUID>`，可为每个连接选择节点、relay、端口、SNI、旗帜和顺序；可选绑定 3x-ui 3.x 客户端并输出流量/到期统计（`subscription-userinfo`）。
 - **轮换** — 按节点独立进行：单个节点故障不会影响其他节点，当前可用的一代连接会保留到成功替换为止，旧连接在后台清理。
 - **协议** — VLESS（Reality / TLS / WS / XHTTP / gRPC / XHTTP GET）、VMess、Trojan、Shadowsocks、Hysteria2、MTProto FakeTLS、WireGuard、AmneziaWG、HTTP/SOCKS/mixed、外部链接。
 - **连接配置** — Self-SNI、HTTPS Fallback（直接 TLS 或 Nginx/Caddy）、带 fingerprint 的 SNI 配置、通过 xray-core 校验、带自动回滚的 canary 轮换。
 - **路由** — 节点预设（屏蔽俄罗斯域名/IP、IP 检测服务、Google 走 IPv4）以及 Happ / INCY 客户端配置。
-- **Relay** — 中转服务器，可直接在界面中通过 SSH 安装转发。
+- **Relay** — 中转服务器，可直接在界面中通过 SSH 安装转发，支持自定义 TCP/UDP 端口并自动将 relay 域名添加到 SNI 列表。
 - **其他** — 订阅元数据（备注、支持、网站）、用于自动化的 API 令牌、单个归档文件完成面板迁移、安全/延迟/强制删除节点。
 
 ## 要求
@@ -79,6 +79,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/delete
 ```bash
 sudo ORIGIN_IP="IP_ADDRESS" bash -c "$(curl -sSL https://raw.githubusercontent.com/k0td/3dp-manager/main/forwarding_install.sh)"
 ```
+
+如需自定义端口，可设置 `FORWARDING_TCP_PORTS` 和 `FORWARDING_UDP_PORTS`（默认为 `443,8443,10000:60000`；空值表示禁用对应协议）。
 
 删除（之后执行 `ufw reload` 和 `reboot`）：
 
