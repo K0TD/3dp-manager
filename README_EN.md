@@ -1,274 +1,106 @@
 [Русский](/README.md) | [中文](/README_CN.md) | [فارسی](/README_IR.md) | [Türkmençe](/README_TK.md)
 
-<p><img src="https://denpiligrim.ru/storage/images/3dp-manager.png" alt="3dp-manager preview"></p>
-
-![Version](https://img.shields.io/badge/version-2.2.0-blue.svg) ![Downloads](https://img.shields.io/badge/downloads-5.1k-blue) [![License](https://img.shields.io/badge/license-GPL%20V3-blue.svg?longCache=true)](https://www.gnu.org/licenses/gpl-3.0) [![Telegram](https://img.shields.io/badge/Telegram-26A5E4?style=flat&logo=telegram&logoColor=white)](https://t.me/denpiligrim_web) [![YouTube Channel Subscribers](https://img.shields.io/youtube/channel/subscribers/UCOv2tFFYDY4mXOM60PVz8zw)](https://www.youtube.com/@denpiligrim)
+![Version](https://img.shields.io/badge/version-2.2.0-blue.svg) [![License](https://img.shields.io/badge/license-GPL%20V3-blue.svg?longCache=true)](https://www.gnu.org/licenses/gpl-3.0)
 
 # 3DP-MANAGER · K0TD fork
 
-A utility for automatically generating inbounds for the [3x-ui](https://github.com/MHSanaei/3x-ui) panel, creating unified subscriptions, managing multiple 3x-ui nodes, and configuring relay forwarding from intermediate servers to origin servers. Since version 2.0.0, the project has a graphical interface and simple user-facing settings.
+A web panel that auto-generates inbounds in [3x-ui](https://github.com/MHSanaei/3x-ui) via its API. It combines connections from multiple nodes into a single subscription with a permanent URL and rotates them periodically so the traffic doesn't look uniform.
 
-**Support the project**
-
-- Bank transfer:
-  - :credit_card: MIR card: `2204320436318077`
-  - :credit_card: MasterCard: `5395452209474530`
-- E-wallet:
-  - :moneybag: YooMoney: `4100116897060652`
-  - :moneybag: PayPal: `vasiljevdenisx@gmail.com`
-- Crypto:
-  - :coin: USDT | ETH (ERC20 | BEP20): `0x6fe140040f6Cdc1E1Ff2136cd1d60C0165809463`
-  - :coin: USDT | TRX (TRC20): `TEWxXmJxvkAmhshp7E61XJGHB3VyM9hNAb`
-  - :coin: Bitcoin: `bc1qctntwncsv2yn02x2vgnkrqm00c4h04c0afkgpl`
-  - :coin: TON: `UQCZ3MiwyYHXftPItMMzJRYRiKHugr16jFMq2nfOQOOoemLy`
-  - :coin: Bybit ID: `165292278`
-
-## Description
-
-The main goal of the utility is to make your traffic look less uniform. 3DP-MANAGER generates a set of connections at a configured interval with different parameters:
-
-- protocols: `vless`, `vmess`, `shadowsocks`, `hysteria2`, `trojan`;
-- ports: fixed `443`, `8443`, plus random ports from `10000-60000`;
-- transport: `tcp`, `websocket`, `grpc`, `xhttp`;
-- SNI values are taken from the domain whitelist or set manually;
-- node, relay server, port, and flag can be configured separately for each inbound.
-
-All connections are combined into one subscription with a static URL. 3DP-MANAGER works with the `3x-ui` panel through its public API and does not directly interfere with the panel internals.
-
-The secondary goal is connection stability: the client receives several connection options and can choose any of them. One subscription can contain inbounds from different nodes, relay servers, and your own external links as custom connections.
-
-Additionally, 3DP-MANAGER can be used in a cascading setup. The forwarding service configures subscription and traffic forwarding to the selected node.
-
-Recommendations:
-
-- Use HTTPS for subscriptions (domain + SSL certificate).
-- Set the generation interval to at least 10 minutes; for stability, once per day (1440 minutes) is recommended.
-- Configure the client to refresh more frequently, for example every hour, so it stays synchronized with the server.
+A fork of [denpiligrim/3dp-manager](https://github.com/denpiligrim/3dp-manager), GPL-3.0.
 
 ## Features
 
-- Generates diverse connections for one or more subscriptions
-- Creates a unified subscription with a static URL
-- Manages multiple `3x-ui` nodes
-- Supports node authentication by login/password or token
-- Automatically detects node IP, country, and flag from the panel URL
-- Lets you choose node, relay server, flag, SNI, and port per inbound
-- Supports a fixed port or `random`
-- Supports custom connections: add a ready-made external link to a subscription
-- Allows separate `fullchain.pem` and `privkey.pem` paths for Hysteria2 UDP
-- Supports a custom domain `whitelist`
-- Optional automatic relay forwarding setup
-- Installs the Web UI over HTTP or HTTPS: Let's Encrypt, self-signed, or custom certificates
-
-## Fork capabilities and configuration
-
-1. Add a 3x-ui node and its credentials; the main node is the default. Optionally add a relay server and install forwarding, then configure the SNI domain list and create a subscription. Its `/bus/<UUID>` URL remains stable across rotations.
-2. Connections include VLESS TCP/XHTTP/gRPC Reality, VLESS WS, VLESS TCP/WS/XHTTP TLS, VMess TCP, Shadowsocks TCP, Trojan Reality, Hysteria2, MTProto FakeTLS, AmneziaWG, WireGuard, HTTP/SOCKS/mixed, and custom links. Availability depends on the node's panel and Xray versions. AmneziaWG requires 3x-ui 3.7 or newer. MTProto uses the panel's built-in bridge to Xray.
-3. For Reality, built-in SNI profiles select a fingerprint and associated `spiderX`, XHTTP path and padding. Unmatched domains use the `chrome` fallback. TLS inbounds use the node's certificate paths or explicitly supplied paths and TLS name.
-4. Rotation handles nodes independently, retains the last working generation on failure and schedules old inbounds for cleanup. AmneziaWG, WireGuard and HTTP/SOCKS/mixed are persistent: they are created on save and retain credentials and ports during rotation. To change their type, node, relay or port, remove and save first, then add the new connection.
-5. Node removal modes: `safe` removes panel inbounds first and stops if that fails; inbounds already deleted are not restored; `deferred` hides the node and schedules cleanup; `force` removes local records without contacting 3x-ui, so remaining panel inbounds may need manual deletion. Subscriptions remain; affected configurations are disabled in deferred/force mode and may reactivate on a later rotation when a node is available.
-6. Node routing presets can block Russian domains/IPs or IP-check services and send Google traffic over IPv4. They modify server-side Xray routing, depend on installed geodata and are separate from client routing profiles.
-7. The server API accepts `happ-routing` and `incy-routing` profiles, subscription `note`, `supportUrl`, `websiteUrl`, and `vless-xhttp-get` (XHTTP packet-up, GET, no TLS/SNI). Routing lines precede connection links and do not count toward the 20-connection limit. In the subscription form, select **Happ routing** or **INCY routing** and enter the profile in the multiline field; the form also offers **note**, **support URL**, **website URL**, and the **VLESS XHTTP GET** connection type. The dashboard shows clear operation errors and hints, with technical details collapsed. See [api.md](api.md).
-8. Normal subscription deletion stops if 3x-ui cleanup fails. `force=true` removes the subscription despite the failure; check and remove any remaining inbounds in the 3x-ui panel manually.
-
-Settings include a portable panel backup. Export it from **Settings → Panel transfer**, then run the fork installer with `--restore /root/panel.3dp-backup` on the new server. An optional passphrase protects the archive; subscription UUIDs, nodes, settings and relay credentials are preserved. Restore works only on a server without 3DP-MANAGER: if `/opt/3dp-manager/docker-compose.yml` exists, the installer performs a regular update and ignores the archive, so remove the old installation first.
+- **Nodes** (**Ноды**) — multiple 3x-ui panels (login/password or token, CSRF), automatic IP/country detection, 3x-ui and Xray version checks.
+- **Subscriptions** (**Подписки**) — permanent URL `/bus/<UUID>`, per-connection choice of node, relay, port, SNI, flag and order.
+- **Rotation** — independent per node: a failure on one node doesn't affect the others, the working generation is kept until it is successfully replaced, and old ones are cleaned up in the background.
+- **Protocols** — VLESS (Reality / TLS / WS / XHTTP / gRPC / XHTTP GET), VMess, Trojan, Shadowsocks, Hysteria2, MTProto FakeTLS, WireGuard, AmneziaWG, HTTP/SOCKS/mixed, external links.
+- **Connection profiles** — Self-SNI, HTTPS Fallback (direct TLS or Nginx/Caddy), SNI profiles with fingerprint, verification via xray-core, canary rotation with automatic rollback.
+- **Routing** — node presets (blocking RU domains/IPs, IP-detection services, Google over IPv4) and Happ / INCY client profiles.
+- **Relay** — intermediate servers, with forwarding installed over SSH right from the interface.
+- **Other** — subscription metadata (note, support, website), API tokens for automation, panel migration in a single archive, safe/deferred/forced node deletion.
 
 ## Requirements
 
-- Ubuntu 20.04 or newer, Debian 12.11 or newer
-- `3x-ui` panel v2.9.4 or newer
-- Root access on the server
-- Docker and Docker Compose; if missing, the installer will try to install them automatically
-- Domain + SSL certificate (optional)
-
----
+- Ubuntu 20.04+ or Debian 12+, root access.
+- 3x-ui v2.9.4+ on the nodes (some protocols require newer 3x-ui/Xray versions).
+- Docker and Docker Compose — the installer will set them up itself.
+- For HTTPS — a domain and a certificate (optional).
 
 ## Installation
 
-The `3x-ui` control panel must already be installed. You can install it with: `bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh)`
-
-Install the project on the server:
-
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/install.sh)
 ```
 
-During installation, the script will:
+The script deploys `postgres`, `backend`, `frontend` to `/opt/3dp-manager`, offers a Web UI mode (Let's Encrypt / your own certificate / self-signed / HTTP), and generates a port, login and password. Change the password after the first login.
 
-- check the OS, root access, Docker, and Docker Compose;
-- create a 2 GB swap file if RAM is low and swap is missing;
-- ask which Web UI access mode to use:
-  - HTTPS via Let's Encrypt;
-  - HTTPS with a self-signed certificate;
-  - HTTPS with your own certificates;
-  - HTTP without encryption;
-- generate a random Web UI port;
-- generate the administrator login and password;
-- deploy the `postgres`, `backend`, and `frontend` containers.
-
-After installation, the terminal will show the URL, login, and password. Change the password immediately in the 3DP-MANAGER settings.
-
-<sup>Short description: runs the interactive installer, prepares the environment, and deploys the project containers.</sup>
-
-## Update
-
-Update to the latest version:
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/install.sh)
-```
-
-The same command detects an existing installation (including one made from the `denpiligrim` repository), backs up PostgreSQL to `/opt/3dp-manager/backups/`, switches images to K0TD and applies migrations without removing the Docker volume. If the node count drops after the update, the update stops and prints the backup path.
-
-<sup>Short description: pulls the latest changes, applies compatible configuration fixes, updates containers, and restarts the service.</sup>
-
-## Removal
-
-Remove the service completely:
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/delete.sh)
-```
-
-<sup>Short description: removes containers and configuration files, restoring the system to the pre-install state.</sup>
-
----
-
-## First Login
-
-The administrator login and password are printed at the end of installation. To view them again:
+To view the credentials again:
 
 ```bash
 grep -E "ADMIN_LOGIN|ADMIN_PASSWORD" /opt/3dp-manager/docker-compose.yml | sed 's/^[ \t]*//; s/^- //'
 ```
 
-The Web UI is available at the address shown by the installer, for example:
+If `ufw` is enabled, ports `443`, `8443`, `10000-60000` (TCP/UDP) are opened.
 
-- `https://example.com:PORT` for HTTPS;
-- `http://SERVER_IP:PORT` for HTTP.
+## Update
 
-If `ufw` is active, the installer opens the working inbound port ranges: `443`, `8443`, and `10000-60000` for TCP/UDP.
+Same command as for installation. It also works on top of an installation from the `denpiligrim` repository: it backs up the database to `/opt/3dp-manager/backups/`, switches the images to K0TD and applies migrations.
 
----
+## Moving to another server
 
-## Nodes
+1. **Settings → Panel migration** (**Настройки → Перенос панели**) — download a `.3dp-backup` (optionally protected with a passphrase).
+2. On the new server, without 3DP-MANAGER installed:
 
-The **Nodes** section lets you connect one or more `3x-ui` panels.
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/install.sh) --restore /root/panel.3dp-backup
+```
 
-For each node, you specify:
+Subscription UUIDs, settings, nodes and relays are preserved.
 
-- name;
-- `3x-ui` panel URL;
-- node IP;
-- flag/country;
-- authentication type: `password` or `token`;
-- whether this node is the main node.
+## Uninstall
 
-After you enter the URL, the application tries to detect the node IP and country automatically. The flag is used in connection names inside the subscription so clients can distinguish servers more easily.
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/delete.sh)
+```
 
-> [!NOTE]
-> The main node is used as the default value for subscriptions, inbounds, and relay servers.
+## Quick start
 
----
+1. **Nodes** — add the 3x-ui panel URL and authentication. The main node is used by default.
+2. **Relay servers** (**Relay серверы**) — if needed, add an intermediate server and install forwarding.
+3. **Domains** (**Домены**) — configure the SNI list for Reality.
+4. **Subscriptions** — create a subscription, select connections, save it and copy the URL into your client.
 
-## Subscriptions
+Recommendations: serve the subscription over HTTPS, set the rotation interval to ≥ 10 minutes (once a day is optimal), and make the client auto-update more often (e.g. once an hour).
 
-The **Subscriptions** section manages static subscription URLs and inbound composition.
+## Manual forwarding (relay)
 
-For each inbound, you can configure:
-
-- connection type;
-- node;
-- relay server;
-- flag;
-- port: a concrete number from `1-65535` or `random`;
-- SNI: a concrete domain or `random`;
-- a ready-made external link for the `custom` type.
-
-For `hysteria2-udp`, you can specify separate certificate and key paths:
-
-- `node` mode reads the panel certificate paths from 3x-ui `getWebCertFiles`;
-- `custom` mode requires a TLS server name and explicit certificate/key paths on the node.
-
-If port or SNI is set to `random`, the value will be selected during rotation from the available range or domain whitelist.
-
----
-
-## Install Forwarding Service
-
-> [!WARNING]
-> The forwarding service runs on an intermediate server
-
-The forwarding service proxies incoming ports from an intermediate server to the selected node. In the Web UI, these servers are configured in **Relay servers** and can be linked to a specific node.
-
-A relay server can be added by IP or domain. If a domain is provided, the backend will try to resolve its IP automatically.
-
-For manual forwarding installation on the intermediate server, replace `IP_ADDRESS` with the origin node IP:
+On the intermediate server (`IP_ADDRESS` is the node's IP):
 
 ```bash
 sudo ORIGIN_IP="IP_ADDRESS" bash -c "$(curl -sSL https://raw.githubusercontent.com/k0td/3dp-manager/main/forwarding_install.sh)"
 ```
 
-<sup>Short description: adds forwarding rules.</sup>
-
-## Remove Forwarding
+Removal (afterwards run `ufw reload` and `reboot`):
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/k0td/3dp-manager/main/forwarding_delete.sh)
 ```
 
-<sup>Short description: removes forwarding rules. After removal, reload the firewall with `ufw reload` and reboot the system with `reboot` for changes to take effect.</sup>
+## Collecting domains for a whitelist
 
----
+Put your multi-subscription link into `get_domains.js` and run `node get_domains.js` (Node.js required). A shared domain list doesn't work with every provider — it's better to collect your own.
 
-## Collect Domains From Multi-Subscriptions
+## Documentation
 
-The utility extracts domains from subscriptions and builds a `whitelist` for the generator.
+- [api.md](api.md) — REST API, connection types, routing profiles, subscription metadata.
+- [CONTRIBUTING.md](CONTRIBUTING.md) — how to propose changes.
 
-```bash
-node get_domains.js
-```
+## Feedback
 
-<sup>Short description: add a multi-subscription link to the script and run the command. The output will be a domain list. `Node.js` is required.</sup>
+[Issues](https://github.com/k0td/3dp-manager/issues)
 
----
+## License and authors
 
-## Notes And Current Limitations
+[GNU GPL v3](LICENSE). Original project by [@DenPiligrim](https://github.com/denpiligrim), fork maintained by [@K0TD](https://github.com/k0td).
 
-- The shared domain list may not work with all providers, so it is recommended to prepare and use your own whitelist.
-
----
-
-## Contributing
-
-Contributions are welcome! Simple contributor workflow:
-
-1. Fork the repository on GitHub.
-2. Create a branch with a meaningful name, for example `feature/add-README` or `fix/whitelist-load`.
-3. Make changes and add a short description in the commit.
-4. Run local checks if available.
-5. Push the branch to your fork and create a Pull Request to the main repository.
-
-<sup>Tips: describe your changes in the PR, include the goal and test steps. If the changes are large, split them into small commits.</sup>
-
----
-
-## Discussion
-
-- Telegram: [@denpiligrim_web](https://t.me/denpiligrim_web)
-- Issues section in this repository
-
-## Authors and acknowledgements
-
-The original project was created by [@DenPiligrim](https://github.com/denpiligrim); [@K0TD](https://github.com/k0td) maintains the fork. Thanks to the contributors:
-
-- [@zangetsuka](https://github.com/zangetsuka) — Happ routing, [PR #53](https://github.com/denpiligrim/3dp-manager/pull/53). Happ support was adapted to the fork and extended with INCY. The original commits were signed `root`.
-- [@xFalconMH](https://github.com/xFalconMH) — create-before-delete rotation and cleanup, [PR #59](https://github.com/denpiligrim/3dp-manager/pull/59). The idea was adapted to the fork's working-generation and cleanup model.
-- [@PavelArs](https://github.com/PavelArs) — 3x-ui client schema compatibility, [PR #62](https://github.com/denpiligrim/3dp-manager/pull/62). The fork includes `tgId` compatibility.
-- [@n1xsi](https://github.com/n1xsi) — 3x-ui compatibility, CSRF, diagnostics, Trojan address and probe, [PR #63](https://github.com/denpiligrim/3dp-manager/pull/63). Corresponding fixes and the diagnostic probe are used in the fork.
-- [@K0TD](https://github.com/k0td) — forced operations and login background, [PR #64](https://github.com/denpiligrim/3dp-manager/pull/64). The fork supports forced deletion and its own node removal modes.
-- [@lunal1ght](https://github.com/lunal1ght) — reported certificate paths in [issue #52](https://github.com/denpiligrim/3dp-manager/issues/52). The fork supports node certificates and custom paths.
-- [@keidos57](https://github.com/keidos57) — confirmed the generation problem in [issue #61](https://github.com/denpiligrim/3dp-manager/issues/61), related to `tgId` compatibility fixed in the fork.
-- [@iqubik](https://github.com/iqubik) — installer, UI, tests and documentation contributions, including [PR #39](https://github.com/denpiligrim/3dp-manager/pull/39). Thanks also to Jules (`google-labs-jules[bot]`) and all other contributors.
-
-See the Git history and contributor pages for the [fork](https://github.com/k0td/3dp-manager/graphs/contributors) and [upstream project](https://github.com/denpiligrim/3dp-manager/graphs/contributors). Licensed under [GPL-3.0](LICENSE).
+Thanks to: [@zangetsuka](https://github.com/zangetsuka) (Happ routing), [@xFalconMH](https://github.com/xFalconMH) (rotation order), [@PavelArs](https://github.com/PavelArs) (`tgId`), [@n1xsi](https://github.com/n1xsi) (3x-ui compatibility, CSRF, probe), [@iqubik](https://github.com/iqubik), [@lunal1ght](https://github.com/lunal1ght), [@keidos57](https://github.com/keidos57) and all [contributors](https://github.com/k0td/3dp-manager/graphs/contributors).
