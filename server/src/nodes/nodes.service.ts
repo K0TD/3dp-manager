@@ -3,6 +3,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Repository } from 'typeorm';
@@ -28,6 +29,7 @@ import { SubscriptionLockService } from '../subscriptions/subscription-lock.serv
 import { NodeDeletionService } from './node-deletion.service';
 import { ROUTING_INBOUND_TYPES } from '../subscriptions/inbound-config.constants';
 import { databaseAvailability } from '../database/database-availability';
+import { DomainsService } from '../domains/domains.service';
 
 type GeoResult = {
   ip: string;
@@ -58,6 +60,7 @@ export class NodesService {
     private readonly settingsRepo: Repository<Setting>,
     private readonly subscriptionLock: SubscriptionLockService,
     private readonly nodeDeletion: NodeDeletionService,
+    @Optional() private readonly domainsService?: DomainsService,
   ) {}
 
   findAll() {
@@ -113,17 +116,38 @@ export class NodesService {
       isMain: dto.isMain ?? false,
     });
 
-    if (
-      (await this.nodesRepo.count({ where: { deletedAt: IsNull() } })) === 0
-    ) {
-      node.isMain = true;
+    let savedNode: Node;
+    if (typeof this.nodesRepo.manager?.transaction === 'function') {
+      savedNode = await this.nodesRepo.manager.transaction(async (manager) => {
+        const repo = manager.getRepository(Node);
+        if ((await repo.count({ where: { deletedAt: IsNull() } })) === 0) {
+          node.isMain = true;
+        }
+        if (node.isMain) {
+          await this.clearMainNode(undefined, repo);
+        }
+        const saved = await repo.save(node);
+        await this.domainsService?.addHostDomain(
+          saved.domain ?? node.domain,
+          manager,
+        );
+        return saved;
+      });
+    } else {
+      if (
+        (await this.nodesRepo.count({ where: { deletedAt: IsNull() } })) === 0
+      ) {
+        node.isMain = true;
+      }
+
+      if (node.isMain) {
+        await this.clearMainNode();
+      }
+
+      savedNode = await this.nodesRepo.save(node);
+      await this.domainsService?.addHostDomain(savedNode.domain ?? node.domain);
     }
 
-    if (node.isMain) {
-      await this.clearMainNode();
-    }
-
-    const savedNode = await this.nodesRepo.save(node);
     return this.refreshNodeProfile(savedNode);
   }
 
@@ -167,12 +191,31 @@ export class NodesService {
       if (dto.flag) node.flag = dto.flag;
     }
 
-    if (dto.isMain) {
-      await this.clearMainNode(id);
-      node.isMain = true;
+    let savedNode: Node;
+    if (typeof this.nodesRepo.manager?.transaction === 'function') {
+      savedNode = await this.nodesRepo.manager.transaction(async (manager) => {
+        const repo = manager.getRepository(Node);
+        if (dto.isMain) {
+          await this.clearMainNode(id, repo);
+          node.isMain = true;
+        }
+        const saved = await repo.save(node);
+        await this.domainsService?.addHostDomain(
+          saved.domain ?? node.domain,
+          manager,
+        );
+        return saved;
+      });
+    } else {
+      if (dto.isMain) {
+        await this.clearMainNode(id);
+        node.isMain = true;
+      }
+
+      savedNode = await this.nodesRepo.save(node);
+      await this.domainsService?.addHostDomain(savedNode.domain ?? node.domain);
     }
 
-    const savedNode = await this.nodesRepo.save(node);
     return this.refreshNodeProfile(savedNode);
   }
 
@@ -617,8 +660,8 @@ export class NodesService {
     }
   }
 
-  private async clearMainNode(exceptId?: string) {
-    const qb = this.nodesRepo
+  private async clearMainNode(exceptId?: string, repo = this.nodesRepo) {
+    const qb = repo
       .createQueryBuilder()
       .update(Node)
       .set({ isMain: false })

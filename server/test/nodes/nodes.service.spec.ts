@@ -1,6 +1,7 @@
 import { IsNull, Repository } from 'typeorm';
 import { NodesService } from 'src/nodes/nodes.service';
-import { Node } from 'src/nodes/entities/node.entity';
+import { Node, NodeAuthType } from 'src/nodes/entities/node.entity';
+import { DomainsService } from 'src/domains/domains.service';
 import { Subscription } from 'src/subscriptions/entities/subscription.entity';
 import { Tunnel } from 'src/tunnels/entities/tunnel.entity';
 import { Inbound } from 'src/inbounds/entities/inbound.entity';
@@ -65,6 +66,10 @@ describe('NodesService', () => {
     };
     const xuiService = {
       deleteInbound: jest.fn().mockResolvedValue(true),
+      checkNodeConnection: jest.fn().mockResolvedValue({ success: true }),
+    };
+    const domainsService = {
+      addHostDomain: jest.fn().mockResolvedValue(undefined),
     };
 
     return {
@@ -77,6 +82,7 @@ describe('NodesService', () => {
         settingsRepo as unknown as Repository<Setting>,
         lock as unknown as SubscriptionLockService,
         nodeDeletion,
+        domainsService as unknown as DomainsService,
       ),
       subscriptionsRepo,
       settingsRepo,
@@ -85,6 +91,7 @@ describe('NodesService', () => {
       tunnelsRepo,
       inboundsRepo,
       xuiService,
+      domainsService,
     };
   };
 
@@ -574,6 +581,77 @@ describe('NodesService', () => {
       expect(checkNodeConnection).toHaveBeenCalledTimes(4);
       expect(databaseAvailability.shouldSkip()).toBe(true);
       expect(errorSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('SNI domain auto-registration', () => {
+    it('adds node domain in transaction on create and update, and skips IP-only nodes', async () => {
+      const txRepo = {
+        count: jest.fn().mockResolvedValue(0),
+        save: jest.fn(async (entity: Node) => entity),
+        createQueryBuilder: jest.fn(() => ({
+          update: jest.fn().mockReturnThis(),
+          set: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          execute: jest.fn().mockResolvedValue({}),
+        })),
+      };
+      const manager = {
+        getRepository: jest.fn().mockReturnValue(txRepo),
+      };
+      const existingNode = {
+        id: 'node-1',
+        name: 'Main',
+        url: 'https://127.0.0.1:2053',
+        ip: '127.0.0.1',
+        authType: NodeAuthType.Token,
+        token: 'tok',
+      } as Node;
+      const nodeRepo = {
+        ...createNodeRepo(jest.fn().mockResolvedValue(existingNode)),
+        create: jest.fn((data) => ({ id: 'node-1', ...data })),
+        manager: {
+          transaction: jest.fn(async (work: (mgr: typeof manager) => Promise<unknown>) =>
+            work(manager),
+          ),
+        },
+      };
+
+      const { service, domainsService } = createService(nodeRepo);
+
+      await service.create({
+        name: 'Domain Node',
+        url: 'https://127.0.0.1:2053',
+        ip: '127.0.0.1',
+        domain: 'node.example.com',
+        authType: NodeAuthType.Token,
+        token: 'tok',
+      });
+      expect(domainsService.addHostDomain).toHaveBeenCalledWith(
+        'node.example.com',
+        manager,
+      );
+
+      domainsService.addHostDomain.mockClear();
+      await service.create({
+        name: 'IP Node',
+        url: 'https://127.0.0.1:2053',
+        ip: '127.0.0.1',
+        authType: NodeAuthType.Token,
+        token: 'tok',
+      });
+      expect(domainsService.addHostDomain).toHaveBeenCalledWith(
+        undefined,
+        manager,
+      );
+
+      domainsService.addHostDomain.mockClear();
+      await service.update('node-1', { domain: 'updated.example.com' });
+      expect(domainsService.addHostDomain).toHaveBeenCalledWith(
+        'updated.example.com',
+        manager,
+      );
     });
   });
 });

@@ -1,4 +1,10 @@
-import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  HttpException,
+  HttpStatus,
+  Optional,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Tunnel } from './entities/tunnel.entity';
@@ -13,6 +19,7 @@ import {
 } from './forwarding-ports';
 import * as net from 'net';
 import * as dns from 'dns/promises';
+import { DomainsService } from '../domains/domains.service';
 
 @Injectable()
 export class TunnelsService {
@@ -25,6 +32,7 @@ export class TunnelsService {
     @InjectRepository(Subscription)
     private subscriptionRepo: Repository<Subscription>,
     private sshService: SshService,
+    @Optional() private readonly domainsService?: DomainsService,
   ) {}
 
   async create(createTunnelDto: CreateTunnelDto) {
@@ -79,7 +87,17 @@ export class TunnelsService {
     }
 
     const tunnel = this.tunnelRepo.create(tunnelPayload);
-    return this.tunnelRepo.save(tunnel);
+    if (typeof this.tunnelRepo.manager?.transaction === 'function') {
+      return this.tunnelRepo.manager.transaction(async (manager) => {
+        const saved = await manager.getRepository(Tunnel).save(tunnel);
+        await this.domainsService?.addHostDomain(domain, manager);
+        return saved;
+      });
+    }
+
+    const saved = await this.tunnelRepo.save(tunnel);
+    await this.domainsService?.addHostDomain(domain);
+    return saved;
   }
 
   async findAll() {

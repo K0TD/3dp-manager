@@ -10,6 +10,7 @@ import { SshService } from 'src/tunnels/ssh.service';
 import { Setting } from 'src/settings/entities/setting.entity';
 import { Node } from 'src/nodes/entities/node.entity';
 import { Subscription } from 'src/subscriptions/entities/subscription.entity';
+import { DomainsService } from 'src/domains/domains.service';
 
 describe('TunnelsService', () => {
   let service: TunnelsService;
@@ -49,6 +50,10 @@ describe('TunnelsService', () => {
     executeCommand: jest.fn(),
   };
 
+  const mockDomainsService = {
+    addHostDomain: jest.fn(),
+  };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -72,6 +77,10 @@ describe('TunnelsService', () => {
         {
           provide: SshService,
           useValue: mockSshService,
+        },
+        {
+          provide: DomainsService,
+          useValue: mockDomainsService,
         },
       ],
     }).compile();
@@ -156,6 +165,52 @@ describe('TunnelsService', () => {
       await expect(
         service.create({ ...base, tcpPorts: '', udpPorts: '' }),
       ).rejects.toThrow('Укажите хотя бы один порт TCP или UDP');
+    });
+
+    it('добавляет домен relay в список SNI в одной транзакции и пропускает IP', async () => {
+      const node = { id: 'node-1', isMain: true };
+      const savedRelay = { id: 10, name: 'Relay Domain', ip: '1.2.3.4', domain: 'relay.example.com' };
+      const manager = {
+        getRepository: jest.fn().mockReturnValue({
+          save: jest.fn().mockResolvedValue(savedRelay),
+        }),
+      };
+      (mockTunnelRepo as any).manager = {
+        transaction: jest.fn(async (work: (mgr: typeof manager) => Promise<unknown>) =>
+          work(manager),
+        ),
+      };
+      mockNodeRepo.findOne.mockResolvedValue(node);
+      mockTunnelRepo.create.mockReturnValue(savedRelay);
+
+      try {
+        await service.create({
+          name: 'Relay Domain',
+          ip: '1.2.3.4',
+          domain: 'relay.example.com',
+          sshPort: 22,
+          username: 'root',
+        });
+
+        expect(mockDomainsService.addHostDomain).toHaveBeenCalledWith(
+          'relay.example.com',
+          manager,
+        );
+
+        mockDomainsService.addHostDomain.mockClear();
+        await service.create({
+          name: 'Relay IP',
+          ip: '1.2.3.4',
+          sshPort: 22,
+          username: 'root',
+        });
+        expect(mockDomainsService.addHostDomain).toHaveBeenCalledWith(
+          undefined,
+          manager,
+        );
+      } finally {
+        delete (mockTunnelRepo as any).manager;
+      }
     });
   });
 

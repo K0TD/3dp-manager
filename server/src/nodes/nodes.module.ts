@@ -10,12 +10,14 @@ import { Inbound } from '../inbounds/entities/inbound.entity';
 import { Setting } from '../settings/entities/setting.entity';
 import { SubscriptionLockService } from '../subscriptions/subscription-lock.service';
 import { NodeDeletionModule } from './node-deletion.module';
+import { DomainsModule } from '../domains/domains.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Node, Subscription, Tunnel, Inbound, Setting]),
     XuiModule,
     NodeDeletionModule,
+    DomainsModule,
   ],
   controllers: [NodesController],
   providers: [NodesService, SubscriptionLockService],

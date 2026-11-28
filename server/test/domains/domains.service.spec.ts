@@ -3,7 +3,7 @@
 
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, EntityManager } from 'typeorm';
 import { BadRequestException } from '@nestjs/common';
 import { DomainsService } from 'src/domains/domains.service';
 import { Domain } from 'src/domains/entities/domain.entity';
@@ -364,6 +364,61 @@ describe('DomainsService', () => {
       await service.createMany(domains);
 
       expect(repo.create).toHaveBeenCalled();
+    });
+  });
+
+  describe('addHostDomain', () => {
+    it('добавляет нормализованный домен и использует переданный EntityManager', async () => {
+      const execute = jest.fn().mockResolvedValue({});
+      const values = jest.fn().mockReturnValue({
+        orIgnore: jest.fn().mockReturnValue({ execute }),
+      });
+      const into = jest.fn().mockReturnValue({ values });
+      const insert = jest.fn().mockReturnValue({ into });
+      const managerRepo = {
+        createQueryBuilder: jest.fn(() => ({
+          where: jest.fn().mockReturnThis(),
+          getOne: jest.fn().mockResolvedValue(null),
+          insert,
+        })),
+      };
+      const manager = {
+        getRepository: jest.fn().mockReturnValue(managerRepo),
+      } as unknown as EntityManager;
+
+      await service.addHostDomain('Node.EXAMPLE.COM.', manager);
+
+      expect(manager.getRepository).toHaveBeenCalledWith(Domain);
+      expect(into).toHaveBeenCalledWith(Domain);
+      expect(values).toHaveBeenCalledWith({
+        name: 'node.example.com',
+        isEnabled: true,
+      });
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+
+    it('пропускает IPv4, IPv6 и исключённые SNI-домены', async () => {
+      await service.addHostDomain('192.168.1.1');
+      await service.addHostDomain('2001:db8::1');
+      await service.addHostDomain('speedtest.net');
+      await service.addHostDomain(undefined);
+
+      expect(mockRepo.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    it('сохраняет статус уже существующего домена без учёта регистра', async () => {
+      const insert = jest.fn();
+      mockRepo.createQueryBuilder.mockReturnValue({
+        where: jest.fn().mockReturnThis(),
+        getOne: jest
+          .fn()
+          .mockResolvedValue({ id: 7, name: 'panel.example.com', isEnabled: false }),
+        insert,
+      } as never);
+
+      await service.addHostDomain('PANEL.EXAMPLE.COM');
+
+      expect(insert).not.toHaveBeenCalled();
     });
   });
 });
