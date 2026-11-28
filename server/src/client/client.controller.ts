@@ -528,15 +528,21 @@ export class ClientController {
   }
 
   private isValidAmneziaConfig(config: string): boolean {
-    const numericFields = ['MTU', 'Jc', 'Jmin', 'Jmax', 'S1', 'S2', 'S3', 'S4'];
+    const requiredNumericFields = ['MTU', 'Jc', 'Jmin', 'Jmax', 'S1', 'S2'];
+    const optionalNumericFields = ['S3', 'S4'];
     return (
       config.startsWith('[Interface]') &&
       config.includes('[Peer]') &&
       /^PrivateKey\s*=\s*\S+/m.test(config) &&
       /^PublicKey\s*=\s*\S+/m.test(config) &&
       /^Endpoint\s*=\s*\S+:\d+$/m.test(config) &&
-      numericFields.every((field) =>
+      requiredNumericFields.every((field) =>
         new RegExp(`^${field}\\s*=\\s*\\d+$`, 'm').test(config),
+      ) &&
+      optionalNumericFields.every(
+        (field) =>
+          !new RegExp(`^${field}\\s*=`, 'm').test(config) ||
+          new RegExp(`^${field}\\s*=\\s*\\d+$`, 'm').test(config),
       )
     );
   }

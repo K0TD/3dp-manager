@@ -44,7 +44,8 @@ describe('manual connection profiles', () => {
       const { server } = JSON.parse(inbound.settings);
       const padding = Number(server.contentPaddingAddition.split('-').at(-1));
       expect(server.mtu + server.s4 + padding).toBeLessThanOrEqual(1420);
-      expect(server.routeThroughXray).toBe(true);
+      expect(server.routeThroughXray).toBeUndefined();
+      expect(server.awgVersion).toBe('3');
       const config = amneziaConfigFromLink(builder.buildInboundLink(inbound, 'example.com', '', ''));
       expect(config).toContain(`MTU = ${server.mtu}`);
     }

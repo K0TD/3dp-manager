@@ -51,19 +51,17 @@ export const CLIENT_SNI_PROFILES_CATALOG: readonly SniCatalogProfile[] = [
     description: 'Маскировка под дистрибуцию обновлений macOS/iOS и сервисы iCloud. Браузерный стек Safari, пути Akamai CDN.',
     recommendedDomains: [
       'swdist.apple.com',
-      'swcdn.apple.com',
       'gateway.icloud.com',
       'weather-data.apple.com',
     ],
     exact: [
       'swdist.apple.com',
-      'swcdn.apple.com',
       'gateway.icloud.com',
       'weather-data.apple.com',
     ],
     suffix: ['.apple.com', '.cdn-apple.com', '.icloud.com'],
     profile: {
-      serverNames: ['swdist.apple.com', 'swcdn.apple.com'],
+      serverNames: ['swdist.apple.com'],
       fingerprint: 'safari',
       spiderX: '/content/downloads/',
       xhttpPath: '/download/updates/',
@@ -143,8 +141,8 @@ export const CLIENT_SNI_PROFILES_CATALOG: readonly SniCatalogProfile[] = [
     name: 'Debian / Ubuntu Mirrors',
     category: 'Linux',
     description: 'Маскировка под трафик обновления пакетов APT дистрибутивов Linux. Надежно пропускается фильтрами.',
-    recommendedDomains: ['debian.org', 'archive.ubuntu.com'],
-    exact: ['debian.org', 'ftp.debian.org', 'archive.ubuntu.com'],
+    recommendedDomains: ['debian.org'],
+    exact: ['debian.org', 'ftp.debian.org'],
     suffix: ['.debian.org', '.ubuntu.com'],
     profile: {
       serverNames: ['debian.org'],

@@ -55,6 +55,27 @@ describe('MTProto node capabilities', () => {
       }),
     ).toBe(true);
   });
+
+  it('supports 3x-ui-awg fork versions (3.11.0-awg.3 and v3.11.0-awg.3)', () => {
+    for (const panelVersion of ['3.11.0-awg.3', 'v3.11.0-awg.3']) {
+      const input = {
+        panelVersion,
+        xrayVersion: '26.11.9',
+        autoTlsCertificate: true,
+      };
+      const capabilities = buildNodeCapabilities(input);
+      expect(supportsInboundType('amneziawg', input)).toBe(true);
+      expect(capabilities.supportedInboundTypes).toEqual(
+        expect.arrayContaining([
+          'amneziawg',
+          'mtproto-faketls',
+          'wireguard',
+          'mixed',
+          'socks',
+        ]),
+      );
+    }
+  });
 });
 
 describe('modern Xray client profile', () => {

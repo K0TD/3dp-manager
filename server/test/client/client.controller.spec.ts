@@ -651,6 +651,62 @@ describe('ClientController', () => {
       );
     });
 
+    it('скачивает AmneziaWG 2.0 conf без S3/S4 и с диапазоном PersistentKeepalive', async () => {
+      const config =
+        '[Interface]\nPrivateKey = private\nAddress = 10.8.1.2/32\nMTU = 1420\nJc = 4\nJmin = 40\nJmax = 90\nS1 = 15\nS2 = 16\n\n[Peer]\nPublicKey = public\nEndpoint = example.com:51820\nPersistentKeepalive = 15-25';
+      mockSubRepo.findOne.mockResolvedValue({
+        ...mockSubscription,
+        inbounds: [
+          {
+            position: 0,
+            status: 'active',
+            protocol: 'amneziawg',
+            link: `vpn://${Buffer.from(config).toString('base64url')}`,
+          },
+        ],
+      });
+
+      mockRequest.query = { format: 'amneziawg', index: '0' };
+
+      await controller.getSubscription('test-uuid', mockRequest, mockResponse);
+
+      expect(mockResponse.status).not.toHaveBeenCalledWith(422);
+      expect(mockResponse.send).toHaveBeenCalledWith(
+        config.replace('\n[Peer]', '\n# Test Subscription\n[Peer]'),
+      );
+    });
+
+    it('отклоняет AmneziaWG conf с пустым S3 или невалидным S4 (422)', async () => {
+      for (const badField of ['S3 = ', 'S4 = bad']) {
+        jest.clearAllMocks();
+        const config = `[Interface]\nPrivateKey = private\nAddress = 10.8.1.2/32\nMTU = 1420\nJc = 4\nJmin = 40\nJmax = 90\nS1 = 15\nS2 = 16\n${badField}\n\n[Peer]\nPublicKey = public\nEndpoint = example.com:51820`;
+        mockSubRepo.findOne.mockResolvedValue({
+          ...mockSubscription,
+          inbounds: [
+            {
+              position: 0,
+              status: 'active',
+              protocol: 'amneziawg',
+              link: `vpn://${Buffer.from(config).toString('base64url')}`,
+            },
+          ],
+        });
+
+        mockRequest.query = { format: 'amneziawg', index: '0' };
+
+        await controller.getSubscription(
+          'test-uuid',
+          mockRequest,
+          mockResponse,
+        );
+
+        expect(mockResponse.status).toHaveBeenCalledWith(422);
+        expect(mockResponse.send).toHaveBeenCalledWith(
+          'Invalid AmneziaWG config',
+        );
+      }
+    });
+
     it('отклоняет отсутствующий профиль AmneziaWG', async () => {
       mockSubRepo.findOne.mockResolvedValue({
         ...mockSubscription,

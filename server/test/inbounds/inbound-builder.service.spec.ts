@@ -41,7 +41,7 @@ describe('InboundBuilderService', () => {
     jest.clearAllMocks();
   });
 
-  it('builds XHTTP GET and carries all extra settings into the link', () => {
+  it('builds XHTTP GET and carries only client-safe extra settings into the link', () => {
     const inbound = service.buildVlessXhttpGet({
       port: 8443,
       uuid: 'client-id',
@@ -64,39 +64,63 @@ describe('InboundBuilderService', () => {
     expect(link.hostname).toBe('relay.example');
     expect(link.searchParams.get('mode')).toBe('packet-up');
     expect(link.searchParams.get('path')).toBe(stream.xhttpSettings.path);
-    const { path, host, mode, ...extra } = stream.xhttpSettings;
-    expect(JSON.parse(link.searchParams.get('extra') || '{}')).toEqual(extra);
+    const extra = JSON.parse(link.searchParams.get('extra') || '{}');
+    expect(extra).not.toHaveProperty('path');
+    expect(extra).not.toHaveProperty('host');
+    expect(extra).not.toHaveProperty('mode');
+    expect(extra).not.toHaveProperty('noSSEHeader');
+    expect(extra).not.toHaveProperty('scMaxBufferedPosts');
+    expect(extra).not.toHaveProperty('scStreamUpServerSecs');
+    expect(extra).not.toHaveProperty('serverMaxHeaderBytes');
+    expect(extra).toMatchObject({
+      xPaddingBytes: stream.xhttpSettings.xPaddingBytes,
+      uplinkHTTPMethod: 'GET',
+      scMaxEachPostBytes: '500000-1000000',
+      xmux: stream.xhttpSettings.xmux,
+    });
   });
 
-  it('preserves existing XHTTP Reality and TLS parameters and includes only additional settings', () => {
-    const params = {
+  it('preserves existing XHTTP Reality and TLS parameters and omits server-only extra fields', () => {
+    const realityInbound = service.buildVlessRealityXhttp({
       port: 443,
       uuid: 'client-id',
-      sni: 'example.com',
+      sni: 'swdist.apple.com',
       privateKey: 'private',
       publicKey: 'public',
+    });
+    const realityStream = JSON.parse(realityInbound.streamSettings);
+    const realityUrl = new URL(
+      service.buildInboundLink(realityInbound, 'node.example', '', 'flag'),
+    );
+    expect(realityUrl.searchParams.get('path')).toBe(
+      realityStream.xhttpSettings.path,
+    );
+    expect(realityUrl.searchParams.get('host')).toBe(
+      realityStream.xhttpSettings.host,
+    );
+    expect(realityUrl.searchParams.get('mode')).toBe(
+      realityStream.xhttpSettings.mode,
+    );
+    const realityExtra = JSON.parse(
+      realityUrl.searchParams.get('extra') || '{}',
+    );
+    expect(realityExtra).toEqual({ xPaddingBytes: '500-1500' });
+
+    const tlsInbound = service.buildVlessTlsXhttp({
+      port: 443,
+      uuid: 'client-id',
       serverName: 'example.com',
       certificateFile: '/cert',
       keyFile: '/key',
-    };
-    for (const inbound of [
-      service.buildVlessRealityXhttp(params),
-      service.buildVlessTlsXhttp(params),
-    ]) {
-      const stream = JSON.parse(inbound.streamSettings);
-      const url = new URL(
-        service.buildInboundLink(inbound, 'node.example', '', 'flag'),
-      );
-      expect(url.searchParams.get('path')).toBe(stream.xhttpSettings.path);
-      expect(url.searchParams.get('host')).toBe(stream.xhttpSettings.host);
-      expect(url.searchParams.get('mode')).toBe(stream.xhttpSettings.mode);
-      const { path, host, mode, ...extra } = stream.xhttpSettings;
-      expect(
-        url.searchParams.get('extra')
-          ? JSON.parse(url.searchParams.get('extra') || '{}')
-          : {},
-      ).toEqual(extra);
-    }
+    });
+    const tlsStream = JSON.parse(tlsInbound.streamSettings);
+    const tlsUrl = new URL(
+      service.buildInboundLink(tlsInbound, 'node.example', '', 'flag'),
+    );
+    expect(tlsUrl.searchParams.get('path')).toBe(tlsStream.xhttpSettings.path);
+    expect(tlsUrl.searchParams.get('host')).toBe(tlsStream.xhttpSettings.host);
+    expect(tlsUrl.searchParams.get('mode')).toBe(tlsStream.xhttpSettings.mode);
+    expect(tlsUrl.searchParams.get('extra')).toBeNull();
   });
 
   describe('buildVlessRealityTcp', () => {
@@ -152,12 +176,9 @@ describe('InboundBuilderService', () => {
       expect(streamSettings.realitySettings.settings.spiderX).toBe(
         '/content/downloads/',
       );
-      expect(streamSettings.realitySettings.serverNames).toContain(
+      expect(streamSettings.realitySettings.serverNames).toEqual([
         'swdist.apple.com',
-      );
-      expect(streamSettings.realitySettings.serverNames).toContain(
-        'swcdn.apple.com',
-      );
+      ]);
     });
   });
 
@@ -170,6 +191,8 @@ describe('InboundBuilderService', () => {
       const settings = JSON.parse(inbound.settings);
 
       expect(inbound.protocol).toBe('amneziawg');
+      expect(settings.server.awgVersion).toBe('3');
+      expect(settings.server.routeThroughXray).toBeUndefined();
       expect(settings.server.privateKey).toMatch(/^[A-Za-z0-9+/]{43}=$/);
       expect(settings.server.publicKey).toMatch(/^[A-Za-z0-9+/]{43}=$/);
       expect(settings.clients[0].privateKey).toMatch(/^[A-Za-z0-9+/]{43}=$/);
@@ -234,6 +257,117 @@ describe('InboundBuilderService', () => {
         expect(mtu).toBeGreaterThanOrEqual(1280);
         expect(mtu).toBeLessThanOrEqual(1360);
       }
+    });
+
+    it('вычисляет EffectiveMTU при нулевом/пустом mtu с учётом S4', () => {
+      const base = service.buildAmneziaWgInbound({
+        port: 51820,
+        uuid: 'client@example',
+      });
+      const baseSettings = JSON.parse(base.settings);
+
+      const highS4Settings = {
+        ...baseSettings,
+        server: { ...baseSettings.server, mtu: 0, s4: 24 },
+      };
+      const highS4Config = amneziaConfigFromLink(
+        service.buildInboundLink(
+          { ...base, settings: JSON.stringify(highS4Settings) },
+          'example.com',
+          '',
+          '',
+        ),
+      );
+      expect(highS4Config).toMatch(/^MTU = 1416$/m);
+
+      const lowS4Settings = {
+        ...baseSettings,
+        server: { ...baseSettings.server, mtu: undefined, s4: 10 },
+      };
+      const lowS4Config = amneziaConfigFromLink(
+        service.buildInboundLink(
+          { ...base, settings: JSON.stringify(lowS4Settings) },
+          'example.com',
+          '',
+          '',
+        ),
+      );
+      expect(lowS4Config).toMatch(/^MTU = 1420$/m);
+    });
+
+    it('поддерживает диапазоны keepAlive, опускает нулевые/невалидные и опциональные S3/S4', () => {
+      const base = service.buildAmneziaWgInbound({
+        port: 51820,
+        uuid: 'client@example',
+      });
+      const baseSettings = JSON.parse(base.settings);
+
+      const rangeSettings = {
+        ...baseSettings,
+        server: { ...baseSettings.server, mtu: 0, s3: 0, s4: 0 },
+        clients: [{ ...baseSettings.clients[0], keepAlive: '15-25' }],
+      };
+      const rangeConfig = amneziaConfigFromLink(
+        service.buildInboundLink(
+          { ...base, settings: JSON.stringify(rangeSettings) },
+          'example.com',
+          '',
+          '',
+        ),
+      );
+      expect(rangeConfig).toMatch(/^MTU = 1420$/m);
+      expect(rangeConfig).toMatch(/^PersistentKeepalive = 15-25$/m);
+      expect(rangeConfig).not.toMatch(/^S3\s*=/m);
+      expect(rangeConfig).not.toMatch(/^S4\s*=/m);
+
+      for (const keepAlive of ['0', 0, '25-15', 'invalid\nPostUp=id']) {
+        const disabledSettings = {
+          ...baseSettings,
+          clients: [{ ...baseSettings.clients[0], keepAlive }],
+        };
+        const disabledConfig = amneziaConfigFromLink(
+          service.buildInboundLink(
+            { ...base, settings: JSON.stringify(disabledSettings) },
+            'example.com',
+            '',
+            '',
+          ),
+        );
+        expect(disabledConfig).not.toMatch(/^PersistentKeepalive\s*=/m);
+      }
+    });
+
+    it('фильтрует routed LAN-подсети из Address по правилам TunnelAddresses', () => {
+      const base = service.buildAmneziaWgInbound({
+        port: 51820,
+        uuid: 'client@example',
+      });
+      const baseSettings = JSON.parse(base.settings);
+      const settings = {
+        ...baseSettings,
+        clients: [
+          {
+            ...baseSettings.clients[0],
+            allowedIPs: [
+              '10.8.1.5/32',
+              '192.168.50.0/24',
+              'fd86:ea04:1115::5/128',
+              'fd86:ea04:1115:1::/64',
+            ],
+          },
+        ],
+      };
+      const config = amneziaConfigFromLink(
+        service.buildInboundLink(
+          { ...base, settings: JSON.stringify(settings) },
+          'example.com',
+          '',
+          '',
+        ),
+      );
+      expect(config).toMatch(
+        /^Address = 10\.8\.1\.5\/32, fd86:ea04:1115::5\/128$/m,
+      );
     });
   });
 

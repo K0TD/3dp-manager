@@ -31,7 +31,7 @@ export interface XuiInboundSettings {
     publicKey?: string;
     preSharedKey?: string;
     allowedIPs?: string[];
-    keepAlive?: number;
+    keepAlive?: number | string;
   }>;
   accounts?: Array<{ user: string; pass: string }>;
   secretKey?: string;

@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import * as crypto from 'crypto';
+import * as net from 'net';
 import { v4 as uuidv4 } from 'uuid';
 import * as fs from 'fs';
 import {
@@ -42,6 +43,107 @@ interface WireguardKeyPair {
   publicKey: string;
 }
 
+const AWG_DEFAULT_MTU = 1420;
+const AWG_MTU_PATH_CEILING = 1440;
+const OMITTED_XHTTP_EXTRA_KEYS = new Set([
+  'path',
+  'host',
+  'mode',
+  'noSSEHeader',
+  'scMaxBufferedPosts',
+  'scStreamUpServerSecs',
+  'serverMaxHeaderBytes',
+]);
+
+function effectiveAmneziaMtu(mtu: unknown, s4: unknown): number {
+  const explicitMtu =
+    typeof mtu === 'number' || typeof mtu === 'string' ? Number(mtu) : NaN;
+  if (Number.isInteger(explicitMtu) && explicitMtu > 0) {
+    return explicitMtu;
+  }
+  const rawS4 =
+    typeof s4 === 'number' || typeof s4 === 'string' ? Number(s4) : NaN;
+  const padding = Number.isFinite(rawS4) && rawS4 > 0 ? Math.trunc(rawS4) : 0;
+  return AWG_DEFAULT_MTU + padding > AWG_MTU_PATH_CEILING
+    ? AWG_MTU_PATH_CEILING - padding
+    : AWG_DEFAULT_MTU;
+}
+
+function formatAmneziaKeepAlive(value: unknown): string | null {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && value >= 1 && value <= 65535
+      ? String(value)
+      : null;
+  }
+  if (typeof value !== 'string') return null;
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return null;
+  }
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) {
+    const n = Number(trimmed);
+    return String(n) === trimmed && n >= 1 && n <= 65535 ? trimmed : null;
+  }
+  const rangeMatch = /^(\d+)-(\d+)$/.exec(trimmed);
+  if (!rangeMatch) return null;
+  const lo = Number(rangeMatch[1]);
+  const hi = Number(rangeMatch[2]);
+  if (
+    String(lo) !== rangeMatch[1] ||
+    String(hi) !== rangeMatch[2] ||
+    lo < 0 ||
+    hi > 65535 ||
+    lo > hi ||
+    hi <= 0
+  ) {
+    return null;
+  }
+  return `${lo}-${hi}`;
+}
+
+function extractAmneziaTunnelAddresses(allowedIPs: unknown): string[] {
+  if (!Array.isArray(allowedIPs)) return [];
+  let v4 = -1;
+  let v6 = -1;
+  let v4First = -1;
+
+  allowedIPs.forEach((raw, index) => {
+    if (typeof raw !== 'string' || /[\r\n]/.test(raw)) return;
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+    const parts = trimmed.split('/');
+    if (parts.length > 2) return;
+    const [addr, bitsStr] = parts;
+    const isV4 = net.isIPv4(addr);
+    const isV6 =
+      !isV4 && net.isIPv6(addr) && !addr.toLowerCase().startsWith('::ffff:');
+    if (!isV4 && !isV6) return;
+
+    const maxBits = isV6 ? 128 : 32;
+    if (
+      bitsStr !== undefined &&
+      (!/^\d{1,3}$/.test(bitsStr) || Number(bitsStr) > maxBits)
+    ) {
+      return;
+    }
+    const isHost = bitsStr === undefined || Number(bitsStr) === maxBits;
+
+    if (isV6) {
+      if (isHost && v6 < 0) v6 = index;
+      return;
+    }
+    if (v4First < 0) v4First = index;
+    if (isHost && v4 < 0) v4 = index;
+  });
+
+  if (v4 < 0) v4 = v4First;
+  return [v4, v6]
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b)
+    .map((index) => String(allowedIPs[index]).trim());
+}
+
 interface AmneziaWgLinkSettings {
   server: Record<string, unknown> & {
     primaryDns?: string;
@@ -56,7 +158,7 @@ interface AmneziaWgLinkSettings {
       privateKey?: string;
       publicKey?: string;
       allowedIPs?: string[];
-      keepAlive?: number;
+      keepAlive?: number | string;
       preSharedKey?: string;
     }
   >;
@@ -180,7 +282,7 @@ export class InboundBuilderService {
           ipv6Enabled: false,
           ipv6Subnet: '',
           ipv6ExternalInterface: '',
-          routeThroughXray: true,
+          awgVersion: '3',
           ...obfuscation,
         },
         clients: [
@@ -1325,15 +1427,20 @@ export class InboundBuilderService {
     config += line('PrivateKey', client.privateKey);
     config += line(
       'Address',
-      Array.isArray(client.allowedIPs) ? client.allowedIPs.join(', ') : '',
+      extractAmneziaTunnelAddresses(client.allowedIPs).join(', '),
     );
     const dns = [server.primaryDns, server.secondaryDns].filter(
       (value): value is string => typeof value === 'string' && value.length > 0,
     );
     config += line('DNS', dns.join(', '));
-    if (Number(server.mtu) > 0) config += line('MTU', server.mtu);
-    for (const key of ['jc', 'jmin', 'jmax', 's1', 's2', 's3', 's4'])
+    config += line('MTU', effectiveAmneziaMtu(server.mtu, server.s4));
+    for (const key of ['jc', 'jmin', 'jmax', 's1', 's2'])
       config += line(key[0].toUpperCase() + key.slice(1), server[key]);
+    for (const key of ['s3', 's4']) {
+      const numeric = Number(server[key]);
+      if (Number.isInteger(numeric) && numeric > 0)
+        config += line(key.toUpperCase(), numeric);
+    }
     for (const key of ['h1', 'h2', 'h3', 'h4', 'i1', 'i2', 'i3', 'i4', 'i5']) {
       const fallback = key.startsWith('h') ? key.slice(1) : '';
       if (key.startsWith('h') || server[key])
@@ -1361,8 +1468,8 @@ export class InboundBuilderService {
         ? `[${address}]`
         : address;
     config += `Endpoint = ${endpoint}:${inbound.port}`;
-    if (Number(client.keepAlive) > 0)
-      config += `\nPersistentKeepalive = ${String(client.keepAlive)}`;
+    const keepAlive = formatAmneziaKeepAlive(client.keepAlive);
+    if (keepAlive) config += `\nPersistentKeepalive = ${keepAlive}`;
     return createAmneziaVpnLink({
       config,
       description: remark || 'AmneziaWG',
@@ -1445,7 +1552,19 @@ export class InboundBuilderService {
       params.set('path', x?.path || profile.xhttpPath || '/');
       params.set('host', host);
       params.set('mode', x?.mode || 'auto');
-      const { path: _path, host: _host, mode: _mode, ...extra } = x || {};
+      const extra = Object.fromEntries(
+        Object.entries(x || {}).filter(([key, value]) => {
+          if (OMITTED_XHTTP_EXTRA_KEYS.has(key)) return false;
+          if (
+            key === 'scMaxEachPostBytes' &&
+            (typeof value === 'number' || typeof value === 'string') &&
+            String(value).trim() === '1000000'
+          ) {
+            return false;
+          }
+          return true;
+        }),
+      );
       if (Object.keys(extra).length) params.set('extra', JSON.stringify(extra));
     }
 

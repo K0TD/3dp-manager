@@ -1,6 +1,7 @@
 import {
   resolveSniProfile,
   DEFAULT_SNI_PROFILE,
+  SNI_PROFILE_RULES,
 } from 'src/inbounds/sni-profiles';
 
 describe('resolveSniProfile', () => {
@@ -10,8 +11,21 @@ describe('resolveSniProfile', () => {
     expect(profile.spiderX).toBe('/content/downloads/');
     expect(profile.xhttpPath).toBe('/download/updates/');
     expect(profile.xPaddingBytes).toBe('500-1500');
-    expect(profile.serverNames).toContain('swdist.apple.com');
-    expect(profile.serverNames).toContain('swcdn.apple.com');
+    expect(profile.serverNames).toEqual(['swdist.apple.com']);
+    expect(profile.serverNames).not.toContain('swcdn.apple.com');
+  });
+
+  it('excludes non-HTTP/2 domains from SNI profile recommendations and serverNames', () => {
+    for (const rule of SNI_PROFILE_RULES) {
+      expect(rule.recommendedDomains).not.toContain('swcdn.apple.com');
+      expect(rule.recommendedDomains).not.toContain('archive.ubuntu.com');
+      expect(rule.exact || []).not.toContain('swcdn.apple.com');
+      expect(rule.exact || []).not.toContain('archive.ubuntu.com');
+      expect(rule.profile.serverNames || []).not.toContain('swcdn.apple.com');
+      expect(rule.profile.serverNames || []).not.toContain(
+        'archive.ubuntu.com',
+      );
+    }
   });
 
   it('resolves exact Google download profile', () => {

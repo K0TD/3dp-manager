@@ -418,6 +418,8 @@ describe('Xray 26.7.11-26.11.9 and 3x-ui 3.8-3.11.0 compatibility', () => {
   describe('hasSeparateClientApi for 3x-ui 3.x and dev builds', () => {
     it('returns true for 3.x / dev builds and false for 2.x / undefined', () => {
       expect(hasSeparateClientApi({ version: '3.11.0' })).toBe(true);
+      expect(hasSeparateClientApi({ version: '3.11.0-awg.3' })).toBe(true);
+      expect(hasSeparateClientApi({ version: 'v3.11.0-awg.3' })).toBe(true);
       expect(hasSeparateClientApi({ version: 'v3.9.0' })).toBe(true);
       expect(hasSeparateClientApi({ version: '3x-ui v3.11.0' })).toBe(true);
       expect(hasSeparateClientApi({ version: 'dev+44a9dc7' })).toBe(true);
