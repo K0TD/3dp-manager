@@ -755,6 +755,103 @@ describe('3x-ui API contracts', () => {
       },
     ]);
   });
+
+  describe('pacing and safe mutation retries', () => {
+    afterEach(() => {
+      delete process.env.PANEL_MUTATION_INTERVAL_MS;
+    });
+
+    it('serializes mutations per node and honors PANEL_MUTATION_INTERVAL_MS', async () => {
+      process.env.PANEL_MUTATION_INTERVAL_MS = '100';
+      const events: string[] = [];
+      let resolveFirst!: () => void;
+      const firstGate = new Promise<void>((resolve) => {
+        resolveFirst = resolve;
+      });
+      const timestamps: number[] = [];
+
+      api.post.mockImplementation(async (path: string) => {
+        timestamps.push(Date.now());
+        events.push(`start:${path}`);
+        if (events.length === 1) await firstGate;
+        events.push(`end:${path}`);
+        return { data: { success: true, obj: 42 } };
+      });
+
+      const first = service.addInbound(normalizeInbound(inbound), tokenNode);
+      const second = service.deleteInbound(42, tokenNode);
+
+      // Give event loop a tick so first starts and blocks on firstGate; second must wait in queue.
+      await new Promise((r) => setTimeout(r, 20));
+      expect(events).toEqual(['start:/panel/api/inbounds/add']);
+
+      resolveFirst();
+      await Promise.all([first, second]);
+
+      expect(events).toEqual([
+        'start:/panel/api/inbounds/add',
+        'end:/panel/api/inbounds/add',
+        'start:/panel/api/inbounds/del/42',
+        'end:/panel/api/inbounds/del/42',
+      ]);
+      expect(timestamps[1] - timestamps[0]).toBeGreaterThanOrEqual(85);
+    });
+
+    it('recovers inbound ID by unique tag after lost add response without sending a second POST', async () => {
+      let sentTag: string | undefined;
+      api.post.mockImplementationOnce(async (_path: string, body: { tag?: string }) => {
+        sentTag = body.tag;
+        throw { message: 'socket hang up' };
+      });
+      const origGet = api.get.getMockImplementation();
+      api.get.mockImplementation(async (path: string) => {
+        if (path === '/panel/api/inbounds/list') {
+          return {
+            data: { success: true, obj: [{ ...inbound, id: 42, tag: sentTag }] },
+          };
+        }
+        return origGet(path);
+      });
+
+      const result = await service.addInbound(normalizeInbound(inbound), tokenNode);
+
+      expect(sentTag).toMatch(/^3dp-/);
+      expect(result).toEqual({ id: 42, inbound: normalizeInbound(inbound) });
+      expect(api.post).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries create on HTTP 429 and transient database-locked panel messages', async () => {
+      api.post
+        .mockRejectedValueOnce({ response: { status: 429 } })
+        .mockResolvedValueOnce({ data: { success: false, msg: 'database is locked' } })
+        .mockResolvedValueOnce({ data: { success: true, obj: 42 } });
+
+      const result = await service.addInbound(normalizeInbound(inbound), tokenNode);
+
+      expect(result).toEqual({ id: 42, inbound: normalizeInbound(inbound) });
+      expect(api.post).toHaveBeenCalledTimes(3);
+    });
+
+    it('retries delete on HTTP 503 and returns true once panel list confirms absence', async () => {
+      api.post
+        .mockRejectedValueOnce({ response: { status: 503 } })
+        .mockResolvedValueOnce({ data: { success: true, obj: null } });
+      api.get.mockResolvedValueOnce({
+        data: { success: true, obj: [inbound] }, // id 42 still present after 1st 503
+      });
+
+      await expect(service.deleteInbound(42, tokenNode)).resolves.toBe(true);
+      expect(api.post).toHaveBeenCalledTimes(2);
+
+      // If inbounds/list already shows id 42 gone after a 503, treat as deleted without a 2nd POST
+      api.post.mockRejectedValueOnce({ response: { status: 503 } });
+      api.get.mockResolvedValueOnce({
+        data: { success: true, obj: [] },
+      });
+      await expect(service.deleteInbound(42, tokenNode)).resolves.toBe(true);
+      expect(api.post).toHaveBeenCalledTimes(3);
+    });
+  });
 });
 
 describe('wire normalization', () => {

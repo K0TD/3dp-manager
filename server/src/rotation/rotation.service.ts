@@ -452,7 +452,8 @@ export class RotationService implements OnModuleInit {
           .map((id) => subscriptionsById.get(id))
           .filter((sub) => sub !== undefined)
       : subscriptions;
-    for (const subscription of orderedSubscriptions) {
+    for (let index = 0; index < orderedSubscriptions.length; index++) {
+      const subscription = orderedSubscriptions[index];
       const subscriptionResults = await this.subscriptionLock.run(
         subscription.id,
         async () => {
@@ -470,6 +471,9 @@ export class RotationService implements OnModuleInit {
         },
       );
       results.push(...subscriptionResults);
+      if (index < orderedSubscriptions.length - 1) {
+        await this.pauseBetweenSubscriptions();
+      }
     }
     const allSucceeded =
       results.length > 0 &&
@@ -494,6 +498,24 @@ export class RotationService implements OnModuleInit {
 
   async rotateSingleSubscription(subscriptionId: string) {
     return this.performRotation([subscriptionId]);
+  }
+
+  private pauseBetweenSubscriptions(): Promise<void> {
+    const raw = process.env.ROTATION_SUBSCRIPTION_PAUSE_MS;
+    let ms: number;
+    if (raw === undefined || raw.trim() === '') {
+      ms =
+        process.env.NODE_ENV === 'test' || Boolean(process.env.JEST_WORKER_ID)
+          ? 0
+          : 500;
+    } else {
+      const parsed = Number(raw);
+      ms = Number.isFinite(parsed)
+        ? Math.max(100, Math.min(10000, Math.floor(parsed)))
+        : 500;
+    }
+    if (ms <= 0) return Promise.resolve();
+    return new Promise<void>((resolve) => setTimeout(resolve, ms));
   }
 
   /** Called after saving settings, while holding the subscription lock. */
@@ -882,7 +904,7 @@ export class RotationService implements OnModuleInit {
   }
 
   private async performTargetedRotation(operation: RotationOperation) {
-    const target = operation.target!;
+    const target = operation.target;
     return this.subscriptionLock.run(target.subscriptionId, async () => {
       // Activation and the successful result are committed together.
       const completed = operation.results?.[0];
@@ -971,8 +993,11 @@ export class RotationService implements OnModuleInit {
       previous?: Inbound;
       result: RotationConfigResult;
     }> = [];
-    const preservedUpdates: Array<{ id: number; position: number; link?: string }> =
-      [];
+    const preservedUpdates: Array<{
+      id: number;
+      position: number;
+      link?: string;
+    }> = [];
     const missingProfiles: Array<{
       config: InboundConfig;
       previous?: Inbound;
@@ -1070,7 +1095,10 @@ export class RotationService implements OnModuleInit {
             position,
           };
           if (inbound.link?.startsWith('vless://')) {
-            const flag = await this.resolveInboundFlag(config.flag || profileFlag, node);
+            const flag = await this.resolveInboundFlag(
+              config.flag || profileFlag,
+              node,
+            );
             const [baseLink] = inbound.link.split('#', 1);
             const link = baseLink + buildVlessLinkFragment(remark, flag);
             if (link !== inbound.link) update.link = link;
@@ -1206,7 +1234,10 @@ export class RotationService implements OnModuleInit {
           panelRejected:
             stage === 'create' && diagnostics.length > diagnosticStart,
         });
-        if (error instanceof MissingConnectionProfileError && !operation?.target) {
+        if (
+          error instanceof MissingConnectionProfileError &&
+          !operation?.target
+        ) {
           missingProfiles.push({ config, previous: previous[0], result });
         }
         this.logger.warn(
@@ -1263,12 +1294,13 @@ export class RotationService implements OnModuleInit {
     const superseded = new Set<InboundConfig>();
     for (const { config, previous, result } of missingProfiles) {
       if (!config.name?.trim()) continue;
-      const matching = configs.filter(({ config: item }) =>
-        item !== config &&
-        item.type === config.type &&
-        item.profileId &&
-        item.profileId !== config.profileId &&
-        item.name?.trim() === config.name.trim(),
+      const matching = configs.filter(
+        ({ config: item }) =>
+          item !== config &&
+          item.type === config.type &&
+          item.profileId &&
+          item.profileId !== config.profileId &&
+          item.name?.trim() === config.name.trim(),
       );
       if (matching.length !== 1) continue;
       const replacement = inboundResults.find(
@@ -1278,9 +1310,16 @@ export class RotationService implements OnModuleInit {
       const existing = active.find(
         (inbound) => inbound.configId === replacement.configId,
       );
-      if (replacement.status !== 'activated' &&
-        !(replacement.status === 'unchanged' && existing && node &&
-          await this.hasActivePanelClient(existing, node))) continue;
+      if (
+        replacement.status !== 'activated' &&
+        !(
+          replacement.status === 'unchanged' &&
+          existing &&
+          node &&
+          (await this.hasActivePanelClient(existing, node))
+        )
+      )
+        continue;
       superseded.add(config);
       if (previous) old.push(previous);
       result.status = 'superseded';
@@ -1311,7 +1350,9 @@ export class RotationService implements OnModuleInit {
       created: replacements.length,
       pendingCleanup,
       inboundResults,
-      ...(preservedUpdates.length ? { preserved: preservedUpdates.length } : {}),
+      ...(preservedUpdates.length
+        ? { preserved: preservedUpdates.length }
+        : {}),
       ...(firstError
         ? { errorDetails: firstError, message: firstError.raw }
         : {}),
@@ -1395,9 +1436,14 @@ export class RotationService implements OnModuleInit {
     try {
       const current = await this.xuiService.getInbound(inbound.xuiId, node);
       const clients = jsonObject(current.settings, 'inbound settings').clients;
-      return current.id === inbound.xuiId && current.enable === true &&
+      return (
+        current.id === inbound.xuiId &&
+        current.enable === true &&
         Array.isArray(clients) &&
-        clients.some((client) => client?.id === clientId && client.enable !== false);
+        clients.some(
+          (client) => client?.id === clientId && client.enable !== false,
+        )
+      );
     } catch {
       return false;
     }
@@ -1447,29 +1493,44 @@ export class RotationService implements OnModuleInit {
     if (!isManagedProfileKind(config.type)) return undefined;
 
     if (config.profileId) {
-      const profile = await this.inboundRepo.manager.findOneBy(ConnectionProfile, {
-        id: config.profileId,
-        kind: config.type,
-      });
+      const profile = await this.inboundRepo.manager.findOneBy(
+        ConnectionProfile,
+        {
+          id: config.profileId,
+          kind: config.type,
+        },
+      );
       if (!profile) throw new MissingConnectionProfileError();
       return profile.flag;
     }
 
     if (config.flag || !config.configId) return undefined;
-    const legacyProfile = await this.inboundRepo.manager.findOne(ConnectionProfile, {
-      where: [
-        { configId: config.configId, kind: config.type, subscriptionId },
-        { configId: config.configId, kind: config.type, subscriptionId: IsNull() },
-      ],
-      order: { subscriptionId: { direction: 'DESC', nulls: 'LAST' }, id: 'ASC' },
-    });
+    const legacyProfile = await this.inboundRepo.manager.findOne(
+      ConnectionProfile,
+      {
+        where: [
+          { configId: config.configId, kind: config.type, subscriptionId },
+          {
+            configId: config.configId,
+            kind: config.type,
+            subscriptionId: IsNull(),
+          },
+        ],
+        order: {
+          subscriptionId: { direction: 'DESC', nulls: 'LAST' },
+          id: 'ASC',
+        },
+      },
+    );
     return legacyProfile?.flag;
   }
 
   private async resolveInboundFlag(flag?: string | null, node?: Node) {
     const configured = flag || node?.flag;
     if (configured) return configured;
-    const setting = await this.settingRepo.findOne({ where: { key: 'xui_geo_flag' } });
+    const setting = await this.settingRepo.findOne({
+      where: { key: 'xui_geo_flag' },
+    });
     return setting?.value || DEFAULT_COUNTRY_FLAG;
   }
 
@@ -1629,16 +1690,17 @@ export class RotationService implements OnModuleInit {
       const desired = JSON.parse(expected.streamSettings) as XuiStreamSettings;
       const saved = JSON.parse(actual.streamSettings) as XuiStreamSettings;
       const xhttp = desired.xhttpSettings;
-      return actual.port === expected.port &&
+      return (
+        actual.port === expected.port &&
         actual.protocol === expected.protocol &&
-        (!xhttp || (
-          saved.network === desired.network &&
-          saved.security === desired.security &&
-          saved.xhttpSettings?.path === xhttp.path &&
-          (saved.xhttpSettings?.mode || 'auto') === xhttp.mode &&
-          saved.xhttpSettings?.host === xhttp.host &&
-          saved.realitySettings?.serverNames?.includes(xhttp.host || sni)
-        ));
+        (!xhttp ||
+          (saved.network === desired.network &&
+            saved.security === desired.security &&
+            saved.xhttpSettings?.path === xhttp.path &&
+            (saved.xhttpSettings?.mode || 'auto') === xhttp.mode &&
+            saved.xhttpSettings?.host === xhttp.host &&
+            saved.realitySettings?.serverNames?.includes(xhttp.host || sni)))
+      );
     } catch {
       return false;
     }
@@ -1760,7 +1822,8 @@ export class RotationService implements OnModuleInit {
               !isExcludedSniDomain(domain.name),
           );
         const sharedSni = adoptSharedSni ? parsed.sni : sni;
-        if (sharedSni && normalize(parsed.sni) !== normalize(sharedSni)) continue;
+        if (sharedSni && normalize(parsed.sni) !== normalize(sharedSni))
+          continue;
         if (config.type === 'xhttp-stable') {
           const auto = xhttpStableSniSettings(sharedSni);
           if (
@@ -1831,9 +1894,10 @@ export class RotationService implements OnModuleInit {
       return false;
     }
 
-    const ownedClientId = inbound.protocol === 'vless' && hasSeparateClientApi(node)
-      ? extractInboundClientId(inbound)
-      : null;
+    const ownedClientId =
+      inbound.protocol === 'vless' && hasSeparateClientApi(node)
+        ? extractInboundClientId(inbound)
+        : null;
     return ownedClientId
       ? this.xuiService.deleteInbound(inbound.xuiId, node, ownedClientId)
       : this.xuiService.deleteInbound(inbound.xuiId, node);
@@ -2093,7 +2157,10 @@ export class RotationService implements OnModuleInit {
       this.getNodeAddress(node) ||
       hostSetting?.value ||
       'localhost';
-    const flag = await this.resolveInboundFlag(config.flag || profileFlag, node);
+    const flag = await this.resolveInboundFlag(
+      config.flag || profileFlag,
+      node,
+    );
     const fixedPort = this.fixedInboundPort(config);
     const port = fixedPort ?? (await this.getFreePort(usedPorts));
     usedPorts.add(port);
@@ -2110,7 +2177,7 @@ export class RotationService implements OnModuleInit {
             port,
             uuid,
             email,
-            ...resolvedTls!,
+            ...resolvedTls,
           })
         : config.type === 'amneziawg'
           ? this.inboundBuilder.buildAmneziaWgInbound({ port, uuid, email })
@@ -2139,7 +2206,14 @@ export class RotationService implements OnModuleInit {
     let result: Awaited<ReturnType<XuiService['addInbound']>> = null;
     let attachedToShared = false;
     let staged: Inbound | undefined;
-    const stagedParams = { subscription, config, position, node, relayServer, generationId };
+    const stagedParams = {
+      subscription,
+      config,
+      position,
+      node,
+      relayServer,
+      generationId,
+    };
     if (
       isManagedProfileKind(config.type) &&
       typeof this.xuiService.addInboundClient === 'function'
@@ -2157,7 +2231,13 @@ export class RotationService implements OnModuleInit {
         if (match.sni !== sni) {
           sni = match.sni;
           built = this.buildPanelInbound({
-            config, port: shared.port, uuid, email, sni, realityKeys, tls: resolvedTls,
+            config,
+            port: shared.port,
+            uuid,
+            email,
+            sni,
+            realityKeys,
+            tls: resolvedTls,
           });
           if (!built) throw new Error('Не удалось подготовить общий инбаунд');
         }
@@ -2195,7 +2275,10 @@ export class RotationService implements OnModuleInit {
                 return this.matchesFallbackListener(expected, current);
               if (config.type === 'xhttp-stable')
                 return this.matchesXhttpStableListener(expected, current, sni);
-              return current.protocol === expected.protocol && current.port === expected.port;
+              return (
+                current.protocol === expected.protocol &&
+                current.port === expected.port
+              );
             },
           );
           if (!result) {
@@ -2240,15 +2323,17 @@ export class RotationService implements OnModuleInit {
           ...stagedParams,
           xuiId: result.id,
           port: saved.port,
-          protocol: saved.protocol === 'hysteria' ? 'hysteria2' : saved.protocol,
+          protocol:
+            saved.protocol === 'hysteria' ? 'hysteria2' : saved.protocol,
           remark: saved.remark,
           link: '',
           ownedVlessId: saved.protocol === 'vless' ? uuid : undefined,
         });
       } catch (error) {
-        const deleted = saved.protocol === 'vless' && hasSeparateClientApi(node)
-          ? await this.xuiService.deleteInbound(result.id, node, uuid)
-          : await this.xuiService.deleteInbound(result.id, node);
+        const deleted =
+          saved.protocol === 'vless' && hasSeparateClientApi(node)
+            ? await this.xuiService.deleteInbound(result.id, node, uuid)
+            : await this.xuiService.deleteInbound(result.id, node);
         if (!deleted)
           this.logger.error(
             `Не удалось сохранить или удалить новый инбаунд ${result.id} на ноде «${node.name}»; требуется очистка на панели`,
@@ -2260,8 +2345,13 @@ export class RotationService implements OnModuleInit {
     staged.remark = saved.remark;
     try {
       if (result.verificationError) throw new Error(result.verificationError);
-      if (config.type === 'xhttp-stable' &&
-        !this.matchesXhttpStableListener({ ...built, port: saved.port }, saved, sni)
+      if (
+        config.type === 'xhttp-stable' &&
+        !this.matchesXhttpStableListener(
+          { ...built, port: saved.port },
+          saved,
+          sni,
+        )
       ) {
         throw new Error(
           '3x-ui не сохранила SNI, Host, Path или режим XHTTP по запрошенной конфигурации',

@@ -14,6 +14,7 @@ import axios, {
 } from 'axios';
 import * as http from 'http';
 import * as https from 'https';
+import { randomUUID } from 'crypto';
 import { Setting } from '../settings/entities/setting.entity';
 import { XuiCertResult, XuiInboundRaw, XuiDiscoveredNode } from './xui.types';
 import { SessionService } from '../session/session.service';
@@ -95,6 +96,8 @@ export class XuiService {
   private readonly logger = new Logger(XuiService.name);
   private readonly lastInboundErrors = new Map<string, string>();
   private readonly panelAgents = new Map<string, http.Agent>();
+  private readonly mutations = new Map<string, Promise<unknown>>();
+  private readonly lastMutation = new Map<string, number>();
 
   constructor(
     @InjectRepository(Setting) private settingsRepo: Repository<Setting>,
@@ -355,80 +358,252 @@ export class XuiService {
       : `Node is unreachable${networkCode}`;
   }
 
+  private wait(ms: number): Promise<void> {
+    if (ms <= 0) return Promise.resolve();
+    return new Promise<void>((resolve) => setTimeout(resolve, ms));
+  }
+
+  private getMutationIntervalMs(): number {
+    const raw = process.env.PANEL_MUTATION_INTERVAL_MS;
+    if (raw === undefined || raw.trim() === '') {
+      return process.env.NODE_ENV === 'test' ||
+        Boolean(process.env.JEST_WORKER_ID)
+        ? 0
+        : 300;
+    }
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) return 300;
+    return Math.max(100, Math.min(5000, Math.floor(parsed)));
+  }
+
+  private getRetryDelayMs(attempt: number): number {
+    const raw = process.env.XUI_RETRY_DELAY_MS;
+    if (
+      (process.env.NODE_ENV === 'test' ||
+        Boolean(process.env.JEST_WORKER_ID)) &&
+      (raw === undefined || raw.trim() === '')
+    ) {
+      return 0;
+    }
+    if (
+      raw !== undefined &&
+      raw.trim() !== '' &&
+      Number.isFinite(Number(raw))
+    ) {
+      return Math.max(0, Math.floor(Number(raw)));
+    }
+    return 500 * 2 ** (attempt - 1) + Math.floor(Math.random() * 150);
+  }
+
+  private async withMutation<T>(
+    node: Node | undefined,
+    action: () => Promise<T>,
+  ): Promise<T> {
+    const key = node?.id || 'main';
+    const previous = this.mutations.get(key) ?? Promise.resolve();
+    const task = previous.catch(() => undefined).then(action);
+    this.mutations.set(key, task);
+    try {
+      return await task;
+    } finally {
+      if (this.mutations.get(key) === task) this.mutations.delete(key);
+    }
+  }
+
+  private async pace(node?: Node): Promise<void> {
+    const key = node?.id || 'main';
+    const interval = this.getMutationIntervalMs();
+    const waitMs = Math.max(
+      0,
+      interval - (Date.now() - (this.lastMutation.get(key) || 0)),
+    );
+    await this.wait(waitMs);
+    if (this.lastMutation.size >= 1000) {
+      const oldest = this.lastMutation.keys().next();
+      if (!oldest.done) this.lastMutation.delete(oldest.value);
+    }
+    this.lastMutation.set(key, Date.now());
+  }
+
+  private isTransientPanelMessage(message?: string): boolean {
+    return /busy|locked|temporar|timeout|timed out|try again|unavailable|database.*lock|internal|server error/i.test(
+      message || '',
+    );
+  }
+
+  private async remoteInbounds(
+    api: AxiosInstance,
+  ): Promise<Array<{ id: number; tag?: string; port?: number }> | null> {
+    try {
+      const res = await api.get<unknown>('/panel/api/inbounds/list');
+      const list = responsePayload(res.data);
+      if (!Array.isArray(list)) return null;
+      return list.flatMap((item) => {
+        const record = asRecord(item);
+        const id = Number(record?.id);
+        if (!Number.isInteger(id) || id <= 0) return [];
+        return [
+          {
+            id,
+            tag: typeof record?.tag === 'string' ? record.tag : undefined,
+            port: typeof record?.port === 'number' ? record.port : undefined,
+          },
+        ];
+      });
+    } catch {
+      return null;
+    }
+  }
+
   async addInbound(
     inboundConfig: XuiInboundRaw,
     node?: Node,
   ): Promise<XuiCreatedInbound | null> {
-    if (!node || !this.routingStore)
-      return this.createInbound(inboundConfig, node);
-    return this.routingStore.withLock(node.id, async () => {
-      const current = await this.routingStore.node(node.id);
-      const state = current.routingPresets || emptyRoutingState();
-      if (state.pending)
-        throw new ConflictException(
-          'Применение маршрутизации ноды не завершено. Проверьте быстрые настройки.',
+    return this.withMutation(node, () => {
+      if (!node || !this.routingStore)
+        return this.createInbound(inboundConfig, node);
+      return this.routingStore.withLock(node.id, async () => {
+        const current = await this.routingStore.node(node.id);
+        const state = current.routingPresets || emptyRoutingState();
+        if (state.pending)
+          throw new ConflictException(
+            'Применение маршрутизации ноды не завершено. Проверьте быстрые настройки.',
+          );
+        const prepared =
+          hasPresets(state) && supportsSniffing(inboundConfig)
+            ? prepareSniffing(inboundConfig)
+            : undefined;
+        const result = await this.createInbound(
+          prepared?.inbound || inboundConfig,
+          current,
         );
-      const prepared =
-        hasPresets(state) && supportsSniffing(inboundConfig)
-          ? prepareSniffing(inboundConfig)
-          : undefined;
-      const result = await this.createInbound(
-        prepared?.inbound || inboundConfig,
-        current,
-      );
-      if (result && prepared) {
-        const savedSniffing = sniffingObject(result.inbound);
-        const expectedSniffing = sniffingObject(prepared.inbound);
-        if (
-          ['enabled', 'routeOnly', 'metadataOnly', 'destOverride'].some(
-            (field) => !equal(savedSniffing[field], expectedSniffing[field]),
-          )
-        ) {
-          result.verificationError =
-            '3x-ui не сохранила sniffing нового inbound';
+        if (result && prepared) {
+          const savedSniffing = sniffingObject(result.inbound);
+          const expectedSniffing = sniffingObject(prepared.inbound);
+          if (
+            ['enabled', 'routeOnly', 'metadataOnly', 'destOverride'].some(
+              (field) => !equal(savedSniffing[field], expectedSniffing[field]),
+            )
+          ) {
+            result.verificationError =
+              '3x-ui не сохранила sniffing нового inbound';
+          }
+          state.sniffing[String(result.id)] = prepared.change;
+          try {
+            await this.routingStore.save(node.id, state);
+          } catch {
+            // Return the created identity so rotation's existing cleanup can remove it.
+            result.verificationError =
+              'Не удалось сохранить исходный sniffing для нового inbound';
+          }
         }
-        state.sniffing[String(result.id)] = prepared.change;
-        try {
-          await this.routingStore.save(node.id, state);
-        } catch {
-          // Return the created identity so rotation's existing cleanup can remove it.
-          result.verificationError =
-            'Не удалось сохранить исходный sniffing для нового inbound';
-        }
-      }
-      return result;
+        return result;
+      });
     });
   }
 
   private async createInbound(
     inboundConfig: XuiInboundRaw,
     node?: Node,
+    options?: { allowEmptyClients?: boolean },
   ): Promise<XuiCreatedInbound | null> {
     const key = node?.id || 'main';
     this.lastInboundErrors.delete(key);
     let created: XuiCreatedInbound | undefined;
     try {
       const config = normalizeInbound(inboundConfig);
-      const { obj, api: authenticatedApi } = await this.authenticatedRequest(
-        node,
-        async (api) => {
-          const response = await api.post<unknown>(
-            '/panel/api/inbounds/add',
-            config,
+      const tag =
+        typeof config.tag === 'string' && config.tag
+          ? config.tag
+          : `3dp-${randomUUID()}`;
+      const payload: XuiInboundRaw = { ...config, tag };
+      let authenticatedApi = await this.createAuthenticatedApi(node);
+      let id: number | undefined;
+
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        await this.pace(node);
+        try {
+          const obj = await this.authenticatedRequest(
+            node,
+            async (api) => {
+              authenticatedApi = api;
+              const response = await api.post<unknown>(
+                '/panel/api/inbounds/add',
+                payload,
+              );
+              return responsePayload(response.data);
+            },
+            authenticatedApi,
           );
-          return { obj: responsePayload(response.data), api };
-        },
-      );
-      const rawId =
-        obj && typeof obj === 'object' ? (obj as { id?: unknown }).id : obj;
-      const id =
-        typeof rawId === 'number' || typeof rawId === 'string'
-          ? Number(rawId)
-          : NaN;
-      if (!Number.isInteger(id) || id <= 0)
+          const rawId =
+            obj && typeof obj === 'object' ? (obj as { id?: unknown }).id : obj;
+          const parsedId =
+            typeof rawId === 'number' || typeof rawId === 'string'
+              ? Number(rawId)
+              : NaN;
+          if (!Number.isInteger(parsedId) || parsedId <= 0)
+            throw new XuiApiError(
+              '3x-ui created an inbound without a valid ID; check the panel before retrying',
+            );
+          id = parsedId;
+          break;
+        } catch (error) {
+          const status = (error as AxiosError)?.response?.status;
+          if (error instanceof XuiApiError) {
+            if (attempt < 3 && this.isTransientPanelMessage(error.message)) {
+              this.logger.warn(
+                `Inbound creation (${node?.name || 'main'}): retry ${attempt + 1}/3 (${error.message})`,
+              );
+              await this.wait(this.getRetryDelayMs(attempt));
+              continue;
+            }
+            throw error;
+          }
+
+          if (status === 429) {
+            if (attempt < 3) {
+              this.logger.warn(
+                `Inbound creation (${node?.name || 'main'}): HTTP 429, retry ${attempt + 1}/3`,
+              );
+              await this.wait(this.getRetryDelayMs(attempt));
+              continue;
+            }
+            throw error;
+          }
+
+          if (!status || status === 408 || status >= 500) {
+            const list = await this.remoteInbounds(authenticatedApi);
+            const existing = list?.find(
+              (item) =>
+                item.tag === tag &&
+                (item.port === undefined || item.port === config.port),
+            );
+            if (existing) {
+              id = existing.id;
+              break;
+            }
+            // Do not blindly retry when the request had no HTTP status (timeout/reset)
+            // or when we couldn't inspect existing panel inbounds.
+            if (!status) throw error;
+            if (list && attempt < 3) {
+              this.logger.warn(
+                `Inbound creation (${node?.name || 'main'}): HTTP ${status}, retry ${attempt + 1}/3`,
+              );
+              await this.wait(this.getRetryDelayMs(attempt));
+              continue;
+            }
+            throw error;
+          }
+
+          throw error;
+        }
+      }
+
+      if (!id) {
         throw new XuiApiError(
           '3x-ui created an inbound without a valid ID; check the panel before retrying',
         );
+      }
       created = { id, inbound: { ...config, id } };
       const saved = await this.authenticatedRequest(
         node,
@@ -449,7 +624,7 @@ export class XuiService {
           'Saved inbound identity, protocol or enabled state does not match',
         );
       }
-      verifyInboundAccess(saved);
+      if (!options?.allowEmptyClients) verifyInboundAccess(saved);
       verifyTlsIdentity(config, saved);
       created.inbound = saved;
       return created;
@@ -478,10 +653,12 @@ export class XuiService {
     matchesInbound?: (inbound: XuiInboundRaw) => boolean,
   ): Promise<XuiCreatedInbound | null> {
     if (!inboundId || inboundId <= 0) return null;
-    const run = () =>
-      this.appendInboundClient(inboundId, client, node, matchesInbound);
-    if (!node || !this.routingStore) return run();
-    return this.routingStore.withLock(node.id, run);
+    return this.withMutation(node, () => {
+      const run = () =>
+        this.appendInboundClient(inboundId, client, node, matchesInbound);
+      if (!node || !this.routingStore) return run();
+      return this.routingStore.withLock(node.id, run);
+    });
   }
 
   private async appendInboundClient(
@@ -519,16 +696,25 @@ export class XuiService {
 
         if (separateClients) {
           if (!clientId || !email) {
-            throw new XuiApiError('Для добавления клиента требуются UUID и email');
+            throw new XuiApiError(
+              'Для добавления клиента требуются UUID и email',
+            );
           }
           const { clients } = jsonObject(current.settings, 'inbound settings');
-          if (Array.isArray(clients) && clients.some(
-            (item) => item?.id === clientId && item.email === email && item.enable !== false,
-          )) {
+          if (
+            Array.isArray(clients) &&
+            clients.some(
+              (item) =>
+                item?.id === clientId &&
+                item.email === email &&
+                item.enable !== false,
+            )
+          ) {
             return { id: inboundId, inbound: current };
           }
           // A write may have succeeded before the response reached us.
           accepted = current;
+          await this.pace(node);
           const response = await api.post<unknown>('/panel/api/clients/add', {
             client,
             inboundIds: [inboundId],
@@ -536,6 +722,7 @@ export class XuiService {
           responsePayload(response.data);
         } else {
           try {
+            await this.pace(node);
             const addResp = await api.post<unknown>(
               '/panel/api/inbounds/addClient',
               {
@@ -607,9 +794,12 @@ export class XuiService {
           saved.id !== inboundId ||
           saved.enable !== true ||
           saved.protocol !== current.protocol ||
-          (clientId && !savedClients.some(
-            (c) => c?.id === clientId && (!separateClients || (c.email === email && c.enable !== false)),
-          ))
+          (clientId &&
+            !savedClients.some(
+              (c) =>
+                c?.id === clientId &&
+                (!separateClients || (c.email === email && c.enable !== false)),
+            ))
         ) {
           throw new XuiApiError(
             `3x-ui не подтвердила привязку клиента к общему inbound ${inboundId}`,
@@ -635,9 +825,12 @@ export class XuiService {
     node?: Node,
   ): Promise<boolean> {
     if (!inboundId || inboundId <= 0 || !clientId) return true;
-    const run = () => this.removeInboundClient(inboundId, clientId, node);
-    if (!node || !this.routingStore) return run();
-    return this.routingStore.withLock(node.id, run);
+    return this.withMutation(node, async () => {
+      await this.pace(node);
+      const run = () => this.removeInboundClient(inboundId, clientId, node);
+      if (!node || !this.routingStore) return run();
+      return this.routingStore.withLock(node.id, run);
+    });
   }
 
   private async removeInboundClient(
@@ -757,7 +950,9 @@ export class XuiService {
         const current = normalizeInbound(responsePayload(inbound.data));
         const { clients } = jsonObject(current.settings, 'inbound settings');
         if (current.id !== inboundId || !Array.isArray(clients)) return false;
-        email = clients.find((client) => asRecord(client)?.id === clientId)?.email;
+        email = clients.find(
+          (client) => asRecord(client)?.id === clientId,
+        )?.email;
       }
     }
     if (typeof email !== 'string') {
@@ -766,7 +961,9 @@ export class XuiService {
       const clients = responsePayload(list.data);
       if (!Array.isArray(clients))
         throw new XuiApiError('Недопустимый список клиентов 3x-ui');
-      const matches = clients.filter((client) => asRecord(client)?.uuid === clientId);
+      const matches = clients.filter(
+        (client) => asRecord(client)?.uuid === clientId,
+      );
       if (matches.length === 0) return true;
       if (matches.length !== 1) return false;
       email = asRecord(matches[0])?.email;
@@ -774,7 +971,9 @@ export class XuiService {
     if (typeof email !== 'string' || !email) return false;
 
     const encodedEmail = encodeURIComponent(email);
-    const details = await api.get<unknown>(`/panel/api/clients/get/${encodedEmail}`);
+    const details = await api.get<unknown>(
+      `/panel/api/clients/get/${encodedEmail}`,
+    );
     if (this.panelRecordMissing(details.data)) return true;
     const row = asRecord(responsePayload(details.data));
     const client = asRecord(row?.client);
@@ -783,41 +982,56 @@ export class XuiService {
     if (!Array.isArray(attachments)) return false;
     const shortId = formatClientEmail(null, clientId);
     const managedEmail = email === shortId || email.endsWith(`-${shortId}`);
-    const emptyExternalLinks = row?.externalLinks === null ||
+    const emptyExternalLinks =
+      row?.externalLinks === null ||
       (Array.isArray(row?.externalLinks) && row.externalLinks.length === 0);
-    const canDelete = managedEmail && emptyExternalLinks &&
+    const canDelete =
+      managedEmail &&
+      emptyExternalLinks &&
       attachments.every((id) => id === inboundId);
     if (canDelete) {
-      const deleted = await api.post<unknown>(`/panel/api/clients/del/${encodedEmail}`);
+      const deleted = await api.post<unknown>(
+        `/panel/api/clients/del/${encodedEmail}`,
+      );
       if (!this.panelRecordMissing(deleted.data)) responsePayload(deleted.data);
     } else if (attachments.includes(inboundId)) {
       const detached = await api.post<unknown>(
         `/panel/api/clients/${encodedEmail}/detach`,
         { inboundIds: [inboundId] },
       );
-      if (!this.panelRecordMissing(detached.data)) responsePayload(detached.data);
+      if (!this.panelRecordMissing(detached.data))
+        responsePayload(detached.data);
     }
     return true;
   }
 
   private panelRecordMissing(data: unknown): boolean {
     const body = asRecord(data);
-    return body?.success === false && typeof body.msg === 'string' &&
-      /not found|does not exist|record not found|не найден/i.test(body.msg);
+    return (
+      body?.success === false &&
+      typeof body.msg === 'string' &&
+      /not found|does not exist|record not found|не найден/i.test(body.msg)
+    );
   }
 
-  async deleteInbound(id: number, node?: Node, ownedClientId?: string): Promise<boolean> {
-    const run = async () => {
-      if (ownedClientId && hasSeparateClientApi(node))
-        return this.removeOwnedInbound(id, ownedClientId, node);
-      const removed = await this.removeInbound(id, node);
-      if (removed && node && this.routingStore) {
-        await this.routingStore.forgetInbound(node.id, id);
-      }
-      return removed;
-    };
-    if (!node || !this.routingStore) return run();
-    return this.routingStore.withLock(node.id, run);
+  async deleteInbound(
+    id: number,
+    node?: Node,
+    ownedClientId?: string,
+  ): Promise<boolean> {
+    return this.withMutation(node, () => {
+      const run = async () => {
+        if (ownedClientId && hasSeparateClientApi(node))
+          return this.removeOwnedInbound(id, ownedClientId, node);
+        const removed = await this.removeInbound(id, node);
+        if (removed && node && this.routingStore) {
+          await this.routingStore.forgetInbound(node.id, id);
+        }
+        return removed;
+      };
+      if (!node || !this.routingStore) return run();
+      return this.routingStore.withLock(node.id, run);
+    });
   }
 
   private async removeOwnedInbound(
@@ -827,7 +1041,9 @@ export class XuiService {
   ): Promise<boolean> {
     try {
       const current = await this.authenticatedRequest(node, async (api) => {
-        const { data } = await api.get<unknown>(`/panel/api/inbounds/get/${id}`);
+        const { data } = await api.get<unknown>(
+          `/panel/api/inbounds/get/${id}`,
+        );
         if (this.panelRecordMissing(data)) return null;
         return normalizeInbound(responsePayload(data));
       });
@@ -838,8 +1054,11 @@ export class XuiService {
         // Do not delete a reused panel ID or an inbound with someone else's clients.
         if (current.id !== id) return false;
         const client = asRecord(clients[0]);
-        if (current.protocol !== 'vless' || clients.length !== 1 ||
-          client?.id !== clientId)
+        if (
+          current.protocol !== 'vless' ||
+          clients.length !== 1 ||
+          client?.id !== clientId
+        )
           return this.removeInboundClient(id, clientId, node);
         if (typeof client.email === 'string') email = client.email;
         if (!(await this.removeInbound(id, node))) return false;
@@ -850,33 +1069,93 @@ export class XuiService {
         this.removeSeparateClient(api, id, clientId, email),
       );
     } catch (error) {
-      this.logger.warn(`Managed inbound deletion (${id}): ${this.errorMessage(error)}`);
+      this.logger.warn(
+        `Managed inbound deletion (${id}): ${this.errorMessage(error)}`,
+      );
       return false;
     }
   }
 
   private async removeInbound(id: number, node?: Node): Promise<boolean> {
     if (!id || id <= 0) return true;
-    try {
-      return await this.authenticatedRequest(node, async (api) => {
-        const response = await api.post<unknown>(
-          `/panel/api/inbounds/del/${id}`,
-        );
-        const body = asRecord(response.data);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      let apiRef: AxiosInstance | undefined;
+      try {
+        await this.pace(node);
+        const result = await this.authenticatedRequest(node, async (api) => {
+          apiRef = api;
+          const response = await api.post<unknown>(
+            `/panel/api/inbounds/del/${id}`,
+          );
+          const body = asRecord(response.data);
+          if (
+            body?.success === false &&
+            typeof body.msg === 'string' &&
+            /not found|does not exist|record not found/i.test(body.msg)
+          ) {
+            return { done: true, retry: false };
+          }
+          if (body?.success === false) {
+            const msg = safePanelMessage(body.msg, 16384);
+            if (this.isTransientPanelMessage(msg)) {
+              return { done: false, retry: true, reason: msg };
+            }
+            const list = await this.remoteInbounds(api);
+            if (list && !list.some((item) => item.id === id)) {
+              return { done: true, retry: false };
+            }
+            this.logger.warn(`Inbound deletion ${id}: ${msg}`);
+            return { done: false, retry: false };
+          }
+          responsePayload(response.data);
+          return { done: true, retry: false };
+        });
+
+        if (result.done) return true;
+        if (!result.retry) return false;
+        if (attempt < 3) {
+          this.logger.warn(
+            `Inbound deletion ${id} (${node?.name || 'main'}): retry ${attempt + 1}/3 (${result.reason})`,
+          );
+          await this.wait(this.getRetryDelayMs(attempt));
+          continue;
+        }
+        return false;
+      } catch (error) {
+        const status = (error as AxiosError)?.response?.status;
+        // A 404 can mean a wrong base path/API route, not an absent inbound.
         if (
-          body?.success === false &&
-          typeof body.msg === 'string' &&
-          /not found|does not exist|record not found/i.test(body.msg)
-        )
+          status === 404 ||
+          (status &&
+            status >= 400 &&
+            status < 500 &&
+            status !== 408 &&
+            status !== 429)
+        ) {
+          this.logger.warn(
+            `Inbound deletion ${id}: ${this.errorMessage(error)}`,
+          );
+          return false;
+        }
+        const list = apiRef ? await this.remoteInbounds(apiRef) : null;
+        if (list && !list.some((item) => item.id === id)) {
           return true;
-        responsePayload(response.data);
-        return true;
-      });
-    } catch (error) {
-      // A 404 can mean a wrong base path/API route, not an absent inbound.
-      this.logger.warn(`Inbound deletion ${id}: ${this.errorMessage(error)}`);
-      return false;
+        }
+        if (
+          attempt < 3 &&
+          (!status || status === 408 || status === 429 || status >= 500)
+        ) {
+          this.logger.warn(
+            `Inbound deletion ${id} (${node?.name || 'main'}): retry ${attempt + 1}/3 (${this.errorMessage(error)})`,
+          );
+          await this.wait(this.getRetryDelayMs(attempt));
+          continue;
+        }
+        this.logger.warn(`Inbound deletion ${id}: ${this.errorMessage(error)}`);
+        return false;
+      }
     }
+    return false;
   }
 
   async checkConnection(

@@ -858,6 +858,32 @@ describe('RotationService resilient generations', () => {
     expect(result.results.map(item => item.subscriptionId)).toEqual(['second', 'first']);
   });
 
+  it('pauses between subscriptions according to ROTATION_SUBSCRIPTION_PAUSE_MS and not after the last one', async () => {
+    const prev = process.env.ROTATION_SUBSCRIPTION_PAUSE_MS;
+    process.env.ROTATION_SUBSCRIPTION_PAUSE_MS = '120';
+    const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
+    try {
+      const first = { id: 'first', name: 'First', isEnabled: true };
+      const second = { id: 'second', name: 'Second', isEnabled: true };
+      subRepo.find.mockResolvedValueOnce([first, second]);
+      subRepo.findOne.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+      domainRepo.find.mockResolvedValueOnce([]);
+      jest.spyOn(service as any, 'getDefaultNode').mockResolvedValue(null);
+      jest.spyOn(service as any, 'rotateSubscription').mockImplementation(async (sub: any) => [
+        { subscriptionId: sub.id, status: 'succeeded', created: 1 },
+      ]);
+
+      await service.performRotation(['first', 'second']);
+
+      const pauseCalls = setTimeoutSpy.mock.calls.filter(([, ms]) => ms === 120);
+      expect(pauseCalls).toHaveLength(1);
+    } finally {
+      setTimeoutSpy.mockRestore();
+      if (prev === undefined) delete process.env.ROTATION_SUBSCRIPTION_PAUSE_MS;
+      else process.env.ROTATION_SUBSCRIPTION_PAUSE_MS = prev;
+    }
+  });
+
   it('returns an operation id immediately when rotation is queued', async () => {
     const operation = await service.enqueueRotation(['sub-1', 'sub-1']);
     expect(operation).toMatchObject({
