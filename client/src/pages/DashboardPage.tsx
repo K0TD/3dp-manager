@@ -110,7 +110,7 @@ interface OperationResult {
     port?: number;
     xuiId?: number;
     cleanupQueued?: boolean;
-    status: 'activated' | 'unchanged' | 'superseded' | 'preserved' | 'failed';
+    status: 'activated' | 'unchanged' | 'superseded' | 'preserved' | 'skipped' | 'failed';
     error?: OperationErrorDetails;
     conflict?: { xuiId?: number; listen?: string; subscriptionId?: string };
     canary?: CanaryProbeResult & { stage?: string; tcpReachable?: boolean; sni?: string; host?: string; path?: string; mode?: string };
@@ -864,7 +864,9 @@ export default function DashboardPage() {
                             {item.name || item.type}{item.port ? ` · ${item.port}` : ''} · {{
                               activated: 'Обновлён', unchanged: 'Оставлен без изменений',
                               superseded: 'Заменён действующим профилем',
-                              preserved: 'Старое подключение сохранено', failed: 'Создание не удалось',
+                              preserved: 'Старое подключение сохранено',
+                              skipped: 'Пропущен (несовместим с Xray)',
+                              failed: 'Создание не удалось',
                             }[item.status]}
                           </Typography>
                           {(item.xuiId || item.cleanupQueued) && (

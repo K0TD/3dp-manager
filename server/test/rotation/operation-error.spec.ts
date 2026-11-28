@@ -32,6 +32,10 @@ describe('operation error normalization', () => {
     ['Failed to delete inbound 101 from 3x-ui', 'INBOUND_DELETE_FAILED'],
     ['SSH command timeout after 120000ms', 'SSH_TIMEOUT'],
     ['SSH Error: connect ECONNREFUSED', 'SSH_FAILED'],
+    [
+      'VLESS XHTTP GET без TLS/REALITY несовместим с клиентом Xray 26.9.9+; используйте XHTTP Stable, VLESS XHTTP Reality или VLESS XHTTP TLS',
+      'INBOUND_INCOMPATIBLE',
+    ],
     ['Node is unreachable', 'NODE_UNAVAILABLE'],
     ['неизвестный сбой', 'OPERATION_FAILED'],
   ])('maps %s to %s', (message, code) => {
@@ -119,6 +123,20 @@ describe('operation error normalization', () => {
     );
     expect(multi.code).toBe('CANARY_PROBE_FAILED');
     expect(multi.hint).toContain('Несколько профилей одновременно');
+  });
+
+  it('classifies incompatible inbound errors at preflight stage', () => {
+    expect(
+      normalizeOperationError(
+        'VLESS XHTTP GET без TLS/REALITY несовместим с клиентом Xray 26.9.9+; используйте XHTTP Stable, VLESS XHTTP Reality или VLESS XHTTP TLS',
+        { node: 'nl', stage: 'preflight', inboundType: 'vless-xhttp-get' },
+      ),
+    ).toMatchObject({
+      code: 'INBOUND_INCOMPATIBLE',
+      stage: 'preflight',
+      node: 'nl',
+      inboundType: 'vless-xhttp-get',
+    });
   });
 
   it('classifies a free-form panel rejection when the caller identifies its source', () => {

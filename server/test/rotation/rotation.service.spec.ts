@@ -560,6 +560,118 @@ describe('RotationService resilient generations', () => {
     expect(xuiService.getNewX25519Cert).not.toHaveBeenCalled();
   });
 
+  it('skips vless-xhttp-get on Xray 26.11.9 without failing rotation, does not create it on the node, activates sibling inbounds, and queues old inbound for cleanup', async () => {
+    const node = {
+      id: 'node-26',
+      name: 'Xray26',
+      version: '3.11.0-awg.3',
+      xrayVersion: '26.11.9',
+      url: 'https://xray26.example.com',
+      domain: 'xray26.example.com',
+      healthStatus: 'online',
+      consecutiveFailures: 0,
+    } as Node;
+    const oldGetInbound = {
+      id: 301,
+      xuiId: 31,
+      configId: 'get-cfg',
+      nodeId: node.id,
+      port: 24481,
+      protocol: 'vless',
+      status: InboundStatus.Active,
+    } as Inbound;
+    const oldTcpInbound = {
+      id: 302,
+      xuiId: 32,
+      configId: 'tcp-cfg',
+      nodeId: node.id,
+      port: 35779,
+      protocol: 'vless',
+      status: InboundStatus.Active,
+    } as Inbound;
+    const sub = {
+      id: 'sub-skip-get',
+      name: 'SkipGetSub',
+      isEnabled: true,
+      isAutoRotationEnabled: true,
+      inbounds: [oldGetInbound, oldTcpInbound],
+      inboundsConfig: [
+        {
+          configId: 'get-cfg',
+          type: 'vless-xhttp-get',
+          nodeId: node.id,
+          port: 24481,
+        },
+        {
+          configId: 'tcp-cfg',
+          type: 'vless-tcp-reality',
+          nodeId: node.id,
+          port: 'random',
+          sni: 'ya.ru',
+        },
+      ],
+    } as Subscription;
+
+    const builtTcp = {
+      enable: true,
+      port: 40123,
+      protocol: 'vless',
+      remark: 'vless-tcp-reality',
+      settings: JSON.stringify({ clients: [{ id: 'u-tcp' }] }),
+      streamSettings: JSON.stringify({ network: 'tcp', security: 'reality' }),
+    };
+
+    nodeRepo.createQueryBuilder.mockReturnValue({
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockResolvedValue(node),
+    });
+    xuiService.assertXrayHealthy.mockResolvedValue(undefined);
+    xuiService.getNewX25519Cert.mockResolvedValue({
+      privateKey: 'PRIV',
+      publicKey: 'PUB',
+    });
+    inboundBuilder.buildVlessRealityTcp.mockReturnValue(builtTcp);
+    xuiService.addInbound.mockResolvedValue({
+      id: 33,
+      inbound: { ...builtTcp, id: 33 },
+    });
+    inboundBuilder.buildInboundLink.mockReturnValue(
+      'vless://u-tcp@xray26.example.com:40123#TCP',
+    );
+
+    const results = await (service as any).rotateSubscription(
+      sub,
+      [{ name: 'ya.ru', isEnabled: true }],
+      node,
+    );
+
+    expect(results[0]).toMatchObject({
+      status: 'succeeded',
+      created: 1,
+      pendingCleanup: 2,
+      inboundResults: [
+        { configId: 'get-cfg', type: 'vless-xhttp-get', status: 'skipped' },
+        {
+          configId: 'tcp-cfg',
+          type: 'vless-tcp-reality',
+          status: 'activated',
+          port: 40123,
+          xuiId: 33,
+        },
+      ],
+    });
+    expect(results[0].inboundResults[0].error).toBeUndefined();
+    expect(inboundBuilder.buildVlessXhttpGet).not.toHaveBeenCalled();
+    expect(xuiService.addInbound).toHaveBeenCalledTimes(1);
+    expect(manager.update).toHaveBeenCalledWith(
+      Inbound,
+      { id: In([302, 301]) },
+      expect.objectContaining({ status: InboundStatus.PendingCleanup }),
+    );
+  });
+
   it('publishes a complete local generation and retires the old one atomically', async () => {
     const old = {
       id: 11,
@@ -1552,6 +1664,22 @@ describe('RotationService resilient generations', () => {
         }),
       };
       inboundRepo.find.mockResolvedValueOnce([existing]);
+      xuiService.getInbound.mockResolvedValueOnce({
+        id: 10,
+        enable: true,
+        port: 12443,
+        protocol: 'vless',
+        streamSettings: JSON.stringify({
+          network: 'xhttp',
+          security: 'reality',
+          realitySettings: { serverNames: ['www.samsung.com'] },
+          xhttpSettings: {
+            host: 'www.samsung.com',
+            path: '/sec/assets/',
+            mode: 'auto',
+          },
+        }),
+      });
       const selected = await (service as any).findSharedManagedInbound(
         config, node.id, 'other.example.com', {}, node,
         [{ name: 'www.samsung.com', isEnabled: true }],
@@ -2552,6 +2680,13 @@ describe('RotationService resilient generations', () => {
       } as Subscription;
 
       xuiService.assertXrayHealthy.mockResolvedValue(undefined);
+      xuiService.getInbound.mockResolvedValueOnce({
+        id: 101,
+        enable: true,
+        settings: JSON.stringify({
+          clients: [{ id: 'u-existing', enable: true }],
+        }),
+      });
       xuiService.getNewX25519Cert.mockResolvedValue({
         privateKey: 'TCP_PRIV',
         publicKey: 'TCP_PUB',
@@ -2832,6 +2967,16 @@ describe('RotationService resilient generations', () => {
 
       inboundRepo.find.mockResolvedValue([existingSharedRow]);
       inboundRepo.count.mockResolvedValue(1);
+      xuiService.getInbound.mockResolvedValue({
+        id: 82,
+        enable: true,
+        port: 24443,
+        protocol: 'vless',
+        settings: JSON.stringify({
+          clients: [{ id: 'uuid-sub-a', enable: true }],
+        }),
+        streamSettings: '{}',
+      });
       xuiService.assertXrayHealthy.mockResolvedValue(undefined);
       xuiService.getNewX25519Cert.mockResolvedValue({
         privateKey: 'PRIV',
@@ -3024,6 +3169,223 @@ describe('RotationService resilient generations', () => {
         (xuiService as Record<string, jest.Mock>).deleteInboundClient,
       ).toHaveBeenCalledWith(82, attachedUuid, node);
       expect(xuiService.deleteInbound).not.toHaveBeenCalled();
+    });
+
+    it('recreates fixed-port self-sni when its active DB record was deleted on 3x-ui', async () => {
+      const selfConfigId = '11111111-1111-4111-8111-111111111111';
+      const selfProfileId = '22222222-2222-4222-8222-222222222222';
+      const selfNode = {
+        ...node,
+        id: 'node-self-recreate',
+        name: 'SelfNode',
+        version: '3.11.0-awg.3',
+        xrayVersion: '26.11.9',
+        domain: 'self.example.com',
+      } as Node;
+      const staleActiveRow = {
+        id: 1001,
+        xuiId: 523,
+        configId: selfConfigId,
+        profileId: selfProfileId,
+        nodeId: selfNode.id,
+        port: 5443,
+        position: 0,
+        protocol: 'vless',
+        profileKind: 'self-sni',
+        status: InboundStatus.Active,
+        subscriptionId: 'sub-recreate-self',
+        subscription: {
+          inboundsConfig: [
+            {
+              configId: selfConfigId,
+              type: 'self-sni',
+              port: 5443,
+              sni: 'self.example.com',
+              profileSettings: {
+                domain: 'self.example.com',
+                webServer: 'none',
+                destPort: 443,
+                rotationPolicy: 'fixed_domain',
+              },
+            },
+          ],
+        } as Subscription,
+        clientProfileJson: JSON.stringify({
+          kind: 'self-sni',
+          protocol: 'vless',
+          address: 'self.example.com',
+          port: 5443,
+          uuid: 'u-deleted',
+          remark: 'self-sni',
+          flow: 'xtls-rprx-vision',
+          network: 'tcp',
+          security: 'reality',
+          sni: 'self.example.com',
+          fingerprint: 'chrome',
+        }),
+      } as Inbound;
+      const sub = {
+        id: 'sub-recreate-self',
+        name: 'SubRecreateSelf',
+        isEnabled: true,
+        isAutoRotationEnabled: true,
+        inboundsConfig: [
+          {
+            configId: selfConfigId,
+            profileId: selfProfileId,
+            type: 'self-sni',
+            port: 5443,
+            sni: 'self.example.com',
+            nodeId: selfNode.id,
+            name: 'self-sni',
+            profileSettings: {
+              domain: 'self.example.com',
+              webServer: 'none',
+              destPort: 443,
+              rotationPolicy: 'fixed_domain',
+            },
+          },
+        ],
+        inbounds: [staleActiveRow],
+      } as Subscription;
+
+      const builtSelf = {
+        enable: true,
+        port: 5443,
+        protocol: 'vless',
+        remark: 'self-sni',
+        settings: JSON.stringify({
+          clients: [{ id: 'u-recreated', flow: 'xtls-rprx-vision' }],
+        }),
+        streamSettings: JSON.stringify({
+          network: 'tcp',
+          security: 'reality',
+          realitySettings: {
+            target: 'self.example.com:443',
+            serverNames: ['self.example.com'],
+            shortIds: ['11223344'],
+            settings: {
+              publicKey: 'NEW_PUB_1234567890123456789012345678901234',
+              fingerprint: 'chrome',
+            },
+          },
+        }),
+      };
+
+      const prevClientProbe = (service as unknown as { clientProbe?: unknown })
+        .clientProbe;
+      const prevAddInboundClient = (xuiService as Record<string, unknown>)
+        .addInboundClient;
+      const prevDeleteInboundClient = (xuiService as Record<string, unknown>)
+        .deleteInboundClient;
+      const addInboundClientMock = jest.fn();
+
+      try {
+        (service as unknown as { clientProbe?: unknown }).clientProbe =
+          undefined;
+        (xuiService as Record<string, unknown>).addInboundClient =
+          addInboundClientMock;
+        delete (xuiService as Record<string, unknown>).deleteInboundClient;
+
+        inboundRepo.find.mockResolvedValueOnce([staleActiveRow]);
+        xuiService.getInbound.mockRejectedValue(
+          new Error('3x-ui error: Obtain (record not found)'),
+        );
+        manager.findOneBy.mockResolvedValueOnce({ flag: null });
+        xuiService.assertXrayHealthy.mockResolvedValue(undefined);
+        xuiService.getNewX25519Cert.mockResolvedValue({
+          privateKey: 'NEW_PRIV',
+          publicKey: 'NEW_PUB_1234567890123456789012345678901234',
+        });
+        inboundBuilder.buildSelfSniInbound.mockReturnValue(builtSelf);
+        xuiService.addInbound.mockResolvedValue({
+          id: 524,
+          inbound: { ...builtSelf, id: 524 },
+        });
+        inboundBuilder.buildSelfSniClientBundle.mockReturnValue({
+          kind: 'self-sni',
+          vlessLink: 'vless://u-recreated@self.example.com:5443#self-sni',
+          clientConfig: {
+            kind: 'self-sni',
+            protocol: 'vless',
+            address: 'self.example.com',
+            port: 5443,
+            uuid: 'u-recreated',
+            remark: 'self-sni',
+            flow: 'xtls-rprx-vision',
+            network: 'tcp',
+            security: 'reality',
+            sni: 'self.example.com',
+            fingerprint: 'chrome',
+          },
+          xrayClientJson: {
+            log: { loglevel: 'warning' },
+            inbounds: [],
+            outbounds: [],
+            routing: {},
+          },
+        });
+
+        const result = await (
+          service as unknown as {
+            rotateNodeGroup: (
+              s: Subscription,
+              k: string,
+              g: {
+                node?: Node;
+                configs: Array<{ config: unknown; position: number }>;
+              },
+              d: Domain[],
+            ) => Promise<{
+              status: string;
+              created: number;
+              preserved?: number;
+              pendingCleanup: number;
+              inboundResults?: Array<{
+                status: string;
+                xuiId?: number;
+                port?: number;
+              }>;
+            }>;
+          }
+        ).rotateNodeGroup(
+          sub,
+          selfNode.id,
+          {
+            node: selfNode,
+            configs: [{ config: sub.inboundsConfig[0], position: 0 }],
+          },
+          [],
+        );
+
+        expect(result).toMatchObject({
+          status: 'succeeded',
+          created: 1,
+          pendingCleanup: 1,
+          inboundResults: [{ status: 'activated', xuiId: 524, port: 5443 }],
+        });
+        expect(result.preserved).toBeUndefined();
+        expect(addInboundClientMock).not.toHaveBeenCalled();
+        expect(xuiService.addInbound).toHaveBeenCalledTimes(1);
+        expect(manager.update).toHaveBeenCalledWith(
+          Inbound,
+          { id: In([1001]) },
+          expect.objectContaining({ status: InboundStatus.PendingCleanup }),
+        );
+      } finally {
+        (service as unknown as { clientProbe?: unknown }).clientProbe =
+          prevClientProbe;
+        if (prevAddInboundClient !== undefined) {
+          (xuiService as Record<string, unknown>).addInboundClient =
+            prevAddInboundClient;
+        } else {
+          delete (xuiService as Record<string, unknown>).addInboundClient;
+        }
+        if (prevDeleteInboundClient !== undefined) {
+          (xuiService as Record<string, unknown>).deleteInboundClient =
+            prevDeleteInboundClient;
+        }
+      }
     });
   });
 

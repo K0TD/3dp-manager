@@ -949,6 +949,32 @@ describe('SubscriptionsService', () => {
         }),
       ).rejects.toThrow(/Конфликт порта 8443/);
     });
+
+    it('rejects vless-xhttp-get on Xray 26.11.9 nodes whether specified on config or subscription', async () => {
+      mockNodeRepo.findOne.mockResolvedValue({
+        id: 'node-26',
+        name: 'NL-26',
+        version: '3.11.0-awg.3',
+        xrayVersion: '26.11.9',
+      } as Node);
+
+      await expect(
+        service.create({
+          name: 'Incompatible Config Node Sub',
+          inboundsConfig: [
+            { type: 'vless-xhttp-get', port: 'random', nodeId: 'node-26' },
+          ],
+        }),
+      ).rejects.toThrow(/not supported by node NL-26/);
+
+      await expect(
+        service.create({
+          name: 'Incompatible Sub Node Sub',
+          nodeId: 'node-26',
+          inboundsConfig: [{ type: 'vless-xhttp-get', port: 'random' }],
+        }),
+      ).rejects.toThrow(/not supported by node NL-26/);
+    });
   });
 
   describe('3x-ui client binding and usage sync', () => {

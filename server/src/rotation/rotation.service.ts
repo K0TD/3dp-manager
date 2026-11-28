@@ -986,6 +986,8 @@ export class RotationService implements OnModuleInit {
     const occupied = new Map<number, InboundConfig[]>();
     const reserved = new Set<number>();
     for (const { config } of configs) {
+      if (!operation?.target && this.isSkippedIncompatibleInbound(config, node))
+        continue;
       const port = this.fixedInboundPort(config);
       if (port !== null && config.type !== 'custom') {
         usedPorts.add(port);
@@ -1016,6 +1018,7 @@ export class RotationService implements OnModuleInit {
       position: number;
       link?: string;
     }> = [];
+    const retiredSkipped: Inbound[] = [];
     const missingProfiles: Array<{
       config: InboundConfig;
       previous?: Inbound;
@@ -1088,6 +1091,17 @@ export class RotationService implements OnModuleInit {
           Date.now() - new Date(node.lastCheckedAt).getTime() < 120_000
         )
           throw new Error(`Нода ${node.name} временно недоступна`);
+        if (
+          !operation?.target &&
+          this.isSkippedIncompatibleInbound(config, node)
+        ) {
+          this.logger.warn(
+            `[RotationService] Пропуск ${config.type} для подписки «${subscription.name}» на ноде «${node?.name}» (Xray ${node?.xrayVersion}): несовместим с Xray 26.9.9+, инбаунд не создаётся`,
+          );
+          result.status = 'skipped';
+          if (previous[0]) retiredSkipped.push(previous[0]);
+          continue;
+        }
         this.assertNodeCompatibility(config, node);
         const profileFlag = await this.resolveConnectionProfileFlag(
           config,
@@ -1113,7 +1127,7 @@ export class RotationService implements OnModuleInit {
               node,
             ));
         }
-        const preservable =
+        const preservableCandidate =
           !operation?.target?.patch &&
           this.findPreservableManagedInbound(
             config,
@@ -1122,6 +1136,16 @@ export class RotationService implements OnModuleInit {
             domains,
             panelClient,
           );
+        const preservable =
+          preservableCandidate &&
+          (!node ||
+            !preservableCandidate.inbound.xuiId ||
+            (await this.hasActivePanelClient(
+              preservableCandidate.inbound,
+              node,
+            )))
+            ? preservableCandidate
+            : null;
         if (preservable) {
           const { inbound, remark } = preservable;
           const update: (typeof preservedUpdates)[number] = {
@@ -1323,9 +1347,10 @@ export class RotationService implements OnModuleInit {
         });
       }
     }
-    const old = replacements.flatMap((item) =>
-      item.previous ? [item.previous] : [],
-    );
+    const old = [
+      ...replacements.flatMap((item) => (item.previous ? [item.previous] : [])),
+      ...retiredSkipped,
+    ];
     const superseded = new Set<InboundConfig>();
     for (const { config, previous, result } of missingProfiles) {
       if (!config.name?.trim()) continue;
@@ -1400,7 +1425,12 @@ export class RotationService implements OnModuleInit {
         inbounds: diagnostics,
       },
     };
-    if (replacements.length || preservedUpdates.length || nextConfigs) {
+    if (
+      replacements.length ||
+      preservedUpdates.length ||
+      old.length ||
+      nextConfigs
+    ) {
       try {
         await this.inboundRepo.manager.transaction(async (manager) => {
           if (old.length)
@@ -1781,7 +1811,7 @@ export class RotationService implements OnModuleInit {
 
     const normalize = (value: string | undefined) =>
       value?.trim().toLowerCase() || '';
-    const checkedFallbackListeners = new Set<number>();
+    const checkedListeners = new Set<number>();
     for (const candidate of candidates) {
       if (!candidate.xuiId || !candidate.clientProfileJson) continue;
       if (fixedPort !== null && candidate.port !== fixedPort) continue;
@@ -1803,8 +1833,8 @@ export class RotationService implements OnModuleInit {
             (sni && normalize(client.sni) !== normalize(sni))
           )
             continue;
-          if (checkedFallbackListeners.has(candidate.xuiId)) continue;
-          checkedFallbackListeners.add(candidate.xuiId);
+          if (checkedListeners.has(candidate.xuiId)) continue;
+          checkedListeners.add(candidate.xuiId);
           const current = await this.xuiService.getInbound(
             candidate.xuiId,
             node,
@@ -1876,6 +1906,27 @@ export class RotationService implements OnModuleInit {
           parsed.xhttp?.mode !== config.profileSettings.mode
         )
           continue;
+        if (checkedListeners.has(candidate.xuiId)) continue;
+        checkedListeners.add(candidate.xuiId);
+        const current = await this.xuiService.getInbound(candidate.xuiId, node);
+        if (
+          !current ||
+          current.id !== candidate.xuiId ||
+          current.enable !== true ||
+          current.port !== candidate.port ||
+          (expected.protocol && current.protocol !== expected.protocol)
+        )
+          continue;
+        if (
+          config.type === 'xhttp-stable' &&
+          expected.streamSettings &&
+          !this.matchesXhttpStableListener(
+            { ...expected, port: candidate.port },
+            current,
+            sharedSni,
+          )
+        )
+          continue;
         return { inbound: candidate, sni: sharedSni };
       } catch {
         continue;
@@ -1938,6 +1989,21 @@ export class RotationService implements OnModuleInit {
     return ownedClientId
       ? this.xuiService.deleteInbound(inbound.xuiId, node, ownedClientId)
       : this.xuiService.deleteInbound(inbound.xuiId, node);
+  }
+
+  private isSkippedIncompatibleInbound(
+    config: InboundConfig,
+    node?: Node,
+  ): boolean {
+    if (!node) return false;
+    if (config.type !== 'vless-xhttp-get' && config.type !== 'vless-ws') {
+      return false;
+    }
+    return !supportsInboundType(config.type as InboundType, {
+      panelVersion: node.version,
+      xrayVersion: node.xrayVersion,
+      autoTlsCertificate: Boolean(node.webCertificateFile && node.webKeyFile),
+    });
   }
 
   private assertNodeCompatibility(config: InboundConfig, node?: Node) {

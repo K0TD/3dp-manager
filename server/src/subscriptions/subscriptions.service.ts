@@ -143,7 +143,7 @@ export class SubscriptionsService {
   }
 
   async create(dto: CreateSubscriptionDto) {
-    await this.validateInboundsConfig(dto.inboundsConfig);
+    await this.validateInboundsConfig(dto.inboundsConfig, dto.nodeId);
     const trimmedClientId = dto.clientId?.trim() || '';
     const clientAutoCreate = !trimmedClientId && dto.clientAutoCreate === true;
     const clientId = trimmedClientId
@@ -274,7 +274,10 @@ export class SubscriptionsService {
 
     let nextConfigs: InboundConfig[] | undefined;
     if (dto.inboundsConfig) {
-      await this.validateInboundsConfig(dto.inboundsConfig);
+      await this.validateInboundsConfig(
+        dto.inboundsConfig,
+        'nodeId' in dto ? dto.nodeId : sub.nodeId,
+      );
       nextConfigs = this.withConfigIds(
         dto.inboundsConfig,
         sub.inboundsConfig as Array<{ configId?: string; nodeId?: string }>,
@@ -600,6 +603,7 @@ export class SubscriptionsService {
 
   private async validateInboundsConfig(
     inboundsConfig?: CreateSubscriptionDto['inboundsConfig'],
+    defaultNodeId?: string | null,
   ) {
     const configIds = new Set<string>();
     for (const config of inboundsConfig || []) {
@@ -615,7 +619,7 @@ export class SubscriptionsService {
       await this.validateMtprotoConfig(config);
       if (config.type === 'custom') continue;
 
-      await this.validateConfigRelations(config);
+      await this.validateConfigRelations(config, defaultNodeId);
       this.validateConfigPort(config.port);
     }
     this.validateNodePortCollisions(inboundsConfig || []);
@@ -877,48 +881,55 @@ export class SubscriptionsService {
     }
   }
 
-  private async validateConfigRelations(config: InboundConfig) {
-    if (config.nodeId) {
+  private async validateConfigRelations(
+    config: InboundConfig,
+    defaultNodeId?: string | null,
+  ) {
+    const targetNodeId = config.nodeId || defaultNodeId;
+    if (targetNodeId) {
       const node = await this.nodeRepo.findOne({
-        where: { id: config.nodeId },
+        where: { id: targetNodeId },
       });
-      if (!node) throw new BadRequestException('Node not found');
-      if (
-        !supportsInboundType(config.type as InboundType, {
-          panelVersion: node.version,
-          xrayVersion: node.xrayVersion,
-          autoTlsCertificate: Boolean(
-            node.webCertificateFile && node.webKeyFile,
-          ),
-        })
-      ) {
-        throw new BadRequestException(
-          `Inbound ${config.type} is not supported by node ${node.name}`,
-        );
-      }
-      if (isManagedProfileKind(config.type)) {
-        const compat = evaluateProfileCompatibility({
-          kind: config.type,
-          port: config.port,
-          sni: config.tlsServerName || config.sni,
-          settings: config.profileSettings,
-          node: {
-            name: node.name,
-            version: node.version,
+      if (!node && config.nodeId)
+        throw new BadRequestException('Node not found');
+      if (node) {
+        if (
+          !supportsInboundType(config.type as InboundType, {
+            panelVersion: node.version,
             xrayVersion: node.xrayVersion,
             autoTlsCertificate: Boolean(
               node.webCertificateFile && node.webKeyFile,
             ),
-          },
-        });
-        if (!compat.compatible) {
-          const errorMessages = compat.checks
-            .filter((item) => item.severity === 'error')
-            .map((item) => item.message);
+          })
+        ) {
           throw new BadRequestException(
-            errorMessages.join('; ') ||
-              `Профиль ${config.type} несовместим с нодой ${node.name}`,
+            `Inbound ${config.type} is not supported by node ${node.name}`,
           );
+        }
+        if (isManagedProfileKind(config.type)) {
+          const compat = evaluateProfileCompatibility({
+            kind: config.type,
+            port: config.port,
+            sni: config.tlsServerName || config.sni,
+            settings: config.profileSettings,
+            node: {
+              name: node.name,
+              version: node.version,
+              xrayVersion: node.xrayVersion,
+              autoTlsCertificate: Boolean(
+                node.webCertificateFile && node.webKeyFile,
+              ),
+            },
+          });
+          if (!compat.compatible) {
+            const errorMessages = compat.checks
+              .filter((item) => item.severity === 'error')
+              .map((item) => item.message);
+            throw new BadRequestException(
+              errorMessages.join('; ') ||
+                `Профиль ${config.type} несовместим с нодой ${node.name}`,
+            );
+          }
         }
       }
     }

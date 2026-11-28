@@ -234,6 +234,16 @@ export function normalizeOperationError(
     title = 'Ошибка сервера панели 3x-ui';
     hint = 'Проверьте состояние и журнал панели 3x-ui.';
   } else if (
+    /несовместим(?:а|ы)? с (?:клиентом Xray|профилем ноды|нодой)|is not supported by node|не поддерживается (?:выбранной )?нодой/i.test(
+      raw,
+    )
+  ) {
+    code = 'INBOUND_INCOMPATIBLE';
+    stage = 'preflight';
+    title = `Подключение${connection} несовместимо с версией ноды`;
+    hint =
+      'Удалите несовместимый тип подключения из подписки или выберите совместимый транспорт (например, VLESS XHTTP Reality, XHTTP Stable или VLESS XHTTP TLS).';
+  } else if (
     /node is unreachable|нода.*(?:недоступна|не найдена)|для конфигурации не назначена нода/i.test(
       raw,
     )
